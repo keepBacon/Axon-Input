@@ -1,0 +1,10 @@
+<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}.pad{position:relative;width:100%;height:100%}.b{position:absolute;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:var(--kd-key-idle);color:var(--kd-key-text-idle);font:700 14px sans-serif;transition:transform 80ms}.b.down{background:var(--kd-key-pressed);color:var(--kd-key-text-pressed);transform:scale(.86)}#Y{left:50%;top:8%;translate:-50% 0}#X{left:10%;top:50%;translate:0 -50%}#B{right:10%;top:50%;translate:0 -50%}#A{left:50%;bottom:8%;translate:-50% 0}</style>
+<div class="pad"><div id="Y" class="b">Y</div><div id="X" class="b">X</div><div id="B" class="b">B</div><div id="A" class="b">A</div></div>
+<script>
+KeyDisplay.on('gamepad',e=>{
+ const b=e.detail.buttons;
+ for(const k of ['A','B','X','Y']) document.getElementById(k).classList.toggle('down',b[k.toLowerCase()]);
+});
+</script>

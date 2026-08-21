@@ -1,0 +1,32 @@
+<!doctype html>
+<style>
+html,body{margin:0;width:100%;height:100%;background:transparent}
+.s{width:88%;height:88%;margin:6%;background:#191a20;border-radius:50%;position:relative}
+.k{position:absolute;left:50%;top:50%;width:38%;height:38%;border-radius:50%;background:white;translate:-50% -50%}
+</style>
+<div class="s"><i class="k"></i></div>
+<script>
+const shell=document.querySelector('.s'), knob=document.querySelector('.k');
+let lastPressed=false;
+addEventListener('keydisplay:update',e=>{
+  const s=e.detail;
+  if(!s.type.includes('stick')||!s.gamepad)return;
+  shell.style.borderRadius=s.config.stickShape==='square'?'18px':'50%';
+  const right=s.type.includes('right');
+  const x=right?s.gamepad.rx:s.gamepad.lx;
+  const y=right?s.gamepad.ry:s.gamepad.ly;
+  const dotScale=(s.config.dotSizePercent||100)/100;
+  knob.style.transform=`translate(${x*28}px,${y*28}px) scale(${dotScale})`;
+  const pressed=right?s.gamepad.buttons.r3:s.gamepad.buttons.l3;
+  if(pressed&&!lastPressed){
+    knob.animate(
+      [{transform:`translate(${x*28}px,${y*28}px) scale(${dotScale})`},
+       {transform:`translate(${x*28}px,${y*28}px) scale(${dotScale*1.16})`},
+       {transform:`translate(${x*28}px,${y*28}px) scale(${dotScale*.96})`},
+       {transform:`translate(${x*28}px,${y*28}px) scale(${dotScale})`}],
+      {duration:170,easing:'cubic-bezier(.2,.8,.2,1)'}
+    );
+  }
+  lastPressed=pressed;
+});
+</script>

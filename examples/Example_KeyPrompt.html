@@ -1,0 +1,8 @@
+<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}#root{height:100%;display:flex;gap:8px;align-items:center;justify-content:center}.k{min-width:38px;height:38px;padding:0 8px;border-radius:11px;display:grid;place-items:center;background:var(--kd-key-idle);color:var(--kd-key-text-idle);font:700 12px sans-serif;transform:scale(.94)}.k.down{background:var(--kd-key-pressed);color:var(--kd-key-text-pressed)}small{font:500 8px sans-serif;opacity:.7}</style><div id="root"></div>
+<script>
+function render(s){if(s.type!=='key-prompt')return;root.innerHTML=s.keys.map(k=>`<div class="k ${k.pressed?'down':''}" data-id="${k.id}"><span>${k.label}</span>${k.cps?`<small>${k.cps} CPS</small>`:''}</div>`).join('')}
+KeyDisplay.on('init',e=>render(e.detail));KeyDisplay.on('update',e=>render(e.detail));
+KeyDisplay.on('key',e=>{const el=document.querySelector(`[data-id="${e.detail.id}"]`);if(!el)return;el.getAnimations().forEach(a=>a.cancel());el.animate([{transform:'scale(.7)'},{transform:'scale(1.05)'},{transform:'scale(1)'}],{duration:180,easing:'cubic-bezier(.2,.8,.2,1)'})});
+</script>

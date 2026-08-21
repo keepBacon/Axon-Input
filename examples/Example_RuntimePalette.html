@@ -1,0 +1,15 @@
+<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}
+#box{box-sizing:border-box;width:100%;height:100%;display:grid;place-items:center;border:1px solid var(--kd-overlay-stroke);border-radius:16px;background:var(--kd-overlay-shell);color:var(--kd-text-primary);font:600 14px sans-serif}
+small{display:block;color:var(--kd-text-secondary);font-weight:400;margin-top:4px}
+</style><div id="box"><div><b id="type"></b><small id="status"></small></div></div>
+<script>
+function render(s){
+  type.textContent=s.type;
+  status.textContent=`${s.theme} · ${s.runtime.sensitivityMode} · ${s.runtime.mouseSensitivity}%`;
+  box.dataset.drag=s.runtime.dragEnabled?'on':'off';
+}
+KeyDisplay.on('init',e=>render(e.detail));
+KeyDisplay.on('update',e=>render(e.detail));
+</script>

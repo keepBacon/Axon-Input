@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden;font-family:system-ui,sans-serif}
+:root{--fg:#f5f5f7;--bg:#191a1f;--idle:#30323a;--pressed:#fff;--pressedText:#111}
+body[data-theme="light"]{--fg:#111;--bg:#f1f2f5;--idle:#fff;--pressed:#111;--pressedText:#fff}
+#root{width:100%;height:100%;display:grid;place-items:center;color:var(--fg)}
+.keys{display:flex;gap:7px;align-items:center;justify-content:center;flex-wrap:wrap}
+.key{min-width:42px;height:42px;padding:0 10px;border-radius:12px;background:var(--idle);display:grid;place-items:center;font-weight:700;transform:scale(1)}
+.key.down{background:var(--pressed);color:var(--pressedText)}
+.mouse{display:flex;width:92%;height:82%;border-radius:24px;overflow:hidden;background:var(--bg)}
+.mouse>div{flex:1;display:grid;place-items:center}.mouse small{opacity:.62}
+.trajectory{width:92%;height:92%;border-radius:18px;background:var(--bg);position:relative}.dot{position:absolute;left:50%;top:50%;width:12px;height:12px;border-radius:50%;background:var(--fg);translate:-50% -50%}
+.stick{width:86%;height:86%;border-radius:50%;background:var(--bg);position:relative}.knob{position:absolute;left:50%;top:50%;width:38%;height:38%;border-radius:50%;background:var(--fg);translate:-50% -50%}
+.face{position:relative;width:100%;height:100%}.face i{position:absolute;width:29%;height:29%;border-radius:50%;background:var(--idle);display:grid;place-items:center;font-style:normal;font-weight:700}.face i.down{background:var(--pressed);color:var(--pressedText)}
+.face .t{left:35.5%;top:3%}.face .r{right:3%;top:35.5%}.face .b{left:35.5%;bottom:3%}.face .l{left:3%;top:35.5%}
+.shoulder{width:92%;height:88%;display:grid;gap:8px}.shoulder div{border-radius:13px;background:var(--bg);display:grid;place-items:center;font-weight:700;overflow:hidden;position:relative}.shoulder div.down{background:var(--pressed);color:var(--pressedText)}
+</style></head><body><div id="root"></div>
+<script>
+let state=null, px=0,py=0,vx=0,vy=0;
+function el(tag,cls,text){const n=document.createElement(tag);n.className=cls||'';if(text!=null)n.textContent=text;return n}
+function render(s){state=s;document.body.dataset.theme=s.theme;root.innerHTML='';
+ if(s.type==='keyboard'||s.type==='custom'){
+  const box=el('div','keys');(s.keys||[]).forEach(k=>{const n=el('div','key'+(k.pressed?' down':''),k.label);n.dataset.id=k.id;box.appendChild(n)});root.appendChild(box);
+ }else if(s.type==='mouse'){
+  const m=el('div','mouse');(s.keys||[]).forEach(k=>{const n=el('div',k.pressed?'down':'');n.innerHTML=`<b>${k.label}</b><small>${k.dps} DPS</small>`;m.appendChild(n)});root.appendChild(m);
+ }else if(s.type==='mouse-trajectory'){
+  const b=el('div','trajectory');b.appendChild(el('i','dot'));root.appendChild(b);
+ }else if(s.type.includes('stick')){
+  const b=el('div','stick');if(s.config.stickShape==='square')b.style.borderRadius='18px';b.appendChild(el('i','knob'));root.appendChild(b);updateStick(s);
+ }else if(s.type==='gamepad-face'){
+  const f=el('div','face');[['t','X'],['r','Z'],['b','Y'],['l','S']].forEach(x=>f.appendChild(el('i',x[0],x[1])));root.appendChild(f);updateFace(s);
+ }else if(s.type.includes('shoulder')){
+  const sh=el('div','shoulder');sh.innerHTML=s.type.includes('left')?'<div id="one">L1</div><div id="two">L2</div>':'<div id="one">R1</div><div id="two">R2</div>';root.appendChild(sh);updateShoulder(s);
+ }
+}
+function updateStick(s){const k=document.querySelector('.knob');if(!k)return;const right=s.type.includes('right');const x=right?s.gamepad.rx:s.gamepad.lx,y=right?s.gamepad.ry:s.gamepad.ly;k.style.transform=`translate(${x*28}px,${y*28}px)`}
+function updateFace(s){const b=s.gamepad.buttons,n=[b.north,b.east||b.z,b.south,b.west||b.c];document.querySelectorAll('.face i').forEach((x,i)=>x.classList.toggle('down',n[i]))}
+function updateShoulder(s){const left=s.type.includes('left'),b=s.gamepad.buttons;one?.classList.toggle('down',left?b.l1:b.r1);two?.classList.toggle('down',left?b.l2:b.r2);const p=left?s.gamepad.lt:s.gamepad.rt;if(two)two.style.background=`linear-gradient(90deg,var(--pressed) ${p*100}%,var(--bg) ${p*100}%)`}
+addEventListener('keydisplay:update',e=>{const s=e.detail;if(!state||state.type!==s.type)render(s);else{state=s;if(s.type.includes('stick'))updateStick(s);else if(s.type==='gamepad-face')updateFace(s);else if(s.type.includes('shoulder'))updateShoulder(s);else render(s)}});
+addEventListener('keydisplay:key',e=>{const k=e.detail,n=document.querySelector(`[data-id="${k.id}"]`);if(!n)return;n.classList.toggle('down',k.pressed);n.getAnimations().forEach(a=>a.cancel());n.animate(k.pressed?[{transform:'scale(1)'},{transform:'scale(.91)'}]:[{transform:'scale(.91)'},{transform:'scale(1.035)'},{transform:'scale(1)'}],{duration:k.pressed?90:210,easing:'cubic-bezier(.2,.8,.2,1)',fill:'forwards'})});
+addEventListener('keydisplay:pointer',e=>{vx+=Math.sign(e.detail.dx)*Math.sqrt(Math.abs(e.detail.dx))*.72;vy+=Math.sign(e.detail.dy)*Math.sqrt(Math.abs(e.detail.dy))*.72});
+function tick(){vx+=(-px*.105-vx*.21);vy+=(-py*.105-vy*.21);px+=vx;py+=vy;px=Math.max(-30,Math.min(30,px));py=Math.max(-30,Math.min(30,py));const d=document.querySelector('.dot');if(d)d.style.transform=`translate(${px}px,${py}px)`;requestAnimationFrame(tick)}tick();
+if(window.__KEYDISPLAY_STATE__)render(window.__KEYDISPLAY_STATE__);
+</script></body></html>

@@ -1,0 +1,25 @@
+<!doctype html>
+<style>
+html,body{margin:0;width:100%;height:100%;background:transparent}
+#box{width:100%;height:100%;border-radius:18px;background:#18191e;position:relative}
+#dot{width:12px;height:12px;border-radius:50%;background:#fff;position:absolute;left:50%;top:50%;translate:-50% -50%;transform:scale(var(--dot-scale,1))}
+</style>
+<div id="box"><i id="dot"></i></div>
+<script>
+let x=0,y=0,vx=0,vy=0;
+addEventListener('keydisplay:update',e=>{
+  const s=e.detail;
+  if(s.config) dot.style.setProperty('--dot-scale',(s.config.dotSizePercent||100)/100);
+});
+addEventListener('keydisplay:pointer',e=>{
+  vx+=Math.sign(e.detail.dx)*Math.sqrt(Math.abs(e.detail.dx))*.85;
+  vy+=Math.sign(e.detail.dy)*Math.sqrt(Math.abs(e.detail.dy))*.85;
+});
+function f(){
+  vx+=(-x*.115-vx*.23);vy+=(-y*.115-vy*.23);x+=vx;y+=vy;
+  x=Math.max(-31,Math.min(31,x));y=Math.max(-31,Math.min(31,y));
+  dot.style.translate=`calc(-50% + ${x}px) calc(-50% + ${y}px)`;
+  requestAnimationFrame(f);
+}
+f();
+</script>

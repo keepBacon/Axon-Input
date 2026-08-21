@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_background">#F7F7F8</color>
+    <color name="app_surface">#FFFFFF</color>
+    <color name="app_text_primary">#151517</color>
+    <color name="app_text_secondary">#6F6F76</color>
+    <color name="app_divider">#E6E6E9</color>
+    <color name="app_accent">#171719</color>
+    <color name="overlay_key_idle">#EFFFFFFF</color>
+    <color name="overlay_key_pressed">#FF171719</color>
+    <color name="overlay_text_idle">#FF171719</color>
+    <color name="overlay_text_pressed">#FFFFFFFF</color>
+    <color name="overlay_stroke">#1F000000</color>
+    <color name="overlay_shell">#E6FFFFFF</color>
+    <color name="overlay_secondary">#FF707078</color>
+    <color name="trajectory_panel">#E8FFFFFF</color>
+    <color name="trajectory_stroke">#1F000000</color>
+    <color name="trajectory_dot">#FF171719</color>
+    <color name="legacy_navigation_bar">#0C0C0D</color>
+</resources>
