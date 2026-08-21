@@ -149,6 +149,19 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private boolean waitingForShizuku;
     private boolean dpsCaptureArmed;
 
+    private final Runnable cpsBindingPoll = new Runnable() {
+        @Override
+        public void run() {
+            if (!dpsCaptureArmed || dpsSwitch == null || !dpsSwitch.isChecked() || isFinishing()) return;
+            if (OverlayState.getDpsTargetKeyCode(MainActivity.this) != OverlayState.DPS_TARGET_NONE) {
+                dpsCaptureArmed = false;
+                updateDpsTargetUi();
+                return;
+            }
+            mainHandler.postDelayed(this, 100L);
+        }
+    };
+
     private final Runnable sensitivityStatusTicker = new Runnable() {
         @Override
         public void run() {
@@ -750,8 +763,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 OverlayState.setDpsTargetKeyCode(this, OverlayState.DPS_TARGET_NONE);
                 dpsCaptureArmed = true;
                 OverlayState.setDpsEnabled(this, true);
+                mainHandler.removeCallbacks(cpsBindingPoll);
+                mainHandler.post(cpsBindingPoll);
             } else {
                 dpsCaptureArmed = false;
+                mainHandler.removeCallbacks(cpsBindingPoll);
                 OverlayState.setDpsEnabled(this, false);
             }
             updateDpsTargetUi();
@@ -790,12 +806,20 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 && dpsSwitch != null
                 && dpsSwitch.isChecked()
                 && isPhysicalKeyboardEvent(event)) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                OverlayState.setDpsTargetKeyCode(this, event.getKeyCode());
+            int currentTarget = OverlayState.getDpsTargetKeyCode(this);
+            if (currentTarget != OverlayState.DPS_TARGET_NONE) {
                 dpsCaptureArmed = false;
+                mainHandler.removeCallbacks(cpsBindingPoll);
                 updateDpsTargetUi();
+            } else {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                    OverlayState.setDpsTargetKeyCode(this, event.getKeyCode());
+                    dpsCaptureArmed = false;
+                    mainHandler.removeCallbacks(cpsBindingPoll);
+                    updateDpsTargetUi();
+                }
+                return true;
             }
-            return true;
         }
         if (captureSwitch != null
                 && OverlayState.isCustomCaptureEnabled(this)
@@ -845,6 +869,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     @Override
     protected void onPause() {
         mainHandler.removeCallbacks(sensitivityStatusTicker);
+        mainHandler.removeCallbacks(cpsBindingPoll);
         super.onPause();
     }
 
@@ -888,6 +913,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         dpsCaptureArmed = OverlayState.isDpsEnabled(this)
                 && OverlayState.getDpsTargetKeyCode(this) == OverlayState.DPS_TARGET_NONE;
         updateDpsTargetUi();
+        mainHandler.removeCallbacks(cpsBindingPoll);
+        if (dpsCaptureArmed) mainHandler.post(cpsBindingPoll);
         dragSwitch.setChecked(OverlayState.isDragEnabled(this));
         globalHtmlSwitch.setChecked(OverlayState.isGlobalHtmlEnabled(this));
         autoHideSwitch.setChecked(OverlayState.isAutoHideBackground(this));
@@ -1456,12 +1483,20 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private void updateDpsTargetUi() {
         if (dpsTargetText == null) return;
-        int keyCode = OverlayState.getDpsTargetKeyCode(this);
-        if (!OverlayState.isDpsEnabled(this) || keyCode == OverlayState.DPS_TARGET_NONE) {
+        int target = OverlayState.getDpsTargetKeyCode(this);
+        if (!OverlayState.isDpsEnabled(this) || target == OverlayState.DPS_TARGET_NONE) {
             dpsTargetText.setText(R.string.dps_target_waiting);
             return;
         }
-        dpsTargetText.setText(getString(R.string.dps_target_selected, KeyLabel.fromKeyCode(keyCode)));
+        String label;
+        if (target == OverlayState.DPS_TARGET_MOUSE_LEFT) {
+            label = getString(R.string.cps_target_mouse_left);
+        } else if (target == OverlayState.DPS_TARGET_MOUSE_RIGHT) {
+            label = getString(R.string.cps_target_mouse_right);
+        } else {
+            label = KeyLabel.fromKeyCode(target);
+        }
+        dpsTargetText.setText(getString(R.string.dps_target_selected, label));
     }
 
     private void syncMotionUi(int displayType) {

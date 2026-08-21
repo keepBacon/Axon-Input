@@ -499,13 +499,13 @@ public final class NativeKeyCanvasView extends View {
         canvas.scale(scale, scale, cx, cy);
 
         textPaint.setColor(withMotionAlpha(pressed ? textPressedColor : textIdleColor, motion));
-        // L/R 保持 13dp。DPS 使用更小字号。
+        // L/R 保持 13dp。CPS 使用更小字号。
         textPaint.setTextSize(dp(13));
         textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
         canvas.drawText(side, cx, cy - dp(5), textPaint);
         textPaint.setTextSize(dp(8));
         textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
-        canvas.drawText(dps + " DPS", cx, cy + dp(13), textPaint);
+        canvas.drawText(dps + " CPS", cx, cy + dp(13), textPaint);
         textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
         canvas.restoreToCount(save);
     }
@@ -537,13 +537,13 @@ public final class NativeKeyCanvasView extends View {
             float centerBaseline = cy - (fm.ascent + fm.descent) * 0.5f;
             canvas.drawText(label, cx, centerBaseline - dp(5), textPaint);
 
-            // 空间不足时只缩小 DPS，不缩小 Space。
+            // 空间不足时只缩小 CPS，不缩小 Space。
             float dpsSize = Math.min(dp(8f), Math.max(dp(6f), height * 0.16f));
             textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
             textPaint.setTextSize(dpsSize);
             Paint.FontMetrics dpsFm = textPaint.getFontMetrics();
             float dpsBaseline = rect.bottom - dp(4f) - dpsFm.descent;
-            canvas.drawText(spaceDps + " DPS", cx, dpsBaseline, textPaint);
+            canvas.drawText(spaceDps + " CPS", cx, dpsBaseline, textPaint);
             textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
         } else {
             textPaint.setTextSize(space ? dp(14) : dp(17));

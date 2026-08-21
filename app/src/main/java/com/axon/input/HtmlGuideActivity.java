@@ -64,7 +64,7 @@ function render(state){
                 + "state.keys：键盘、鼠标、自定义键位。\n"
                 + "state.pointer：鼠标移动增量。\n"
                 + "state.mouseButtons：鼠标左右键状态。\n"
-                + "state.gamepad：摇杆、扳机、按键、DPS。\n"
+                + "state.gamepad：摇杆、扳机、按键、CPS。\n"
                 + "state.config：当前显示的细节开关。\n"
                 + "state.palette：完整原生调色板。\n"
                 + "state.runtime：拖动、灵敏度超频、窗口位置、会话持久化策略等运行信息。\n"
@@ -131,7 +131,7 @@ function renderKeys(s){
   if(!s.keys)return;
   root.innerHTML=s.keys.map(k=>`
     <div class="key ${k.pressed?'down':''}" data-id="${k.id}">
-      <b>${k.label}</b>${k.dps?`<small>${k.dps} DPS</small>`:''}
+      <b>${k.label}</b>${k.dps?`<small>${k.dps} CPS</small>`:''}
     </div>`).join('');
 }
 KeyDisplay.on('update',e=>renderKeys(e.detail));
@@ -143,8 +143,8 @@ KeyDisplay.on('mouse', e => {
   const m=e.detail;
   left.classList.toggle('down',m.left);
   right.classList.toggle('down',m.right);
-  leftDps.textContent=m.leftDps+' DPS';
-  rightDps.textContent=m.rightDps+' DPS';
+  leftDps.textContent=m.leftDps+' CPS';
+  rightDps.textContent=m.rightDps+' CPS';
 });
 """);
 
@@ -210,19 +210,19 @@ KeyDisplay.on('gamepad',e=>{
 // 推荐使用 a/b/x/y，不要依赖底层 north/west 名称。
 """);
 
-        addSection(root, "12. L1/R1 DPS 与 L2/R2 压力");
+        addSection(root, "12. L1/R1 CPS 与 L2/R2 压力");
         addCode(root, """
 KeyDisplay.on('update',e=>{
   const s=e.detail;if(!s.gamepad)return;
   const g=s.gamepad;
   if(s.type==='gamepad-left-shoulder'){
     l1.classList.toggle('down',g.buttons.l1);
-    l1Dps.textContent=s.config.showShoulderDps?g.dps.l1+' DPS':'';
+    l1Dps.textContent=s.config.showShoulderDps?g.dps.l1+' CPS':'';
     if(s.config.showTriggerProgress) l2.style.setProperty('--pressure',g.lt);
   }
   if(s.type==='gamepad-right-shoulder'){
     r1.classList.toggle('down',g.buttons.r1);
-    r1Dps.textContent=s.config.showShoulderDps?g.dps.r1+' DPS':'';
+    r1Dps.textContent=s.config.showShoulderDps?g.dps.r1+' CPS':'';
     if(s.config.showTriggerProgress) r2.style.setProperty('--pressure',g.rt);
   }
 });

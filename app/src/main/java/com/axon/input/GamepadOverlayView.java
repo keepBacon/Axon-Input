@@ -373,14 +373,14 @@ public final class GamepadOverlayView extends FrameLayout {
         canvas.drawCircle(cx, cy, r, body);
         canvas.drawCircle(cx, cy, r, strokePaint);
 
-        // DPS 开关不改变主标签字号。
+        // CPS 开关不改变主标签字号。
         final float primarySize = radius * 0.92f;
         textPaint.setTextSize(primarySize);
         Paint.FontMetrics primaryFm = textPaint.getFontMetrics();
         float primaryBaseline = cy - (primaryFm.ascent + primaryFm.descent) * 0.5f;
 
         if (showDps) {
-            // 显示 DPS 时只上移主标签，不缩小 Y/X/B/A。
+            // 显示 CPS 时只上移主标签，不缩小 Y/X/B/A。
             primaryBaseline -= radius * 0.16f;
             canvas.drawText(label, cx, primaryBaseline, textPaint);
 
@@ -388,7 +388,7 @@ public final class GamepadOverlayView extends FrameLayout {
             textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
             Paint.FontMetrics dpsFm = textPaint.getFontMetrics();
             float dpsBaseline = cy + radius * 0.62f - dpsFm.descent;
-            canvas.drawText(dps + " DPS", cx, dpsBaseline, textPaint);
+            canvas.drawText(dps + " CPS", cx, dpsBaseline, textPaint);
         } else {
             canvas.drawText(label, cx, primaryBaseline, textPaint);
         }
@@ -459,13 +459,13 @@ public final class GamepadOverlayView extends FrameLayout {
         primaryBaseline -= Math.min(dp(4f), area.height() * 0.09f);
         canvas.drawText(text, area.centerX(), primaryBaseline, textPaint);
 
-        // DPS 固定在主标签下方，空间不足时优先缩小。
+        // CPS 固定在主标签下方，空间不足时优先缩小。
         final float dpsSize = Math.min(area.height() * 0.17f, dp(8.5f));
         textPaint.setTextSize(Math.max(dp(6f), dpsSize));
         textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
         Paint.FontMetrics dpsFm = textPaint.getFontMetrics();
         float dpsBaseline = area.bottom - dp(3f) - dpsFm.descent;
-        canvas.drawText(dps + " DPS", area.centerX(), dpsBaseline, textPaint);
+        canvas.drawText(dps + " CPS", area.centerX(), dpsBaseline, textPaint);
         textPaint.setTypeface(oldTypeface);
     }
 

@@ -25,6 +25,8 @@ public final class OverlayState {
     public static final int SENSITIVITY_MODE_SHIZUKU = 0;
     public static final int SENSITIVITY_MODE_ROOT = 1;
     public static final int DPS_TARGET_NONE = -1;
+    public static final int DPS_TARGET_MOUSE_LEFT = 0x10000;
+    public static final int DPS_TARGET_MOUSE_RIGHT = 0x10001;
     private static final String SESSION_PREFS = "axon_input_session";
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";

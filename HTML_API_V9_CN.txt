@@ -36,7 +36,7 @@ gamepad-right-shoulder
 keydisplay:init      页面初始化
 keydisplay:update    设置、主题、大小等低频完整状态变化
 keydisplay:key       单个键位变化
-keydisplay:mouse     鼠标左右键和 DPS
+keydisplay:mouse     鼠标左右键和 CPS
 keydisplay:pointer   鼠标相对移动，高频，按显示帧合并
 keydisplay:gamepad   手柄摇杆/扳机/按键，高频，按显示帧合并
 
@@ -56,7 +56,7 @@ gamepad:
   buttons.a/b/x/y/l1/r1/l2/r2/l3/r3
   dps.y/x/b/a/l1/r1
 config:
-  当前窗口最直接相关的显示选项，包括 dotSizePercent、motionMode、DPS/进度/颜色开关
+  当前窗口最直接相关的显示选项，包括 dotSizePercent、motionMode、CPS/进度/颜色开关
 palette:
   原生完整调色板，可直接用于 HTML
 runtime:

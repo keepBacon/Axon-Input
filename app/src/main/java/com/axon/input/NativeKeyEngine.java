@@ -24,7 +24,7 @@ public final class NativeKeyEngine {
     /** 更新单个鼠标按键。button=0 左键，button=1 右键。eventTimeMs 为单调毫秒时间。 */
     public static native long nativeUpdateMouseButton(int button, boolean pressed, long eventTimeMs);
 
-    /** 返回鼠标状态：0-1 位为按下状态，8-15 位为左键 DPS，16-23 位为右键 DPS。 */
+    /** 返回鼠标状态：0-1 位为按下状态，8-15 位为左键 CPS，16-23 位为右键 CPS。 */
     public static native long nativeGetMouseStats(long nowMs);
 
     public static native long nativeResetMouse(long nowMs);

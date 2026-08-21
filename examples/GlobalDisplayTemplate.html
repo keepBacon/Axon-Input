@@ -23,7 +23,7 @@ function render(s){state=s;document.body.dataset.theme=s.theme;root.innerHTML=''
  if(s.type==='keyboard'||s.type==='custom'){
   const box=el('div','keys');(s.keys||[]).forEach(k=>{const n=el('div','key'+(k.pressed?' down':''),k.label);n.dataset.id=k.id;box.appendChild(n)});root.appendChild(box);
  }else if(s.type==='mouse'){
-  const m=el('div','mouse');(s.keys||[]).forEach(k=>{const n=el('div',k.pressed?'down':'');n.innerHTML=`<b>${k.label}</b><small>${k.dps} DPS</small>`;m.appendChild(n)});root.appendChild(m);
+  const m=el('div','mouse');(s.keys||[]).forEach(k=>{const n=el('div',k.pressed?'down':'');n.innerHTML=`<b>${k.label}</b><small>${k.dps} CPS</small>`;m.appendChild(n)});root.appendChild(m);
  }else if(s.type==='mouse-trajectory'){
   const b=el('div','trajectory');b.appendChild(el('i','dot'));root.appendChild(b);
  }else if(s.type.includes('stick')){

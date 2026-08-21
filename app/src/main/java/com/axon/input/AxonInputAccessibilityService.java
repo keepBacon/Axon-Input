@@ -269,7 +269,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         int dpsTarget = OverlayState.getDpsTargetKeyCode(this);
         if (dpsEnabled && dpsTarget == OverlayState.DPS_TARGET_NONE
                 && pressed && event.getRepeatCount() == 0) {
-            // 启用后第一次按键用于绑定，不计入 DPS。
+            // 启用后第一次按键用于绑定，不计入 CPS。
             OverlayState.setDpsTargetKeyCode(this, keyCode);
             dpsTarget = keyCode;
             if (dpsView != null) dpsView.setDpsValue(0);
@@ -335,8 +335,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         mainHandler.post(() -> {
             int nextButtons = (int) (packedStats & 0x3L);
             int changedButtons = keyPromptMouseButtons ^ nextButtons;
+            long now = SystemClock.uptimeMillis();
+            updateCpsMouseTarget(changedButtons, nextButtons, now);
             if (keyPromptView != null && OverlayState.isKeyPromptEnabled(this)) {
-                long now = SystemClock.uptimeMillis();
                 if ((changedButtons & 1) != 0) {
                     keyPromptView.updateMouseButton(NativeKeyEngine.MOUSE_LEFT, (nextButtons & 1) != 0, now);
                 }
@@ -352,6 +353,30 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                 trajectoryView.setMouseStats(packedStats);
             }
         });
+    }
+
+    private void updateCpsMouseTarget(int changedButtons, int nextButtons, long now) {
+        if (!OverlayState.isDpsEnabled(this)) return;
+        boolean leftPressed = (changedButtons & 1) != 0 && (nextButtons & 1) != 0;
+        boolean rightPressed = (changedButtons & 2) != 0 && (nextButtons & 2) != 0;
+        if (!leftPressed && !rightPressed) return;
+
+        int target = OverlayState.getDpsTargetKeyCode(this);
+        if (target == OverlayState.DPS_TARGET_NONE) {
+            int mouseTarget = leftPressed
+                    ? OverlayState.DPS_TARGET_MOUSE_LEFT
+                    : OverlayState.DPS_TARGET_MOUSE_RIGHT;
+            OverlayState.setDpsTargetKeyCode(this, mouseTarget);
+            dpsTracker.resetChannel(DpsTracker.TARGET);
+            if (dpsView != null) dpsView.setDpsValue(0);
+            return;
+        }
+
+        if ((target == OverlayState.DPS_TARGET_MOUSE_LEFT && leftPressed)
+                || (target == OverlayState.DPS_TARGET_MOUSE_RIGHT && rightPressed)) {
+            dpsTracker.record(DpsTracker.TARGET, now);
+            if (dpsView != null) pushDpsToViews(now);
+        }
     }
 
     @Override
@@ -643,7 +668,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private void applyOverlayVisibility() {
         // “隐藏后台”只影响最近任务卡片。
         // 悬浮层由各显示开关独立控制。
-        // 应用进入后台后按键、DPS 和手柄显示继续工作。
+        // 应用进入后台后按键、CPS 和手柄显示继续工作。
     }
 
     private void syncWindow(DisplayWindow window, boolean enabled) {
@@ -1288,9 +1313,14 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     }
 
     private boolean needsMouseMonitor() {
+        int target = OverlayState.getDpsTargetKeyCode(this);
+        boolean cpsNeedsMouse = OverlayState.isDpsEnabled(this)
+                && (target == OverlayState.DPS_TARGET_NONE
+                || target == OverlayState.DPS_TARGET_MOUSE_LEFT
+                || target == OverlayState.DPS_TARGET_MOUSE_RIGHT);
         return !OverlayState.isSensitivityEnabled(this)
                 && (OverlayState.isMouseEnabled(this) || OverlayState.isMouseTrajectoryEnabled(this)
-                || OverlayState.isKeyPromptEnabled(this));
+                || OverlayState.isKeyPromptEnabled(this) || cpsNeedsMouse);
     }
 
     private boolean needsGamepadMonitor() {

@@ -7,7 +7,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.widget.TextView;
 
-/** 轻量 DPS 文本悬浮层。 */
+/** 轻量 CPS 文本悬浮层。 */
 public final class DpsOverlayView extends TextView {
     public static final int DISPLAY_DPS = 30;
 
