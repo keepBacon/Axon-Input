@@ -47,6 +47,7 @@
     <string name="motion_size">缩放</string>
     <string name="motion_alpha">透明度</string>
     <string name="motion_none">无动效</string>
+    <string name="display_opacity_format">透明度 %1$d%%</string>
     <string name="global_html_switch_label">使用自定义 HTML 渲染</string>
     <string name="global_html_hint">开启后，导入的 HTML 会接管所有已启用悬浮组件的渲染。支持 HTML、CSS、SVG、Canvas 与 JavaScript，可自定义结构、文字、颜色和动画。</string>
     <string name="global_html_import">导入 HTML 文件</string>
@@ -62,8 +63,8 @@
     <string name="author_github">GitHub</string>
     <string name="author_bilibili">BiliBili</string>
     <string name="author_github_open_failed">无法打开 GitHub</string>
-    <string name="drag_switch_label">允许拖动悬浮组件</string>
-    <string name="auto_hide_label">应用退到后台时隐藏悬浮显示</string>
+    <string name="drag_switch_label">允许自由拖动悬浮组件</string>
+    <string name="auto_hide_label">隐藏后台</string>
     <string name="section_configuration">配置管理</string>
     <string name="config1_title">配置 1</string>
     <string name="config_save">保存当前配置</string>
@@ -135,4 +136,10 @@
     <string name="root_granted">Root 权限已授权</string>
     <string name="root_denied_open_accessibility">未获得 Root 权限，将打开系统无障碍设置</string>
     <string name="no_custom_keys">暂无已录制按键</string>
+    <string name="update_available_title">发现新版本</string>
+    <string name="update_version_message">当前版本：%1$s\n最新版本：%2$s</string>
+    <string name="update_now">立即更新</string>
+    <string name="update_later">稍后</string>
+    <string name="update_open_failed">无法打开更新页面</string>
+
 </resources>

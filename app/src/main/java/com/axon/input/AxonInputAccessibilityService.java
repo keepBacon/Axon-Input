@@ -2,6 +2,7 @@ package com.axon.input;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.hardware.input.InputManager;
@@ -12,6 +13,7 @@ import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 
@@ -46,6 +48,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private static final int GAMEPAD_SHOULDER_HEIGHT_DP = 86;
 
     private static volatile AxonInputAccessibilityService activeService;
+    private static volatile boolean appForeground;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -164,6 +167,16 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (Looper.myLooper() == Looper.getMainLooper()) service.applySavedState();
         else service.mainHandler.post(service::applySavedState);
     }
+
+    public static void setAppForeground(boolean foreground) {
+        appForeground = foreground;
+        AxonInputAccessibilityService service = activeService;
+        if (service == null) return;
+        Runnable action = service::applyOverlayVisibility;
+        if (Looper.myLooper() == Looper.getMainLooper()) action.run();
+        else service.mainHandler.post(action);
+    }
+
 
     /** Rebuilds lightweight overlay views so an explicit user-selected palette is applied immediately. */
     public static void refreshTheme() {
@@ -402,14 +415,12 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         DisplayWindow target = windowForView(source);
         if (target == null || !target.attached || target.params == null || target.view == null) return;
 
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
-        int maxX = Math.max(0, metrics.widthPixels - target.params.width);
-        int maxY = Math.max(0, metrics.heightPixels - target.params.height);
-
         int x = target.dragStartWindowX + Math.round(rawX - target.dragStartRawX);
         int y = target.dragStartWindowY + Math.round(rawY - target.dragStartRawY);
-        target.params.x = clamp(x, 0, maxX);
-        target.params.y = clamp(y, 0, maxY);
+        // Deliberately do not clamp to the visible frame. FLAG_LAYOUT_NO_LIMITS lets the
+        // user place the overlay at the screen edges or partially outside the display.
+        target.params.x = x;
+        target.params.y = y;
         windowManager.updateViewLayout(target.view, target.params);
     }
 
@@ -432,13 +443,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     public void onDragMove(KeyPromptOverlayView source, float rawX, float rawY) {
         if (!OverlayState.isDragEnabled(this) || windowManager == null || !keyPromptAttached
                 || keyPromptParams == null || keyPromptView == null) return;
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
-        int maxX = Math.max(0, metrics.widthPixels - keyPromptParams.width);
-        int maxY = Math.max(0, metrics.heightPixels - keyPromptParams.height);
         int x = keyPromptDragStartWindowX + Math.round(rawX - keyPromptDragStartRawX);
         int y = keyPromptDragStartWindowY + Math.round(rawY - keyPromptDragStartRawY);
-        keyPromptParams.x = clamp(x, 0, maxX);
-        keyPromptParams.y = clamp(y, 0, maxY);
+        keyPromptParams.x = x;
+        keyPromptParams.y = y;
         windowManager.updateViewLayout(keyPromptView, keyPromptParams);
     }
 
@@ -460,13 +468,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     public void onDragMove(MouseTrajectoryView source, float rawX, float rawY) {
         if (!OverlayState.isDragEnabled(this) || windowManager == null || !trajectoryAttached
                 || trajectoryParams == null || trajectoryView == null) return;
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
-        int maxX = Math.max(0, metrics.widthPixels - trajectoryParams.width);
-        int maxY = Math.max(0, metrics.heightPixels - trajectoryParams.height);
         int x = trajectoryDragStartWindowX + Math.round(rawX - trajectoryDragStartRawX);
         int y = trajectoryDragStartWindowY + Math.round(rawY - trajectoryDragStartRawY);
-        trajectoryParams.x = clamp(x, 0, maxX);
-        trajectoryParams.y = clamp(y, 0, maxY);
+        trajectoryParams.x = x;
+        trajectoryParams.y = y;
         windowManager.updateViewLayout(trajectoryView, trajectoryParams);
     }
 
@@ -491,13 +496,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (!OverlayState.isDragEnabled(this) || windowManager == null) return;
         GamepadWindow target = gamepadWindowForView(source);
         if (target == null || !target.attached || target.params == null || target.view == null) return;
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
-        int maxX = Math.max(0, metrics.widthPixels - target.params.width);
-        int maxY = Math.max(0, metrics.heightPixels - target.params.height);
         int x = target.dragStartWindowX + Math.round(rawX - target.dragStartRawX);
         int y = target.dragStartWindowY + Math.round(rawY - target.dragStartRawY);
-        target.params.x = clamp(x, 0, maxX);
-        target.params.y = clamp(y, 0, maxY);
+        target.params.x = x;
+        target.params.y = y;
         windowManager.updateViewLayout(target.view, target.params);
     }
 
@@ -505,6 +507,12 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     public void onDragEnd(GamepadOverlayView source) {
         GamepadWindow target = gamepadWindowForView(source);
         if (target != null) saveGamepadPosition(target);
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        OverlayState.endAppSession(this);
+        super.onTaskRemoved(rootIntent);
     }
 
     @Override
@@ -565,6 +573,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         syncGamepadWindow(faceWindow, OverlayState.isGamepadFaceEnabled(this));
         syncGamepadWindow(leftShoulderWindow, OverlayState.isGamepadLeftShoulderEnabled(this));
         syncGamepadWindow(rightShoulderWindow, OverlayState.isGamepadRightShoulderEnabled(this));
+        applyOverlayVisibility();
         refreshDpsTicker();
 
         boolean sensitivity = OverlayState.isSensitivityEnabled(this);
@@ -585,6 +594,25 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             if (needsGamepadMonitor()) startGamepadMonitor();
             else stopGamepadMonitor();
         }
+    }
+
+    private void applyOverlayVisibility() {
+        int visibility = OverlayState.isAutoHideBackground(this) && !appForeground
+                ? View.INVISIBLE : View.VISIBLE;
+        setVisibility(keyboardWindow.view, visibility);
+        setVisibility(customWindow.view, visibility);
+        setVisibility(mouseWindow.view, visibility);
+        setVisibility(keyPromptView, visibility);
+        setVisibility(trajectoryView, visibility);
+        setVisibility(leftStickWindow.view, visibility);
+        setVisibility(rightStickWindow.view, visibility);
+        setVisibility(faceWindow.view, visibility);
+        setVisibility(leftShoulderWindow.view, visibility);
+        setVisibility(rightShoulderWindow.view, visibility);
+    }
+
+    private static void setVisibility(View view, int visibility) {
+        if (view != null && view.getVisibility() != visibility) view.setVisibility(visibility);
     }
 
     private void syncWindow(DisplayWindow window, boolean enabled) {
@@ -626,6 +654,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (window.view == null) return;
         window.view.setDragEnabled(OverlayState.isDragEnabled(this));
         window.view.setDisplaySize(displaySizePercent(window.type));
+        window.view.setAlpha(OverlayState.getDisplayOpacity(this, window.type) / 100f);
         window.view.setAnimationMode(OverlayState.getMotionMode(this, window.type));
         if (window.type == KeyOverlayView.DISPLAY_KEYBOARD) {
             window.view.setKeyboardOptions(
@@ -652,6 +681,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
     private int windowFlags() {
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
         if (!OverlayState.isDragEnabled(this)) flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
@@ -780,6 +810,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (window.view == null) return;
         window.view.setDragEnabled(OverlayState.isDragEnabled(this));
         window.view.setDisplaySize(OverlayState.getGamepadDisplaySize(this, window.type));
+        window.view.setAlpha(OverlayState.getDisplayOpacity(this, window.type) / 100f);
         window.view.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
         if (window.type == GamepadOverlayView.DISPLAY_LEFT_STICK) {
             window.view.setStickShape(OverlayState.getGamepadLeftStickShape(this));
@@ -923,6 +954,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (keyPromptView != null) {
             keyPromptView.setDragEnabled(OverlayState.isDragEnabled(this));
             keyPromptView.setDisplaySize(OverlayState.getKeyPromptSize(this));
+            keyPromptView.setUserOpacity(OverlayState.getDisplayOpacity(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
             keyPromptView.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
             keyPromptView.animateIn();
         }
@@ -935,6 +967,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyPromptView.setDragListener(this);
         keyPromptView.setDragEnabled(OverlayState.isDragEnabled(this));
         keyPromptView.setDisplaySize(OverlayState.getKeyPromptSize(this));
+        keyPromptView.setUserOpacity(OverlayState.getDisplayOpacity(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
         keyPromptParams = new WindowManager.LayoutParams(
                 keyPromptWidthPx(), keyPromptHeightPx(),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -954,6 +987,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyPromptParams.flags = windowFlags();
         keyPromptView.setDragEnabled(OverlayState.isDragEnabled(this));
         keyPromptView.setDisplaySize(OverlayState.getKeyPromptSize(this));
+        keyPromptView.setUserOpacity(OverlayState.getDisplayOpacity(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
         keyPromptView.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
         applyKeyPromptPosition();
         windowManager.updateViewLayout(keyPromptView, keyPromptParams);
@@ -1026,6 +1060,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (trajectoryView != null) {
             trajectoryView.setDragEnabled(OverlayState.isDragEnabled(this));
             trajectoryView.setDisplaySize(OverlayState.getMouseTrajectorySize(this));
+            trajectoryView.setAlpha(OverlayState.getDisplayOpacity(this, MouseTrajectoryView.DISPLAY_TRAJECTORY) / 100f);
             trajectoryView.setDotSize(OverlayState.getMouseTrajectoryDotSize(this));
             trajectoryView.setButtonColorConfig(
                     OverlayState.isMouseTrajectoryLeftColorEnabled(this),
@@ -1044,6 +1079,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         trajectoryView = new MouseTrajectoryView(this);
         trajectoryView.setDragListener(this);
         trajectoryView.setDragEnabled(OverlayState.isDragEnabled(this));
+        trajectoryView.setAlpha(OverlayState.getDisplayOpacity(this, MouseTrajectoryView.DISPLAY_TRAJECTORY) / 100f);
         trajectoryParams = new WindowManager.LayoutParams(
                 trajectoryWidthPx(), trajectoryHeightPx(),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -1063,6 +1099,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         trajectoryParams.flags = windowFlags();
         trajectoryView.setDragEnabled(OverlayState.isDragEnabled(this));
         trajectoryView.setDisplaySize(OverlayState.getMouseTrajectorySize(this));
+        trajectoryView.setAlpha(OverlayState.getDisplayOpacity(this, MouseTrajectoryView.DISPLAY_TRAJECTORY) / 100f);
         trajectoryView.setDotSize(OverlayState.getMouseTrajectoryDotSize(this));
         trajectoryView.setButtonColorConfig(
                 OverlayState.isMouseTrajectoryLeftColorEnabled(this),

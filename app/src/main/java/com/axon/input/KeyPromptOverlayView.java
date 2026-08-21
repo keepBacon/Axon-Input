@@ -94,6 +94,8 @@ public final class KeyPromptOverlayView extends FrameLayout {
     private long lastFrameMs;
     private boolean framePosted;
     private float hostProgress;
+
+    private float userOpacity = 1f;
     private float hostVelocity;
     private float hostTarget = 1f;
     private Runnable exitCallback;
@@ -148,6 +150,11 @@ public final class KeyPromptOverlayView extends FrameLayout {
     public void setDragEnabled(boolean enabled) {
         dragEnabled = enabled;
         if (!enabled && dragging) finishDrag();
+    }
+
+    public void setUserOpacity(int percent) {
+        userOpacity = Math.max(0f, Math.min(1f, percent / 100f));
+        setAlpha(clamp01(hostProgress) * userOpacity);
     }
 
     public void animateIn() {
@@ -347,7 +354,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
             float scale = 0.94f + 0.06f * eased;
             setScaleX(scale);
             setScaleY(scale);
-            setAlpha(eased);
+            setAlpha(eased * userOpacity);
         }
 
         float revealIn = factor(dt, 18f);

@@ -17,7 +17,8 @@ import java.util.Set;
 
 /**
  * 运行配置的统一入口。
- * 普通设置存入 SessionPreferences，仅当前会话有效；密码授权等明确需要保留的数据使用独立持久存储。
+ * 普通设置保存在会话配置中：切到后台或进程被系统回收时仍保留，只有用户真正退出任务时才清除。
+ * 密码授权等明确需要长期保留的数据使用独立持久存储。
  */
 public final class OverlayState {
     public static final int MOTION_SIZE = 0;
@@ -27,6 +28,7 @@ public final class OverlayState {
     public static final int UI_THEME_BLACK = 1;
     public static final int SENSITIVITY_MODE_SHIZUKU = 0;
     public static final int SENSITIVITY_MODE_ROOT = 1;
+    private static final String SESSION_PREFS = "axon_input_session";
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_MOUSE_ENABLED = "mouse_enabled";
@@ -46,6 +48,11 @@ public final class OverlayState {
     private static final String KEY_KEY_PROMPT_SIZE = "key_prompt_size";
     private static final String KEY_MOUSE_TRAJECTORY_SIZE = "mouse_trajectory_size";
     private static final String KEY_MOUSE_TRAJECTORY_DOT_SIZE = "mouse_trajectory_dot_size";
+    private static final String KEY_KEYBOARD_OPACITY = "keyboard_opacity";
+    private static final String KEY_MOUSE_OPACITY = "mouse_opacity";
+    private static final String KEY_KEY_PROMPT_OPACITY = "key_prompt_opacity";
+    private static final String KEY_MOUSE_TRAJECTORY_OPACITY = "mouse_trajectory_opacity";
+    private static final String KEY_CUSTOM_OPACITY = "custom_opacity";
     private static final String KEY_MOUSE_TRAJECTORY_LEFT_COLOR_ENABLED = "mouse_trajectory_left_color_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_RIGHT_COLOR_ENABLED = "mouse_trajectory_right_color_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_LEFT_COLOR = "mouse_trajectory_left_color";
@@ -96,6 +103,11 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_FACE_SIZE = "gamepad_face_size";
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_SIZE = "gamepad_left_shoulder_size";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_SIZE = "gamepad_right_shoulder_size";
+    private static final String KEY_GAMEPAD_LEFT_STICK_OPACITY = "gamepad_left_stick_opacity";
+    private static final String KEY_GAMEPAD_RIGHT_STICK_OPACITY = "gamepad_right_stick_opacity";
+    private static final String KEY_GAMEPAD_FACE_OPACITY = "gamepad_face_opacity";
+    private static final String KEY_GAMEPAD_LEFT_SHOULDER_OPACITY = "gamepad_left_shoulder_opacity";
+    private static final String KEY_GAMEPAD_RIGHT_SHOULDER_OPACITY = "gamepad_right_shoulder_opacity";
     private static final String KEY_GAMEPAD_LEFT_STICK_POSITION_X = "gamepad_left_stick_position_x";
     private static final String KEY_GAMEPAD_LEFT_STICK_POSITION_Y = "gamepad_left_stick_position_y";
     private static final String KEY_GAMEPAD_RIGHT_STICK_POSITION_X = "gamepad_right_stick_position_x";
@@ -132,6 +144,7 @@ public final class OverlayState {
     private static final int MAX_COLUMNS = 8;
     private static final int MAX_CUSTOM_KEYS = 64;
     private static final int DEFAULT_SIZE = 100;
+    private static final int DEFAULT_OPACITY = 100;
     private static final int DEFAULT_MOUSE_TRAJECTORY_LEFT_COLOR = 0xffff3b30;
     private static final int DEFAULT_MOUSE_TRAJECTORY_RIGHT_COLOR = 0xff34c759;
     private static final int MIN_SIZE = 50;
@@ -277,13 +290,19 @@ public final class OverlayState {
         durablePrefs(context).edit().putBoolean(KEY_ENTRY_AUTHORIZED, authorized).apply();
     }
 
-    /**
-     * 新任务进入应用时调用。运行参数只存在内存中，因此不会自动继承上一次退出时的配置。
-     * 手动保存的“配置1”和密码授权不在这里清除。
-     */
+    /** 新建根任务时开始新会话；普通后台恢复不会走到这里。 */
     public static void beginAppSession(Context context) {
-        SessionPreferences.get().reset();
-        AxonInputAccessibilityService.refreshTheme();
+        prefs(context).edit().clear().commit();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    /**
+     * 用户真正退出根任务时清理本次运行配置。普通切后台、再次进入以及系统回收进程都不会触发。
+     * 手动保存的“配置1”、导入文件和密码授权不会被删除。
+     */
+    public static void endAppSession(Context context) {
+        prefs(context).edit().clear().commit();
+        AxonInputAccessibilityService.refreshActiveService();
     }
 
 
@@ -614,6 +633,35 @@ public final class OverlayState {
         AxonInputAccessibilityService.refreshActiveService();
     }
 
+    public static int getDisplayOpacity(Context context, int displayType) {
+        String key = opacityKey(displayType);
+        if (key == null) return DEFAULT_OPACITY;
+        return clampOpacity(prefs(context).getInt(key, DEFAULT_OPACITY));
+    }
+
+    public static void setDisplayOpacity(Context context, int displayType, int percent) {
+        String key = opacityKey(displayType);
+        if (key == null) return;
+        prefs(context).edit().putInt(key, clampOpacity(percent)).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    private static String opacityKey(int displayType) {
+        switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD: return KEY_KEYBOARD_OPACITY;
+            case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_OPACITY;
+            case KeyOverlayView.DISPLAY_MOUSE: return KEY_MOUSE_OPACITY;
+            case MouseTrajectoryView.DISPLAY_TRAJECTORY: return KEY_MOUSE_TRAJECTORY_OPACITY;
+            case GamepadOverlayView.DISPLAY_LEFT_STICK: return KEY_GAMEPAD_LEFT_STICK_OPACITY;
+            case GamepadOverlayView.DISPLAY_RIGHT_STICK: return KEY_GAMEPAD_RIGHT_STICK_OPACITY;
+            case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_OPACITY;
+            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_OPACITY;
+            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_OPACITY;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: return KEY_KEY_PROMPT_OPACITY;
+            default: return null;
+        }
+    }
+
     public static int getMotionMode(Context context, int displayType) {
         return clampMotionMode(prefs(context).getInt(motionModeKey(displayType), MOTION_SIZE));
     }
@@ -698,25 +746,25 @@ public final class OverlayState {
         SharedPreferences p = prefs(context);
         switch (displayType) {
             case KeyOverlayView.DISPLAY_KEYBOARD:
-                return clampPercent(p.getInt(KEY_KEYBOARD_POSITION_X, DEFAULT_KEYBOARD_X));
+                return clampFreePositionPercent(p.getInt(KEY_KEYBOARD_POSITION_X, DEFAULT_KEYBOARD_X));
             case KeyOverlayView.DISPLAY_CUSTOM:
-                return clampPercent(p.getInt(KEY_CUSTOM_POSITION_X, DEFAULT_CUSTOM_X));
+                return clampFreePositionPercent(p.getInt(KEY_CUSTOM_POSITION_X, DEFAULT_CUSTOM_X));
             case KeyOverlayView.DISPLAY_MOUSE:
-                return clampPercent(p.getInt(KEY_MOUSE_POSITION_X, DEFAULT_MOUSE_X));
+                return clampFreePositionPercent(p.getInt(KEY_MOUSE_POSITION_X, DEFAULT_MOUSE_X));
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT:
-                return clampPercent(p.getInt(KEY_KEY_PROMPT_POSITION_X, DEFAULT_KEY_PROMPT_X));
+                return clampFreePositionPercent(p.getInt(KEY_KEY_PROMPT_POSITION_X, DEFAULT_KEY_PROMPT_X));
             case MouseTrajectoryView.DISPLAY_TRAJECTORY:
-                return clampPercent(p.getInt(KEY_MOUSE_TRAJECTORY_POSITION_X, DEFAULT_MOUSE_TRAJECTORY_X));
+                return clampFreePositionPercent(p.getInt(KEY_MOUSE_TRAJECTORY_POSITION_X, DEFAULT_MOUSE_TRAJECTORY_X));
             case GamepadOverlayView.DISPLAY_LEFT_STICK:
-                return clampPercent(p.getInt(KEY_GAMEPAD_LEFT_STICK_POSITION_X, DEFAULT_GAMEPAD_LEFT_STICK_X));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_STICK_POSITION_X, DEFAULT_GAMEPAD_LEFT_STICK_X));
             case GamepadOverlayView.DISPLAY_RIGHT_STICK:
-                return clampPercent(p.getInt(KEY_GAMEPAD_RIGHT_STICK_POSITION_X, DEFAULT_GAMEPAD_RIGHT_STICK_X));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_RIGHT_STICK_POSITION_X, DEFAULT_GAMEPAD_RIGHT_STICK_X));
             case GamepadOverlayView.DISPLAY_FACE:
-                return clampPercent(p.getInt(KEY_GAMEPAD_FACE_POSITION_X, DEFAULT_GAMEPAD_FACE_X));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_FACE_POSITION_X, DEFAULT_GAMEPAD_FACE_X));
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER:
-                return clampPercent(p.getInt(KEY_GAMEPAD_LEFT_SHOULDER_POSITION_X, DEFAULT_GAMEPAD_LEFT_SHOULDER_X));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_SHOULDER_POSITION_X, DEFAULT_GAMEPAD_LEFT_SHOULDER_X));
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER:
-                return clampPercent(p.getInt(KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_X, DEFAULT_GAMEPAD_RIGHT_SHOULDER_X));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_X, DEFAULT_GAMEPAD_RIGHT_SHOULDER_X));
             default:
                 return 50;
         }
@@ -726,25 +774,25 @@ public final class OverlayState {
         SharedPreferences p = prefs(context);
         switch (displayType) {
             case KeyOverlayView.DISPLAY_KEYBOARD:
-                return clampPercent(p.getInt(KEY_KEYBOARD_POSITION_Y, DEFAULT_KEYBOARD_Y));
+                return clampFreePositionPercent(p.getInt(KEY_KEYBOARD_POSITION_Y, DEFAULT_KEYBOARD_Y));
             case KeyOverlayView.DISPLAY_CUSTOM:
-                return clampPercent(p.getInt(KEY_CUSTOM_POSITION_Y, DEFAULT_CUSTOM_Y));
+                return clampFreePositionPercent(p.getInt(KEY_CUSTOM_POSITION_Y, DEFAULT_CUSTOM_Y));
             case KeyOverlayView.DISPLAY_MOUSE:
-                return clampPercent(p.getInt(KEY_MOUSE_POSITION_Y, DEFAULT_MOUSE_Y));
+                return clampFreePositionPercent(p.getInt(KEY_MOUSE_POSITION_Y, DEFAULT_MOUSE_Y));
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT:
-                return clampPercent(p.getInt(KEY_KEY_PROMPT_POSITION_Y, DEFAULT_KEY_PROMPT_Y));
+                return clampFreePositionPercent(p.getInt(KEY_KEY_PROMPT_POSITION_Y, DEFAULT_KEY_PROMPT_Y));
             case MouseTrajectoryView.DISPLAY_TRAJECTORY:
-                return clampPercent(p.getInt(KEY_MOUSE_TRAJECTORY_POSITION_Y, DEFAULT_MOUSE_TRAJECTORY_Y));
+                return clampFreePositionPercent(p.getInt(KEY_MOUSE_TRAJECTORY_POSITION_Y, DEFAULT_MOUSE_TRAJECTORY_Y));
             case GamepadOverlayView.DISPLAY_LEFT_STICK:
-                return clampPercent(p.getInt(KEY_GAMEPAD_LEFT_STICK_POSITION_Y, DEFAULT_GAMEPAD_LEFT_STICK_Y));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_STICK_POSITION_Y, DEFAULT_GAMEPAD_LEFT_STICK_Y));
             case GamepadOverlayView.DISPLAY_RIGHT_STICK:
-                return clampPercent(p.getInt(KEY_GAMEPAD_RIGHT_STICK_POSITION_Y, DEFAULT_GAMEPAD_RIGHT_STICK_Y));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_RIGHT_STICK_POSITION_Y, DEFAULT_GAMEPAD_RIGHT_STICK_Y));
             case GamepadOverlayView.DISPLAY_FACE:
-                return clampPercent(p.getInt(KEY_GAMEPAD_FACE_POSITION_Y, DEFAULT_GAMEPAD_FACE_Y));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_FACE_POSITION_Y, DEFAULT_GAMEPAD_FACE_Y));
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER:
-                return clampPercent(p.getInt(KEY_GAMEPAD_LEFT_SHOULDER_POSITION_Y, DEFAULT_GAMEPAD_LEFT_SHOULDER_Y));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_SHOULDER_POSITION_Y, DEFAULT_GAMEPAD_LEFT_SHOULDER_Y));
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER:
-                return clampPercent(p.getInt(KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_Y, DEFAULT_GAMEPAD_RIGHT_SHOULDER_Y));
+                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_Y, DEFAULT_GAMEPAD_RIGHT_SHOULDER_Y));
             default:
                 return 50;
         }
@@ -799,13 +847,17 @@ public final class OverlayState {
                 return;
         }
         prefs(context).edit()
-                .putInt(xKey, clampPercent(xPercent))
-                .putInt(yKey, clampPercent(yPercent))
+                .putInt(xKey, clampFreePositionPercent(xPercent))
+                .putInt(yKey, clampFreePositionPercent(yPercent))
                 .apply();
     }
 
     private static int clampSensitivity(int value) {
         return Math.max(MIN_SENSITIVITY, Math.min(MAX_SENSITIVITY, value));
+    }
+
+    private static int clampOpacity(int value) {
+        return Math.max(0, Math.min(100, value));
     }
 
     private static int clampSize(int value) {
@@ -814,6 +866,15 @@ public final class OverlayState {
 
     private static int clampPercent(int value) {
         return Math.max(0, Math.min(100, value));
+    }
+
+    /**
+     * Drag positions may be outside the visible frame. A wide sanity range prevents a
+     * corrupted/imported value from creating pathological WindowManager coordinates while
+     * still allowing the overlay to be placed anywhere on or around the physical screen.
+     */
+    private static int clampFreePositionPercent(int value) {
+        return Math.max(-1000, Math.min(1000, value));
     }
 
     private static int clampColumns(int value) {
@@ -869,7 +930,7 @@ public final class OverlayState {
     }
 
     private static SharedPreferences prefs(Context context) {
-        return SessionPreferences.get();
+        return context.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE);
     }
 
     private static SharedPreferences durablePrefs(Context context) {

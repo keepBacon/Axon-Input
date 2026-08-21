@@ -16,7 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Set;
 
-/** 显式保存、加载、导出、导入用户配置。普通运行参数不会自动持久化。 */
+/** 显式保存、加载、导出、导入用户配置。运行参数会保留到当前应用任务真正退出。 */
 public final class ConfigManager {
     private static final String FORMAT = "KeyDisplayConfig";
     private static final int VERSION = 1;

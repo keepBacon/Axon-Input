@@ -324,14 +324,6 @@ KeyDisplay.on('update',e=>{
         setContentView(scroll);
     }
 
-    @Override
-    protected void onStop() {
-        boolean removeTask = OverlayState.isAutoHideBackground(this)
-                && !isChangingConfigurations()
-                && !isFinishing();
-        super.onStop();
-        if (removeTask) finishAndRemoveTask();
-    }
 
     private void addTitle(LinearLayout root, String text) {
         TextView view = new TextView(this);

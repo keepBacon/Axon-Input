@@ -1,4 +1,4 @@
-Axon Input 版本：1.0
+Axon Input 版本：1.1
 
 Axon Input 代码结构说明
 
@@ -9,23 +9,20 @@ Axon Input 代码结构说明
 
 1. MainActivity.java
 负责设置界面、密码弹窗、文件选择器和权限入口。
-新的根任务进入时调用 OverlayState.beginAppSession()，普通配置恢复默认。
+新的根任务进入时调用 OverlayState.beginAppSession() 清理上一任务；Home/普通后台恢复不会重新创建根任务，因此配置保留。
+所有悬浮显示的透明度调试由统一 OpacityControl 生成，避免每个模块重复实现监听逻辑。
 已经通过密码验证后，每次进入都会自动执行 ensureAccessibility()。
 
 2. OverlayState.java
 所有设置的统一读写接口。界面和无障碍服务都只通过这里读取配置。
-普通运行设置不会直接使用磁盘 SharedPreferences。
+运行配置保存在 axon_input_session SharedPreferences：仅低频设置操作写入磁盘，高频输入与绘制路径只读取内存缓存。
+任务真正退出/从后台移除时调用 endAppSession() 清理；系统回收进程或普通切后台不会误删。
 
-3. SessionPreferences.java
-内存版 SharedPreferences。
-开关、位置、大小、颜色、灵敏度等仅当前会话有效。
-应用重新进入新任务时 reset()；进程被系统结束后内存也自然消失。
-
-4. ConfigManager.java
+3. ConfigManager.java
 “配置1”的显式保存、加载、导出、导入。
 只有用户主动操作时才写文件。密码授权和临时录入状态不会进入配置文件。
 
-5. AxonInputAccessibilityService.java
+4. AxonInputAccessibilityService.java
 全局输入和悬浮窗的中心调度器。
 - 键盘 KeyEvent
 - 手柄 Android 语义按键
@@ -33,48 +30,48 @@ Axon Input 代码结构说明
 - 各悬浮窗创建、更新、移除
 onKeyEvent() 始终返回 false，不消费游戏原始按键。
 
-6. GamepadButtons.java
+5. GamepadButtons.java
 手柄数字键的语义映射集中在一个文件。
 A/B/X/Y 使用 Android KeyEvent 语义；摇杆和扳机继续使用原始输入。
 这样 X/Y 修复不会散落在多个 View 或 native 文件中。
 
-7. MouseInputMonitor.java / GamepadInputMonitor.java
+6. MouseInputMonitor.java / GamepadInputMonitor.java
 只负责读取底层输入并上报，不负责绘制。
 GamepadInputMonitor 不独占设备，普通显示模式不会阻止游戏收到手柄输入。
 
-8. SensitivityProxyController.java + native/sensitivityproxy.cpp
+7. SensitivityProxyController.java + native/sensitivityproxy.cpp
 只处理灵敏度超频。
 免 Root 通过 Shizuku，Root 通过 su；持续输入变换在 native 进程完成。
 
-9. KeyOverlayView / NativeKeyCanvasView
+8. KeyOverlayView / NativeKeyCanvasView
 键盘、鼠标、自定义键位的窗口容器和原生绘制。
 每个键有独立动画状态。
 
-10. MouseTrajectoryView.java
+9. MouseTrajectoryView.java
 只保存轨迹圆点的目标、速度和位置。
 动画稳定后停止请求下一帧。
 
-11. GamepadOverlayView.java
+10. GamepadOverlayView.java
 左/右摇杆、ABXY、左/右肩键的原生绘制和动效。
 不读取设备文件。
 
-12. KeyPromptOverlayView.java
+11. KeyPromptOverlayView.java
 最近按键提示的适配实现。
 维护最近按键、CPS、释放停留和位置让位；HTML 开启时把同一状态交给 HTML。
 
-13. GlobalHtmlWebView.java
+12. GlobalHtmlWebView.java
 HTML 自定义显示层，API v9。
 - 完整 state/palette/runtime/settings
 - 细粒度 key/mouse/pointer/gamepad 事件
 - 高频 pointer/gamepad 按显示帧合并并只发送局部状态
 - HTML 关闭时不创建 WebView
 
-14. HtmlGuideActivity.java
+13. HtmlGuideActivity.java
 应用内 HTML 文档，示例应与 GlobalHtmlWebView API 同步。
 
 推荐阅读顺序
 MainActivity
--> OverlayState / SessionPreferences
+-> OverlayState
 -> AxonInputAccessibilityService
 -> 各 OverlayView
 -> GlobalHtmlWebView

@@ -18,6 +18,7 @@ import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.util.SparseArray;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
@@ -54,6 +55,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private static final int MAX_HTML_BYTES = 2 * 1024 * 1024;
     private static final int SIZE_MIN = 50;
     private static final int SIZE_MAX = 150;
+    private static final int OPACITY_MAX = 100;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -136,6 +138,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private TextView columnsLabel;
     private SeekBar columnsSeekBar;
     private final Spinner[] motionSpinners = new Spinner[4];
+    private final SparseArray<OpacityControl> opacityControls = new SparseArray<>();
     private Switch globalHtmlSwitch;
     private Button globalHtmlImportButton;
     private TextView globalHtmlStatusText;
@@ -143,7 +146,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private boolean internalChange;
     private boolean waitingForShizuku;
-    private boolean suppressBackgroundRemoval;
 
     private final Runnable sensitivityStatusTicker = new Runnable() {
         @Override
@@ -160,7 +162,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        // 只有新的根任务才开始新会话。旋转屏幕、recreate() 不会误清当前设置。
+        // 只有真正的新根任务才清理上一次运行配置；Home/后台后重新进入不会触发。
         if (savedInstanceState == null && isTaskRoot()) OverlayState.beginAppSession(this);
 
         setTheme(OverlayState.getUiTheme(this) == OverlayState.UI_THEME_BLACK
@@ -217,6 +219,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardDetails.addView(keyboardSizeLabel, supportingParams(0));
         keyboardSizeSeekBar = createSizeSeekBar();
         keyboardDetails.addView(keyboardSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD);
         spaceDisplaySwitch = createSwitch(R.string.space_display_switch);
         spaceDisplaySwitch.setTextSize(14f);
         keyboardDetails.addView(spaceDisplaySwitch, switchParams(dp(2)));
@@ -232,6 +235,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         mouseDetails.addView(mouseSizeLabel, supportingParams(0));
         mouseSizeSeekBar = createSizeSeekBar();
         mouseDetails.addView(mouseSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(mouseDetails, KeyOverlayView.DISPLAY_MOUSE);
         addMotionControls(mouseDetails, KeyOverlayView.DISPLAY_MOUSE, R.string.mouse_motion_label);
         root.addView(createFeatureGroup(mouseSwitch, mouseDetails), contentParams(dp(10)));
 
@@ -241,6 +245,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyPromptDetails.addView(keyPromptSizeLabel, supportingParams(0));
         keyPromptSizeSeekBar = createSizeSeekBar();
         keyPromptDetails.addView(keyPromptSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(keyPromptDetails, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
         TextView keyPromptHint = createSupportingText();
         keyPromptHint.setText(R.string.key_prompt_hint);
         keyPromptDetails.addView(keyPromptHint, supportingParams(dp(2)));
@@ -252,6 +257,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         mouseTrajectoryDetails.addView(mouseTrajectorySizeLabel, supportingParams(0));
         mouseTrajectorySizeSeekBar = createSizeSeekBar();
         mouseTrajectoryDetails.addView(mouseTrajectorySizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(mouseTrajectoryDetails, MouseTrajectoryView.DISPLAY_TRAJECTORY);
         mouseTrajectoryDotSizeLabel = createLabel();
         mouseTrajectoryDetails.addView(mouseTrajectoryDotSizeLabel, supportingParams(dp(2)));
         mouseTrajectoryDotSizeSeekBar = createSizeSeekBar();
@@ -276,6 +282,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         customDetails.addView(customSizeLabel, supportingParams(0));
         customSizeSeekBar = createSizeSeekBar();
         customDetails.addView(customSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(customDetails, KeyOverlayView.DISPLAY_CUSTOM);
         addMotionControls(customDetails, KeyOverlayView.DISPLAY_CUSTOM, R.string.custom_motion_label);
 
         captureSwitch = createSwitch(R.string.custom_capture_label);
@@ -303,6 +310,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadLeftStickDetails.addView(gamepadLeftStickSizeLabel, supportingParams(0));
         gamepadLeftStickSizeSeekBar = createSizeSeekBar();
         gamepadLeftStickDetails.addView(gamepadLeftStickSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(gamepadLeftStickDetails, GamepadOverlayView.DISPLAY_LEFT_STICK);
         gamepadLeftStickDotSizeLabel = createLabel();
         gamepadLeftStickDetails.addView(gamepadLeftStickDotSizeLabel, supportingParams(dp(2)));
         gamepadLeftStickDotSizeSeekBar = createSizeSeekBar();
@@ -318,6 +326,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadRightStickDetails.addView(gamepadRightStickSizeLabel, supportingParams(0));
         gamepadRightStickSizeSeekBar = createSizeSeekBar();
         gamepadRightStickDetails.addView(gamepadRightStickSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(gamepadRightStickDetails, GamepadOverlayView.DISPLAY_RIGHT_STICK);
         gamepadRightStickDotSizeLabel = createLabel();
         gamepadRightStickDetails.addView(gamepadRightStickDotSizeLabel, supportingParams(dp(2)));
         gamepadRightStickDotSizeSeekBar = createSizeSeekBar();
@@ -333,6 +342,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadFaceDetails.addView(gamepadFaceSizeLabel, supportingParams(0));
         gamepadFaceSizeSeekBar = createSizeSeekBar();
         gamepadFaceDetails.addView(gamepadFaceSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(gamepadFaceDetails, GamepadOverlayView.DISPLAY_FACE);
         gamepadFaceReverseSwitch = createSwitch(R.string.gamepad_face_reverse);
         gamepadFaceReverseSwitch.setTextSize(14f);
         gamepadFaceDetails.addView(gamepadFaceReverseSwitch, switchParams(dp(2)));
@@ -359,6 +369,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadLeftShoulderDetails.addView(gamepadLeftShoulderSizeLabel, supportingParams(0));
         gamepadLeftShoulderSizeSeekBar = createSizeSeekBar();
         gamepadLeftShoulderDetails.addView(gamepadLeftShoulderSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(gamepadLeftShoulderDetails, GamepadOverlayView.DISPLAY_LEFT_SHOULDER);
         gamepadL2ProgressSwitch = createSwitch(R.string.gamepad_l2_progress);
         gamepadL2ProgressSwitch.setTextSize(14f);
         gamepadLeftShoulderDetails.addView(gamepadL2ProgressSwitch, switchParams(dp(2)));
@@ -373,6 +384,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadRightShoulderDetails.addView(gamepadRightShoulderSizeLabel, supportingParams(0));
         gamepadRightShoulderSizeSeekBar = createSizeSeekBar();
         gamepadRightShoulderDetails.addView(gamepadRightShoulderSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(gamepadRightShoulderDetails, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
         gamepadR2ProgressSwitch = createSwitch(R.string.gamepad_r2_progress);
         gamepadR2ProgressSwitch.setTextSize(14f);
         gamepadRightShoulderDetails.addView(gamepadR2ProgressSwitch, switchParams(dp(2)));
@@ -451,7 +463,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         htmlGuideLink.setPaintFlags(htmlGuideLink.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
         htmlGuideLink.setPadding(dp(4), dp(10), dp(4), dp(10));
         htmlGuideLink.setOnClickListener(v -> {
-            suppressBackgroundRemoval = true;
             startActivity(new Intent(MainActivity.this, HtmlGuideActivity.class));
         });
         root.addView(htmlGuideLink, contentParams(0));
@@ -779,12 +790,14 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     @Override
     protected void onStop() {
         ShizukuBridge.removeListener(this);
-        boolean removeTask = OverlayState.isAutoHideBackground(this)
-                && !suppressBackgroundRemoval
-                && !isChangingConfigurations()
-                && !isFinishing();
         super.onStop();
-        if (removeTask) finishAndRemoveTask();
+    }
+
+    @Override
+    protected void onDestroy() {
+        boolean endSession = isTaskRoot() && isFinishing() && !isChangingConfigurations();
+        if (endSession) OverlayState.endAppSession(this);
+        super.onDestroy();
     }
 
     @Override
@@ -796,8 +809,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     @Override
     protected void onResume() {
         super.onResume();
-        // External permission/settings transitions are complete once this screen is resumed.
-        suppressBackgroundRemoval = false;
 
         internalChange = true;
         themeSpinner.setSelection(OverlayState.getUiTheme(this) == OverlayState.UI_THEME_BLACK ? 1 : 0, false);
@@ -906,6 +917,16 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         syncMotionUi(KeyOverlayView.DISPLAY_KEYBOARD);
         syncMotionUi(KeyOverlayView.DISPLAY_MOUSE);
         syncMotionUi(KeyOverlayView.DISPLAY_CUSTOM);
+        syncOpacityUi(KeyOverlayView.DISPLAY_KEYBOARD);
+        syncOpacityUi(KeyOverlayView.DISPLAY_MOUSE);
+        syncOpacityUi(KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
+        syncOpacityUi(MouseTrajectoryView.DISPLAY_TRAJECTORY);
+        syncOpacityUi(KeyOverlayView.DISPLAY_CUSTOM);
+        syncOpacityUi(GamepadOverlayView.DISPLAY_LEFT_STICK);
+        syncOpacityUi(GamepadOverlayView.DISPLAY_RIGHT_STICK);
+        syncOpacityUi(GamepadOverlayView.DISPLAY_FACE);
+        syncOpacityUi(GamepadOverlayView.DISPLAY_LEFT_SHOULDER);
+        syncOpacityUi(GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
         setDetailsVisible(keyboardDetails, displaySwitch.isChecked());
         setDetailsVisible(mouseDetails, mouseSwitch.isChecked());
         setDetailsVisible(keyPromptDetails, keyPromptSwitch.isChecked());
@@ -928,7 +949,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        suppressBackgroundRemoval = false;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
         Uri uri = data.getData();
@@ -984,7 +1004,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     public void onShizukuPermissionResult(int requestCode, boolean granted) {
         if (requestCode != SHIZUKU_REQUEST_CODE) return;
         waitingForShizuku = false;
-        suppressBackgroundRemoval = false;
         if (granted) {
             if (isAccessibilityServiceEnabled()) AxonInputAccessibilityService.refreshActiveService();
             else grantAccessibilityWithShizuku();
@@ -1031,10 +1050,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         if (!ShizukuBridge.hasPermission()) {
             waitingForShizuku = true;
-            suppressBackgroundRemoval = true;
             if (!ShizukuBridge.requestPermission(SHIZUKU_REQUEST_CODE)) {
                 waitingForShizuku = false;
-                suppressBackgroundRemoval = false;
                 openAccessibilitySettings();
             }
             return;
@@ -1054,10 +1071,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         }
         if (!ShizukuBridge.hasPermission()) {
             waitingForShizuku = true;
-            suppressBackgroundRemoval = true;
             if (!ShizukuBridge.requestPermission(SHIZUKU_REQUEST_CODE)) {
                 waitingForShizuku = false;
-                suppressBackgroundRemoval = false;
             }
             return;
         }
@@ -1105,8 +1120,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 + "else case \":$CURRENT:\" in *\":$SERVICE:\"*) NEW=\"$CURRENT\";; *) NEW=\"$CURRENT:$SERVICE\";; esac; fi; "
                 + "settings put secure enabled_accessibility_services \"$NEW\" && "
                 + "settings put secure accessibility_enabled 1";
-
-        suppressBackgroundRemoval = true;
         new Thread(() -> {
             boolean success;
             try {
@@ -1116,7 +1129,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             }
             final boolean result = success;
             mainHandler.post(() -> {
-                suppressBackgroundRemoval = false;
                 if (isFinishing()) return;
                 if (result) {
                     AxonInputAccessibilityService.refreshActiveService();
@@ -1213,7 +1225,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private void openConfigExportPicker() {
-        suppressBackgroundRemoval = true;
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("application/json");
@@ -1222,7 +1233,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private void openConfigImportPicker() {
-        suppressBackgroundRemoval = true;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("application/json");
@@ -1234,6 +1244,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         if (isFinishing()) return;
         if (OverlayState.isEntryAuthorized(this)) {
             mainHandler.post(this::ensureAccessibility);
+            mainHandler.post(() -> UpdateChecker.check(this));
             return;
         }
 
@@ -1261,6 +1272,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                     input.setError(null);
                     dialog.dismiss();
                     mainHandler.post(MainActivity.this::ensureAccessibility);
+                    mainHandler.post(() -> UpdateChecker.check(MainActivity.this));
                 } else {
                     input.setError(getString(R.string.password_wrong));
                     input.selectAll();
@@ -1313,9 +1325,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private void openAccessibilitySettings() {
-        // Do not remove this task for the temporary trip to system settings; otherwise the
-        // first-time permission flow cannot return here to finish setup.
-        suppressBackgroundRemoval = true;
         Toast.makeText(this, R.string.accessibility_hint, Toast.LENGTH_SHORT).show();
         startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
     }
@@ -1380,7 +1389,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private void openGlobalHtmlPicker() {
-        suppressBackgroundRemoval = true;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/html");
@@ -1524,6 +1532,46 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             dialog.dismiss();
         }));
         dialog.show();
+    }
+
+    private static final class OpacityControl {
+        final TextView label;
+        final SeekBar seekBar;
+
+        OpacityControl(TextView label, SeekBar seekBar) {
+            this.label = label;
+            this.seekBar = seekBar;
+        }
+    }
+
+    private void addOpacityControl(LinearLayout parent, int displayType) {
+        TextView label = createLabel();
+        SeekBar seekBar = new SeekBar(this);
+        seekBar.setMax(OPACITY_MAX);
+        seekBar.setPadding(0, 0, 0, 0);
+        opacityControls.put(displayType, new OpacityControl(label, seekBar));
+        parent.addView(label, supportingParams(dp(2)));
+        parent.addView(seekBar, seekBarLayoutParams(dp(4)));
+        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                label.setText(getString(R.string.display_opacity_format, progress));
+                if (fromUser && !internalChange) {
+                    OverlayState.setDisplayOpacity(MainActivity.this, displayType, progress);
+                }
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+    }
+
+    private void syncOpacityUi(int displayType) {
+        OpacityControl control = opacityControls.get(displayType);
+        if (control == null) return;
+        int opacity = OverlayState.getDisplayOpacity(this, displayType);
+        control.seekBar.setProgress(opacity);
+        control.label.setText(getString(R.string.display_opacity_format, opacity));
     }
 
     private TextView createTitle() {
