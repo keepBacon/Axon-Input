@@ -66,14 +66,42 @@ bool axisInfo(int fd, int code, input_absinfo* out) {
     return ioctl(fd, EVIOCGABS(code), out) >= 0 && out->maximum > out->minimum;
 }
 
-bool axisLooksCentered(const input_absinfo& info) {
+int axisCenterScore(const input_absinfo& info) {
     long long range = static_cast<long long>(info.maximum) - info.minimum;
-    if (range <= 0) return false;
+    if (range <= 0) return 1000000;
     long long center = (static_cast<long long>(info.maximum) + info.minimum) / 2;
-    long long minSide = center - info.minimum;
-    long long maxSide = info.maximum - center;
-    long long balance = minSide < maxSide ? minSide : maxSide;
-    return balance * 100 >= range * 35;
+    long long half = range / 2;
+    if (half <= 0) return 1000000;
+    long long distance = info.value >= center ? info.value - center : center - info.value;
+    return static_cast<int>((distance * 1000LL) / half);
+}
+
+bool axisLooksCentered(const input_absinfo& info) {
+    int score = axisCenterScore(info);
+    long long range = static_cast<long long>(info.maximum) - info.minimum;
+    long long tolerance = range / 5;
+    if (info.flat > 0 && static_cast<long long>(info.flat) * 2 > tolerance) {
+        tolerance = static_cast<long long>(info.flat) * 2;
+    }
+    long long center = (static_cast<long long>(info.maximum) + info.minimum) / 2;
+    long long distance = info.value >= center ? info.value - center : center - info.value;
+    return score <= 450 || distance <= tolerance;
+}
+
+bool axisCrossesZero(const input_absinfo& info) {
+    return info.minimum < 0 && info.maximum > 0;
+}
+
+bool axisIsOneSided(const input_absinfo& info) {
+    return info.minimum >= 0 || info.maximum <= 0;
+}
+
+bool triggerRestAtMax(const input_absinfo& info) {
+    long long toMin = static_cast<long long>(info.value) - info.minimum;
+    long long toMax = static_cast<long long>(info.maximum) - info.value;
+    if (toMin < 0) toMin = -toMin;
+    if (toMax < 0) toMax = -toMax;
+    return toMax < toMin;
 }
 
 int mapAxis1000(const input_absinfo& info, int value) {
@@ -99,24 +127,26 @@ int mapAxis1000(const input_absinfo& info, int value) {
     return out;
 }
 
-int mapTrigger1000(const input_absinfo& info, int value) {
+int mapTrigger1000(const input_absinfo& info, int value, bool restAtMax) {
     if (info.maximum <= info.minimum) return 0;
-    long long num = static_cast<long long>(value - info.minimum) * 1000LL;
     long long den = static_cast<long long>(info.maximum) - info.minimum;
+    long long num = restAtMax
+            ? static_cast<long long>(info.maximum - value) * 1000LL
+            : static_cast<long long>(value - info.minimum) * 1000LL;
     long long out = den ? num / den : 0;
     if (out < 0) out = 0;
     if (out > 1000) out = 1000;
     return static_cast<int>(out);
 }
 
-int buttonIndex(int code) {
+int buttonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
     switch (code) {
         case BTN_SOUTH: return 0;
         case BTN_EAST: return 1;
-        case BTN_C: return 2;
+        case BTN_C: return hasStandardWest ? -1 : 2;
         case BTN_NORTH: return 3;
         case BTN_WEST: return 4;
-        case BTN_Z: return 5;
+        case BTN_Z: return hasStandardEast ? -1 : 5;
         case BTN_TL: return 6;
         case BTN_TR: return 7;
         case BTN_TL2: return 8;
@@ -145,6 +175,14 @@ struct Device {
     int rightYCode = -1;
     int triggerLCode = -1;
     int triggerRCode = -1;
+    bool triggerLRestAtMax = false;
+    bool triggerRRestAtMax = false;
+    int analogLt = 0;
+    int analogRt = 0;
+    bool digitalLt = false;
+    bool digitalRt = false;
+    bool hasStandardEast = false;
+    bool hasStandardWest = false;
     GamepadState state{};
     GamepadState emitted{};
     bool emittedOnce = false;
@@ -166,33 +204,82 @@ bool selectAxes(int fd, Device* d) {
     bool hasRz = axisInfo(fd, ABS_RZ, &rz);
     bool hasRx = axisInfo(fd, ABS_RX, &rx);
     bool hasRy = axisInfo(fd, ABS_RY, &ry);
-    if (hasZ && hasRz && axisLooksCentered(z) && axisLooksCentered(rz)) {
-        d->rightXCode = ABS_Z;
-        d->rightYCode = ABS_RZ;
-        d->rightX = z;
-        d->rightY = rz;
-    } else if (hasRx && hasRy && axisLooksCentered(rx) && axisLooksCentered(ry)) {
+
+    // 优先按轴范围判断。RX/RY 为有符号摇杆，Z/RZ 为单向扳机时直接固定映射。
+    bool rrSignedPair = hasRx && hasRy && axisCrossesZero(rx) && axisCrossesZero(ry);
+    bool zrTriggerPair = hasZ && hasRz && axisIsOneSided(z) && axisIsOneSided(rz);
+    int zrScore = (hasZ && hasRz) ? axisCenterScore(z) + axisCenterScore(rz) : 1000000;
+    int rrScore = (hasRx && hasRy) ? axisCenterScore(rx) + axisCenterScore(ry) : 1000000;
+    bool zrCentered = hasZ && hasRz && axisLooksCentered(z) && axisLooksCentered(rz);
+    bool rrCentered = hasRx && hasRy && axisLooksCentered(rx) && axisLooksCentered(ry);
+    if (rrSignedPair && zrTriggerPair) {
         d->rightXCode = ABS_RX;
         d->rightYCode = ABS_RY;
         d->rightX = rx;
         d->rightY = ry;
+    } else if (rrCentered && (!zrCentered || rrScore <= zrScore)) {
+        d->rightXCode = ABS_RX;
+        d->rightYCode = ABS_RY;
+        d->rightX = rx;
+        d->rightY = ry;
+    } else if (zrCentered) {
+        d->rightXCode = ABS_Z;
+        d->rightYCode = ABS_RZ;
+        d->rightX = z;
+        d->rightY = rz;
+    } else if (hasRx && hasRy && rrScore < zrScore) {
+        d->rightXCode = ABS_RX;
+        d->rightYCode = ABS_RY;
+        d->rightX = rx;
+        d->rightY = ry;
+    } else if (hasZ && hasRz) {
+        d->rightXCode = ABS_Z;
+        d->rightYCode = ABS_RZ;
+        d->rightX = z;
+        d->rightY = rz;
     }
 
+    // Android 常见映射：L2=ABS_BRAKE，R2=ABS_GAS。
     input_absinfo info{};
     if (axisInfo(fd, ABS_BRAKE, &info)) {
         d->triggerLCode = ABS_BRAKE;
         d->triggerL = info;
-    } else if (hasRz && d->rightYCode != ABS_RZ && !axisLooksCentered(rz)) {
-        d->triggerLCode = ABS_RZ;
-        d->triggerL = rz;
     }
     if (axisInfo(fd, ABS_GAS, &info)) {
         d->triggerRCode = ABS_GAS;
         d->triggerR = info;
-    } else if (hasZ && d->rightXCode != ABS_Z && !axisLooksCentered(z)) {
-        d->triggerRCode = ABS_Z;
-        d->triggerR = z;
     }
+
+    // XInput 常见映射：L2=ABS_Z，R2=ABS_RZ。
+    if (d->triggerLCode < 0 && hasZ && d->rightXCode != ABS_Z && d->rightYCode != ABS_Z) {
+        d->triggerLCode = ABS_Z;
+        d->triggerL = z;
+    }
+    if (d->triggerRCode < 0 && hasRz && d->rightXCode != ABS_RZ && d->rightYCode != ABS_RZ) {
+        d->triggerRCode = ABS_RZ;
+        d->triggerR = rz;
+    }
+
+    // 少量设备把扳机放在未被右摇杆占用的 RX/RY。
+    if (d->triggerLCode < 0 && hasRx && d->rightXCode != ABS_RX && d->rightYCode != ABS_RX) {
+        d->triggerLCode = ABS_RX;
+        d->triggerL = rx;
+    }
+    if (d->triggerRCode < 0 && hasRy && d->rightXCode != ABS_RY && d->rightYCode != ABS_RY) {
+        d->triggerRCode = ABS_RY;
+        d->triggerR = ry;
+    }
+
+    if (d->triggerLCode >= 0) {
+        d->triggerLRestAtMax = triggerRestAtMax(d->triggerL);
+        d->analogLt = mapTrigger1000(d->triggerL, d->triggerL.value, d->triggerLRestAtMax);
+    }
+    if (d->triggerRCode >= 0) {
+        d->triggerRRestAtMax = triggerRestAtMax(d->triggerR);
+        d->analogRt = mapTrigger1000(d->triggerR, d->triggerR.value, d->triggerRRestAtMax);
+    }
+    d->state.lt = d->analogLt;
+    d->state.rt = d->analogRt;
     return true;
 }
 
@@ -211,6 +298,11 @@ bool attachDevice(const char* path, Device* d) {
     if (!selectAxes(fd, &candidate)) {
         close(fd);
         return false;
+    }
+    unsigned long keyBits[16]{};
+    if (getBits(fd, EV_KEY, keyBits)) {
+        candidate.hasStandardEast = bitTest(keyBits, BTN_EAST);
+        candidate.hasStandardWest = bitTest(keyBits, BTN_WEST);
     }
     snprintf(candidate.path, sizeof(candidate.path), "%s", path);
     snprintf(candidate.name, sizeof(candidate.name), "%s", name[0] ? name : "gamepad");
@@ -249,11 +341,16 @@ void emit(Device* d, bool force = false) {
 bool process(Device* d, const input_event& ev) {
     if (!d || d->fd < 0) return false;
     if (ev.type == EV_KEY) {
-        int index = buttonIndex(ev.code);
+        int index = buttonIndex(ev.code, d->hasStandardEast, d->hasStandardWest);
         if (index >= 0 && index < 16) {
             uint16_t bit = static_cast<uint16_t>(1u << index);
-            if (ev.value != 0) d->state.buttons |= bit;
+            bool pressed = ev.value != 0;
+            if (pressed) d->state.buttons |= bit;
             else d->state.buttons &= static_cast<uint16_t>(~bit);
+            if (ev.code == BTN_TL2) d->digitalLt = pressed;
+            else if (ev.code == BTN_TR2) d->digitalRt = pressed;
+            d->state.lt = d->digitalLt ? 1000 : d->analogLt;
+            d->state.rt = d->digitalRt ? 1000 : d->analogRt;
         }
         return true;
     }
@@ -262,8 +359,13 @@ bool process(Device* d, const input_event& ev) {
         else if (ev.code == ABS_Y) d->state.ly = mapAxis1000(d->leftY, ev.value);
         else if (ev.code == d->rightXCode) d->state.rx = mapAxis1000(d->rightX, ev.value);
         else if (ev.code == d->rightYCode) d->state.ry = mapAxis1000(d->rightY, ev.value);
-        else if (ev.code == d->triggerLCode) d->state.lt = mapTrigger1000(d->triggerL, ev.value);
-        else if (ev.code == d->triggerRCode) d->state.rt = mapTrigger1000(d->triggerR, ev.value);
+        else if (ev.code == d->triggerLCode) {
+            d->analogLt = mapTrigger1000(d->triggerL, ev.value, d->triggerLRestAtMax);
+            d->state.lt = d->digitalLt ? 1000 : d->analogLt;
+        } else if (ev.code == d->triggerRCode) {
+            d->analogRt = mapTrigger1000(d->triggerR, ev.value, d->triggerRRestAtMax);
+            d->state.rt = d->digitalRt ? 1000 : d->analogRt;
+        }
         return true;
     }
     if (ev.type == EV_SYN && ev.code == SYN_REPORT) {

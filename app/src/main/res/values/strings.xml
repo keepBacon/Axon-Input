@@ -18,12 +18,14 @@
     <string name="sensitivity_mode_root">Root</string>
     <string name="mouse_sensitivity_format">鼠标移动倍率 %1$d%%</string>
     <string name="gamepad_sensitivity_format">右摇杆倍率 %1$d%%</string>
-    <string name="sensitivity_hint" formatted="false">范围 1–500%，100% 保持原始输入。开启后通过输入代理处理外设数据；Shizuku 用于免 Root 模式，Root 模式直接使用 su。</string>
+    <string name="sensitivity_hint" formatted="false">范围 1–500%，100% 保持原始输入。1–200% 使用 1% 精度，200–500% 使用 5% 精度。开启后通过输入代理处理外设数据。</string>
     <string name="sensitivity_status_format">运行状态：%1$s</string>
     <string name="sensitivity_requires_shizuku">Shizuku 未连接，无法使用免 Root 输入代理</string>
 
     <string name="switch_label">键盘按键显示</string>
     <string name="mouse_switch_label">鼠标按键显示</string>
+    <string name="input_full_keyboard_switch_label">输入显示全键盘</string>
+    <string name="input_full_keyboard_hint">输入法打开时显示。只显示按键状态，不接收触摸。</string>
     <string name="key_prompt_switch_label">最近按键提示</string>
     <string name="key_prompt_size_format">最近按键提示缩放 %1$d%%</string>
     <string name="key_prompt_hint">最多显示 6 个最近输入；按下时弹出，松开后短暂停留，连续触发时显示 CPS。</string>
@@ -57,6 +59,8 @@
     <string name="global_html_not_imported">未导入 HTML 文件</string>
     <string name="global_html_imported_format">当前文件：%1$s</string>
     <string name="html_guide_link">HTML 渲染 API 与示例</string>
+    <string name="kook_join_link">加入kook频道</string>
+    <string name="kook_open_failed">无法打开 KOOK 频道链接</string>
     <string name="html_guide_title">Axon Input HTML 渲染文档</string>
     <string name="author_link">by Bacon</string>
     <string name="author_title">Bacon</string>
@@ -74,6 +78,14 @@
     <string name="dps_overlay_waiting">cps: --</string>
     <string name="dps_overlay_value">cps: %1$d</string>
     <string name="drag_switch_label">允许自由拖动悬浮组件</string>
+    <string name="font_import_title">悬浮字体</string>
+    <string name="font_import_button">导入字体</string>
+    <string name="font_import_default">当前字体：系统默认</string>
+    <string name="font_imported_format">当前字体：%1$s</string>
+    <string name="font_import_success">字体已导入</string>
+    <string name="font_import_failed">字体导入失败，请选择有效的 TTF 或 OTF 文件</string>
+    <string name="font_import_hint">应用于原生按显、CPS 和手柄文本。自定义 HTML 使用 HTML 内的字体。</string>
+    <string name="sensitivity_reset">恢复 100%</string>
     <string name="auto_hide_label">隐藏后台</string>
     <string name="section_configuration">配置管理</string>
     <string name="config1_title">配置 1</string>
@@ -127,7 +139,7 @@
     <string name="gamepad_right_shoulder_size_format">右肩键缩放 %1$d%%</string>
 
     <string name="accessibility_hint">请开启 Axon Input 无障碍服务</string>
-    <string name="accessibility_description">读取外接键盘、鼠标与手柄输入，并按设置显示键位、最近输入、CPS、扳机压力、鼠标轨迹和摇杆状态；同时为输入灵敏度代理提供必要的输入接管能力。</string>
+    <string name="accessibility_description">读取外接键盘、鼠标与手柄输入，并按设置显示键位、输入状态、最近输入、CPS、扳机压力、鼠标轨迹和摇杆状态；同时为输入灵敏度代理提供必要的输入接管能力。</string>
     <string name="shizuku_connecting">正在连接 Shizuku</string>
     <string name="shizuku_unavailable">Shizuku 未运行，将打开系统无障碍设置</string>
     <string name="shizuku_denied">Shizuku 授权被拒绝</string>

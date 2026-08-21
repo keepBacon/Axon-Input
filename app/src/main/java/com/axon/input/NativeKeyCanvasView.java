@@ -37,6 +37,8 @@ public final class NativeKeyCanvasView extends View {
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dividerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Typeface typefaceNormal;
+    private final Typeface typefaceBold;
 
     private final int keyIdleColor;
     private final int keyPressedColor;
@@ -101,6 +103,8 @@ public final class NativeKeyCanvasView extends View {
             throw new IllegalArgumentException("Unknown display type: " + displayType);
         }
         this.displayType = displayType;
+        typefaceNormal = FontManager.normal(context);
+        typefaceBold = FontManager.bold(context);
         setWillNotDraw(false);
 
         keyIdleColor = UiPalette.overlayKeyIdle(context);
@@ -126,7 +130,7 @@ public final class NativeKeyCanvasView extends View {
         dividerPaint.setColor(strokeColor);
 
         textPaint.setTextAlign(Paint.Align.CENTER);
-        textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
+        textPaint.setTypeface(typefaceBold);
     }
 
     public int getDisplayType() {
@@ -391,13 +395,13 @@ public final class NativeKeyCanvasView extends View {
         canvas.scale(contentScale, contentScale, getWidth() * 0.5f, top + dp(customBaseHeightDp()) * 0.5f);
 
         if (customKeyCodes.length == 0) {
-            textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
+            textPaint.setTypeface(typefaceNormal);
             textPaint.setTextSize(dp(13));
             textPaint.setColor(secondaryTextColor);
             Paint.FontMetrics fm = textPaint.getFontMetrics();
             float baseline = top + dp(customBaseHeightDp()) * 0.5f - (fm.ascent + fm.descent) * 0.5f;
             canvas.drawText(getContext().getString(R.string.no_custom_keys), getWidth() * 0.5f, baseline, textPaint);
-            textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
+            textPaint.setTypeface(typefaceBold);
             canvas.restoreToCount(save);
             return;
         }
@@ -501,12 +505,12 @@ public final class NativeKeyCanvasView extends View {
         textPaint.setColor(withMotionAlpha(pressed ? textPressedColor : textIdleColor, motion));
         // L/R 保持 13dp。CPS 使用更小字号。
         textPaint.setTextSize(dp(13));
-        textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
+        textPaint.setTypeface(typefaceBold);
         canvas.drawText(side, cx, cy - dp(5), textPaint);
         textPaint.setTextSize(dp(8));
-        textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
+        textPaint.setTypeface(typefaceNormal);
         canvas.drawText(dps + " CPS", cx, cy + dp(13), textPaint);
-        textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
+        textPaint.setTypeface(typefaceBold);
         canvas.restoreToCount(save);
     }
 
@@ -532,19 +536,19 @@ public final class NativeKeyCanvasView extends View {
         if (space && showSpaceDps) {
             // Space 始终保持 14dp。
             textPaint.setTextSize(dp(14));
-            textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
+            textPaint.setTypeface(typefaceBold);
             Paint.FontMetrics fm = textPaint.getFontMetrics();
             float centerBaseline = cy - (fm.ascent + fm.descent) * 0.5f;
             canvas.drawText(label, cx, centerBaseline - dp(5), textPaint);
 
             // 空间不足时只缩小 CPS，不缩小 Space。
             float dpsSize = Math.min(dp(8f), Math.max(dp(6f), height * 0.16f));
-            textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
+            textPaint.setTypeface(typefaceNormal);
             textPaint.setTextSize(dpsSize);
             Paint.FontMetrics dpsFm = textPaint.getFontMetrics();
             float dpsBaseline = rect.bottom - dp(4f) - dpsFm.descent;
             canvas.drawText(spaceDps + " CPS", cx, dpsBaseline, textPaint);
-            textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
+            textPaint.setTypeface(typefaceBold);
         } else {
             textPaint.setTextSize(space ? dp(14) : dp(17));
             Paint.FontMetrics fm = textPaint.getFontMetrics();

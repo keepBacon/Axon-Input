@@ -26,8 +26,6 @@ public final class KeyPromptOverlayView extends FrameLayout {
     private static final float KEY_SIZE_DP = 46f;
     private static final float GAP_DP = 8f;
     private static final float CPS_SPACE_DP = 16f;
-    private static final Typeface TYPEFACE_BOLD = Typeface.create(Typeface.DEFAULT, Typeface.BOLD);
-    private static final Typeface TYPEFACE_NORMAL = Typeface.DEFAULT;
 
     public interface DragListener {
         void onDragStart(KeyPromptOverlayView source, float rawX, float rawY);
@@ -82,6 +80,8 @@ public final class KeyPromptOverlayView extends FrameLayout {
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
     private final RectF rect = new RectF();
     private final float density;
+    private final Typeface typefaceNormal;
+    private final Typeface typefaceBold;
 
     private DragListener dragListener;
     private int displaySizePercent = 100;
@@ -108,6 +108,8 @@ public final class KeyPromptOverlayView extends FrameLayout {
     public KeyPromptOverlayView(Context context) {
         super(context);
         density = getResources().getDisplayMetrics().density;
+        typefaceNormal = FontManager.normal(context);
+        typefaceBold = FontManager.bold(context);
         setWillNotDraw(false);
         setLayerType(View.LAYER_TYPE_HARDWARE, null);
         textPaint.setTextAlign(Paint.Align.CENTER);
@@ -277,7 +279,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
         int flashText = dark ? Color.rgb(18, 18, 20) : Color.WHITE;
         int strokeRgb = dark ? Color.WHITE : Color.BLACK;
 
-        textPaint.setTypeface(TYPEFACE_BOLD);
+        textPaint.setTypeface(typefaceBold);
         textPaint.setTextSize(dp(12f) * uiScale);
         for (int i = 0; i < count; i++) {
             Entry entry = entries.get(i);
@@ -316,12 +318,12 @@ public final class KeyPromptOverlayView extends FrameLayout {
             canvas.restoreToCount(save);
 
             if (entry.pressCount >= 5) {
-                textPaint.setTypeface(TYPEFACE_NORMAL);
+                textPaint.setTypeface(typefaceNormal);
                 textPaint.setTextSize(dp(8.5f) * uiScale);
                 textPaint.setColor(withAlpha(UiPalette.overlaySecondary(getContext()), Math.round(alpha * 0.78f)));
                 canvas.drawText(entry.pressSize + " CPS", entry.centerX,
                         top + keySize + dp(11.5f) * uiScale, textPaint);
-                textPaint.setTypeface(TYPEFACE_BOLD);
+                textPaint.setTypeface(typefaceBold);
                 textPaint.setTextSize(dp(12f) * uiScale);
             }
         }

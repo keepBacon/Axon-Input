@@ -2,7 +2,6 @@ package com.axon.input;
 
 import android.content.Context;
 import android.graphics.Color;
-import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.widget.TextView;
@@ -27,7 +26,7 @@ public final class DpsOverlayView extends TextView {
         setIncludeFontPadding(false);
         setSingleLine(true);
         setTextSize(16f);
-        setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        setTypeface(FontManager.bold(context));
         setTextColor(UiPalette.overlayTextIdle(context));
         setBackgroundColor(Color.TRANSPARENT);
         float density = getResources().getDisplayMetrics().density;

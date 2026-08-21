@@ -28,7 +28,7 @@ public final class SensitivityProxyController {
         InputStream getInputStream();
     }
 
-    private static final long GAIN_WRITE_DEBOUNCE_MS = 70L;
+    private static final long GAIN_WRITE_DEBOUNCE_MS = 55L;
 
     private final Context context;
     private final Listener listener;
@@ -75,10 +75,13 @@ public final class SensitivityProxyController {
         int resolvedMode = mode == OverlayState.SENSITIVITY_MODE_ROOT
                 ? OverlayState.SENSITIVITY_MODE_ROOT
                 : OverlayState.SENSITIVITY_MODE_SHIZUKU;
+        int nextMouse = clamp(mousePercent);
+        int nextGamepad = clamp(gamepadPercent);
         boolean modeChanged = desiredMode != resolvedMode;
+        boolean gainChanged = desiredMouse != nextMouse || desiredGamepad != nextGamepad;
         desiredEnabled = enabled;
-        desiredMouse = clamp(mousePercent);
-        desiredGamepad = clamp(gamepadPercent);
+        desiredMouse = nextMouse;
+        desiredGamepad = nextGamepad;
         desiredMode = resolvedMode;
 
         if (!enabled) {
@@ -99,8 +102,10 @@ public final class SensitivityProxyController {
             return;
         }
 
-        mainHandler.removeCallbacks(gainFlush);
-        mainHandler.postDelayed(gainFlush, GAIN_WRITE_DEBOUNCE_MS);
+        if (gainChanged && process != null && activeMode == resolvedMode) {
+            mainHandler.removeCallbacks(gainFlush);
+            mainHandler.postDelayed(gainFlush, GAIN_WRITE_DEBOUNCE_MS);
+        }
         if (process == null && (readerThread == null || !readerThread.isAlive()) && fatalMode != resolvedMode) {
             startWorker();
         }

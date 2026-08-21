@@ -1,4 +1,4 @@
-Axon Input 版本：1.1
+Axon Input 版本：1.2
 
 Axon Input 代码结构说明
 
@@ -40,33 +40,39 @@ A/B/X/Y 使用 Android KeyEvent 语义；摇杆和扳机继续使用原始输入
 GamepadInputMonitor 不独占设备，普通显示模式不会阻止游戏收到手柄输入。
 
 7. SensitivityProxyController.java + native/sensitivityproxy.cpp
-只处理灵敏度超频。
-免 Root 通过 Shizuku，Root 通过 su；持续输入变换在 native 进程完成。
+只处理灵敏度倍率。
+倍率变化只刷新代理，不刷新其他悬浮组件。
+native 仅在配置文件更新后重新读取倍率。
 
-8. KeyOverlayView / NativeKeyCanvasView
+8. FontManager.java
+负责导入和缓存悬浮字体。
+字体文件保存到应用内部目录。
+绘制时直接使用缓存 Typeface，不重复读取字体文件。
+
+9. KeyOverlayView / NativeKeyCanvasView
 键盘、鼠标、自定义键位的窗口容器和原生绘制。
 每个键有独立动画状态。
 
-9. MouseTrajectoryView.java
+10. MouseTrajectoryView.java
 只保存轨迹圆点的目标、速度和位置。
 动画稳定后停止请求下一帧。
 
-10. GamepadOverlayView.java
+11. GamepadOverlayView.java
 左/右摇杆、ABXY、左/右肩键的原生绘制和动效。
 不读取设备文件。
 
-11. KeyPromptOverlayView.java
+12. KeyPromptOverlayView.java
 最近按键提示的适配实现。
 维护最近按键、CPS、释放停留和位置让位；HTML 开启时把同一状态交给 HTML。
 
-12. GlobalHtmlWebView.java
+13. GlobalHtmlWebView.java
 HTML 自定义显示层，API v9。
 - 完整 state/palette/runtime/settings
 - 细粒度 key/mouse/pointer/gamepad 事件
 - 高频 pointer/gamepad 按显示帧合并并只发送局部状态
 - HTML 关闭时不创建 WebView
 
-13. HtmlGuideActivity.java
+14. HtmlGuideActivity.java
 应用内 HTML 文档，示例应与 GlobalHtmlWebView API 同步。
 
 推荐阅读顺序

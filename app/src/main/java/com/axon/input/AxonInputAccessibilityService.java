@@ -16,6 +16,9 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityWindowInfo;
+
+import java.util.List;
 
 /** 全局输入服务。读取输入并绘制悬浮层，不消费原始输入。 */
 public final class AxonInputAccessibilityService extends AccessibilityService
@@ -46,6 +49,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private static final int GAMEPAD_SHOULDER_HEIGHT_DP = 86;
     private static final int DPS_WIDTH_DP = 112;
     private static final int DPS_HEIGHT_DP = 40;
+    private static final int FULL_KEYBOARD_MAX_WIDTH_DP = 720;
+    private static final int FULL_KEYBOARD_MIN_HEIGHT_DP = 150;
+    private static final int FULL_KEYBOARD_MAX_HEIGHT_DP = 260;
 
     private static volatile AxonInputAccessibilityService activeService;
 
@@ -93,6 +99,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private DpsOverlayView dpsView;
     private WindowManager.LayoutParams dpsParams;
     private boolean dpsAttached;
+
+    private FullKeyboardOverlayView inputFullKeyboardView;
+    private WindowManager.LayoutParams inputFullKeyboardParams;
+    private boolean inputFullKeyboardAttached;
     private float dpsDragStartRawX;
     private float dpsDragStartRawY;
     private int dpsDragStartWindowX;
@@ -176,6 +186,14 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         else service.mainHandler.post(service::applySavedState);
     }
 
+    /** 只更新灵敏度代理，避免滑动倍率时重建其他悬浮状态。 */
+    public static void refreshSensitivity() {
+        AxonInputAccessibilityService service = activeService;
+        if (service == null) return;
+        if (Looper.myLooper() == Looper.getMainLooper()) service.applySensitivityState();
+        else service.mainHandler.post(service::applySensitivityState);
+    }
+
 
     /** 重建轻量悬浮视图并立即应用用户配色。 */
     public static void refreshTheme() {
@@ -187,6 +205,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             service.removeWindowImmediate(service.mouseWindow);
             service.removeKeyPromptImmediate();
             service.removeDpsImmediate();
+            service.removeInputFullKeyboardImmediate();
             service.removeTrajectoryImmediate();
             service.removeGamepadWindowImmediate(service.leftStickWindow);
             service.removeGamepadWindowImmediate(service.rightStickWindow);
@@ -206,7 +225,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
         AccessibilityServiceInfo info = getServiceInfo();
         if (info != null) {
-            info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
+            info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+                    | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+            info.eventTypes |= AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                    | AccessibilityEvent.TYPE_WINDOWS_CHANGED
+                    | AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED;
             setServiceInfo(info);
         }
 
@@ -221,7 +244,22 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         applySavedState();
     }
 
-    @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
+    @Override
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (!OverlayState.isInputFullKeyboardEnabled(this)) {
+            removeInputFullKeyboardImmediate();
+            return;
+        }
+        int type = event == null ? 0 : event.getEventType();
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED
+                || type == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
+            syncInputFullKeyboardVisibility();
+        }
+        if (type == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED && inputFullKeyboardAttached) {
+            flashTextInput(event);
+        }
+    }
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
@@ -234,6 +272,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     @Override
     public void onInterrupt() {
         resetPressedState();
+        if (inputFullKeyboardView != null) inputFullKeyboardView.clearPressed();
     }
 
     @Override
@@ -243,10 +282,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
         // 手柄按键使用 Android 语义层，轴数据继续读取 /dev/input。
         if (isPhysicalGamepadEvent(event)) {
-            int logicalBit = GamepadButtons.fromAndroidKeyCode(event.getKeyCode());
+            int logicalBit = GamepadButtons.fromAndroidEvent(event);
             if (logicalBit != 0) {
                 boolean pressed = action == KeyEvent.ACTION_DOWN;
-                int knownGroup = GamepadButtons.overrideGroupForAndroidKeyCode(event.getKeyCode());
+                int knownGroup = GamepadButtons.overrideGroupForAndroidEvent(event);
                 androidGamepadKnownMask |= knownGroup;
                 if (pressed) androidGamepadButtons |= logicalBit;
                 else androidGamepadButtons &= ~logicalBit;
@@ -256,15 +295,19 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         }
 
         boolean builtin = OverlayState.isEnabled(this);
+        boolean inputFullKeyboard = OverlayState.isInputFullKeyboardEnabled(this);
         boolean custom = OverlayState.isCustomEnabled(this);
         boolean capture = OverlayState.isCustomCaptureEnabled(this);
         boolean keyPrompt = OverlayState.isKeyPromptEnabled(this);
         boolean dpsEnabled = OverlayState.isDpsEnabled(this);
-        if (!builtin && !custom && !capture && !keyPrompt && !dpsEnabled) return false;
+        if (!builtin && !inputFullKeyboard && !custom && !capture && !keyPrompt && !dpsEnabled) return false;
         if (!isPhysicalKeyboardEvent(event)) return false;
 
         int keyCode = event.getKeyCode();
         boolean pressed = action == KeyEvent.ACTION_DOWN;
+        if (inputFullKeyboard && inputFullKeyboardView != null) {
+            inputFullKeyboardView.setPhysicalKey(keyCode, pressed);
+        }
 
         int dpsTarget = OverlayState.getDpsTargetKeyCode(this);
         if (dpsEnabled && dpsTarget == OverlayState.DPS_TARGET_NONE
@@ -594,6 +637,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         removeWindowImmediate(mouseWindow);
         removeKeyPromptImmediate();
         removeDpsImmediate();
+        removeInputFullKeyboardImmediate();
         removeTrajectoryImmediate();
         removeGamepadWindowImmediate(leftStickWindow);
         removeGamepadWindowImmediate(rightStickWindow);
@@ -629,6 +673,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         syncWindow(keyboardWindow, OverlayState.isEnabled(this));
         syncWindow(customWindow, OverlayState.isCustomEnabled(this));
         syncWindow(mouseWindow, OverlayState.isMouseEnabled(this));
+        syncInputFullKeyboardVisibility();
         syncKeyPromptWindow(OverlayState.isKeyPromptEnabled(this));
         int nextDpsTarget = OverlayState.getDpsTargetKeyCode(this);
         if (nextDpsTarget != activeDpsTargetKeyCode) {
@@ -645,6 +690,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         applyOverlayVisibility();
         refreshDpsTicker();
 
+        applySensitivityState();
+    }
+
+    private void applySensitivityState() {
         boolean sensitivity = OverlayState.isSensitivityEnabled(this);
         if (sensitivityController != null) {
             sensitivityController.apply(
@@ -654,7 +703,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                     OverlayState.getSensitivityMode(this));
         }
         if (sensitivity) {
-            // native 代理读取物理设备并回传鼠标和手柄状态。
+            // 代理接管设备后关闭普通读取，避免重复读取输入。
             stopMouseMonitor();
             stopGamepadMonitor();
         } else {
@@ -669,6 +718,142 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         // “隐藏后台”只影响最近任务卡片。
         // 悬浮层由各显示开关独立控制。
         // 应用进入后台后按键、CPS 和手柄显示继续工作。
+    }
+
+    private void syncInputFullKeyboardVisibility() {
+        boolean show = OverlayState.isInputFullKeyboardEnabled(this) && isInputMethodWindowVisible();
+        if (!show) {
+            removeInputFullKeyboardImmediate();
+            return;
+        }
+        ensureInputFullKeyboardWindow();
+        updateInputFullKeyboardLayout();
+    }
+
+    private boolean isInputMethodWindowVisible() {
+        try {
+            List<AccessibilityWindowInfo> windows = getWindows();
+            if (windows == null) return false;
+            for (AccessibilityWindowInfo window : windows) {
+                if (window != null && window.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private void ensureInputFullKeyboardWindow() {
+        if (inputFullKeyboardAttached || windowManager == null) return;
+        inputFullKeyboardView = new FullKeyboardOverlayView(this);
+        inputFullKeyboardParams = new WindowManager.LayoutParams(
+                fullKeyboardWidthPx(), fullKeyboardHeightPx(),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                inputFullKeyboardFlags(), PixelFormat.TRANSLUCENT);
+        inputFullKeyboardParams.gravity = Gravity.TOP | Gravity.START;
+        inputFullKeyboardParams.setTitle("AxonInputFullKeyboard");
+        applyInputFullKeyboardPosition();
+        windowManager.addView(inputFullKeyboardView, inputFullKeyboardParams);
+        inputFullKeyboardAttached = true;
+    }
+
+    private void updateInputFullKeyboardLayout() {
+        if (!inputFullKeyboardAttached || inputFullKeyboardView == null
+                || inputFullKeyboardParams == null || windowManager == null) return;
+        inputFullKeyboardParams.width = fullKeyboardWidthPx();
+        inputFullKeyboardParams.height = fullKeyboardHeightPx();
+        inputFullKeyboardParams.flags = inputFullKeyboardFlags();
+        applyInputFullKeyboardPosition();
+        windowManager.updateViewLayout(inputFullKeyboardView, inputFullKeyboardParams);
+    }
+
+    private int inputFullKeyboardFlags() {
+        return WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+    }
+
+    private int fullKeyboardWidthPx() {
+        DisplayMetrics metrics = getResources().getDisplayMetrics();
+        return Math.max(1, Math.min(metrics.widthPixels - dp(16), dp(FULL_KEYBOARD_MAX_WIDTH_DP)));
+    }
+
+    private int fullKeyboardHeightPx() {
+        int target = Math.round(fullKeyboardWidthPx() * 0.38f);
+        return Math.max(dp(FULL_KEYBOARD_MIN_HEIGHT_DP), Math.min(dp(FULL_KEYBOARD_MAX_HEIGHT_DP), target));
+    }
+
+    private void applyInputFullKeyboardPosition() {
+        if (inputFullKeyboardParams == null) return;
+        DisplayMetrics metrics = getResources().getDisplayMetrics();
+        inputFullKeyboardParams.x = Math.max(0, (metrics.widthPixels - inputFullKeyboardParams.width) / 2);
+        inputFullKeyboardParams.y = dp(12);
+    }
+
+    private void removeInputFullKeyboardImmediate() {
+        if (!inputFullKeyboardAttached || windowManager == null || inputFullKeyboardView == null) {
+            inputFullKeyboardAttached = false;
+            inputFullKeyboardView = null;
+            inputFullKeyboardParams = null;
+            return;
+        }
+        inputFullKeyboardView.clearPressed();
+        windowManager.removeView(inputFullKeyboardView);
+        inputFullKeyboardAttached = false;
+        inputFullKeyboardView = null;
+        inputFullKeyboardParams = null;
+    }
+
+    private void flashTextInput(AccessibilityEvent event) {
+        if (event == null || inputFullKeyboardView == null) return;
+        int added = Math.max(0, event.getAddedCount());
+        int removed = Math.max(0, event.getRemovedCount());
+        if (added == 0) {
+            if (removed > 0) inputFullKeyboardView.flashKey(KeyEvent.KEYCODE_DEL);
+            return;
+        }
+        List<CharSequence> textItems = event.getText();
+        if (textItems == null || textItems.isEmpty() || textItems.get(0) == null) return;
+        CharSequence text = textItems.get(0);
+        int start = Math.max(0, Math.min(event.getFromIndex(), text.length()));
+        int end = Math.max(start, Math.min(text.length(), start + added));
+        for (int i = start; i < end; i++) {
+            int keyCode = keyCodeForInputChar(text.charAt(i));
+            if (keyCode != KeyEvent.KEYCODE_UNKNOWN) inputFullKeyboardView.flashKey(keyCode);
+        }
+    }
+
+    private int keyCodeForInputChar(char value) {
+        if (value >= 'a' && value <= 'z') return KeyEvent.KEYCODE_A + (value - 'a');
+        if (value >= 'A' && value <= 'Z') return KeyEvent.KEYCODE_A + (value - 'A');
+        if (value >= '0' && value <= '9') return KeyEvent.KEYCODE_0 + (value - '0');
+        return switch (value) {
+            case ' ' -> KeyEvent.KEYCODE_SPACE;
+            case '\n', '\r' -> KeyEvent.KEYCODE_ENTER;
+            case '`', '~' -> KeyEvent.KEYCODE_GRAVE;
+            case '-', '_' -> KeyEvent.KEYCODE_MINUS;
+            case '=', '+' -> KeyEvent.KEYCODE_EQUALS;
+            case '[', '{' -> KeyEvent.KEYCODE_LEFT_BRACKET;
+            case ']', '}' -> KeyEvent.KEYCODE_RIGHT_BRACKET;
+            case '\\', '|' -> KeyEvent.KEYCODE_BACKSLASH;
+            case ';', ':' -> KeyEvent.KEYCODE_SEMICOLON;
+            case '\'', '"' -> KeyEvent.KEYCODE_APOSTROPHE;
+            case ',', '<' -> KeyEvent.KEYCODE_COMMA;
+            case '.', '>' -> KeyEvent.KEYCODE_PERIOD;
+            case '/', '?' -> KeyEvent.KEYCODE_SLASH;
+            case '!' -> KeyEvent.KEYCODE_1;
+            case '@' -> KeyEvent.KEYCODE_2;
+            case '#' -> KeyEvent.KEYCODE_3;
+            case '$' -> KeyEvent.KEYCODE_4;
+            case '%' -> KeyEvent.KEYCODE_5;
+            case '^' -> KeyEvent.KEYCODE_6;
+            case '&' -> KeyEvent.KEYCODE_7;
+            case '*' -> KeyEvent.KEYCODE_8;
+            case '(' -> KeyEvent.KEYCODE_9;
+            case ')' -> KeyEvent.KEYCODE_0;
+            default -> KeyEvent.KEYCODE_UNKNOWN;
+        };
     }
 
     private void syncWindow(DisplayWindow window, boolean enabled) {
@@ -977,9 +1162,13 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
     private void applyGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons) {
         rawGamepadButtons = buttons;
-        // 已确认的按键使用 Android 语义，其余使用 evdev 状态。
-        int effectiveButtons = (buttons & ~androidGamepadKnownMask)
-                | (androidGamepadButtons & androidGamepadKnownMask);
+        // X/Y 等按键使用 Android 语义修正。L2/R2 同时接受 Android 和 evdev，兼容双切扳机。
+        int triggerMask = GamepadOverlayView.BTN_L2 | GamepadOverlayView.BTN_R2;
+        int semanticMask = androidGamepadKnownMask & ~triggerMask;
+        int effectiveButtons = (buttons & ~semanticMask)
+                | (androidGamepadButtons & semanticMask);
+        effectiveButtons = (effectiveButtons & ~triggerMask)
+                | ((buttons | androidGamepadButtons) & triggerMask);
 
         long now = SystemClock.uptimeMillis();
         int previousButtons = previousGamepadButtonsForDps;

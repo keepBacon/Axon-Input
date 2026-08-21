@@ -28,7 +28,7 @@ namespace {
 
 constexpr int kMaxEvents = 256;
 constexpr int kScanIntervalMs = 900;
-constexpr int kConfigIntervalMs = 80;
+constexpr int kConfigIntervalMs = 50;
 constexpr int kMotionTelemetryIntervalMs = 8; // 输出频率不超过 125 Hz。
 constexpr const char* kVirtualPrefix = "Axon Input Virtual";
 
@@ -92,14 +92,42 @@ bool axisInfo(int fd, int code, input_absinfo* out) {
     return ioctl(fd, EVIOCGABS(code), out) >= 0 && out->maximum > out->minimum;
 }
 
-bool axisLooksCentered(const input_absinfo& info) {
+int axisCenterScore(const input_absinfo& info) {
     long long range = static_cast<long long>(info.maximum) - info.minimum;
-    if (range <= 0) return false;
+    if (range <= 0) return 1000000;
     long long center = (static_cast<long long>(info.maximum) + info.minimum) / 2;
-    long long minSide = center - info.minimum;
-    long long maxSide = info.maximum - center;
-    long long balance = minSide < maxSide ? minSide : maxSide;
-    return balance * 100 >= range * 35; // 两侧至少保留约 35% 的完整范围。
+    long long half = range / 2;
+    if (half <= 0) return 1000000;
+    long long distance = info.value >= center ? info.value - center : center - info.value;
+    return static_cast<int>((distance * 1000LL) / half);
+}
+
+bool axisLooksCentered(const input_absinfo& info) {
+    int score = axisCenterScore(info);
+    long long range = static_cast<long long>(info.maximum) - info.minimum;
+    long long tolerance = range / 5;
+    if (info.flat > 0 && static_cast<long long>(info.flat) * 2 > tolerance) {
+        tolerance = static_cast<long long>(info.flat) * 2;
+    }
+    long long center = (static_cast<long long>(info.maximum) + info.minimum) / 2;
+    long long distance = info.value >= center ? info.value - center : center - info.value;
+    return score <= 450 || distance <= tolerance;
+}
+
+bool axisCrossesZero(const input_absinfo& info) {
+    return info.minimum < 0 && info.maximum > 0;
+}
+
+bool axisIsOneSided(const input_absinfo& info) {
+    return info.minimum >= 0 || info.maximum <= 0;
+}
+
+bool triggerRestAtMax(const input_absinfo& info) {
+    long long toMin = static_cast<long long>(info.value) - info.minimum;
+    long long toMax = static_cast<long long>(info.maximum) - info.value;
+    if (toMin < 0) toMin = -toMin;
+    if (toMax < 0) toMax = -toMax;
+    return toMax < toMin;
 }
 
 int16_t mapAxis(const input_absinfo& info, int value, int gainPercent) {
@@ -138,10 +166,12 @@ int16_t mapAxis(const input_absinfo& info, int value, int gainPercent) {
     return static_cast<int16_t>(out);
 }
 
-uint8_t mapTrigger(const input_absinfo& info, int value) {
+uint8_t mapTrigger(const input_absinfo& info, int value, bool restAtMax) {
     if (info.maximum <= info.minimum) return 0;
-    long long numerator = static_cast<long long>(value - info.minimum) * 255LL;
     long long denominator = static_cast<long long>(info.maximum) - info.minimum;
+    long long numerator = restAtMax
+            ? static_cast<long long>(info.maximum - value) * 255LL
+            : static_cast<long long>(value - info.minimum) * 255LL;
     long long out = denominator ? numerator / denominator : 0;
     if (out < 0) out = 0;
     if (out > 255) out = 255;
@@ -173,6 +203,22 @@ bool readGains(const char* path, Gains* gains) {
     bool changed = mouse != gains->mouse || gamepad != gains->gamepad;
     gains->mouse = mouse;
     gains->gamepad = gamepad;
+    return changed;
+}
+
+// 配置文件通过原子替换更新。inode 未变化时不重复读取内容。
+bool readGainsIfChanged(const char* path, Gains* gains, uint64_t* inodeStamp) {
+    if (!path || !gains || !inodeStamp) return false;
+    struct stat info{};
+    if (stat(path, &info) != 0) return false;
+    uint64_t stamp = static_cast<uint64_t>(info.st_ino);
+    if (*inodeStamp != 0 && *inodeStamp == stamp) return false;
+
+    Gains next = *gains;
+    if (!readGains(path, &next)) return false;
+    bool changed = next.mouse != gains->mouse || next.gamepad != gains->gamepad;
+    *gains = next;
+    *inodeStamp = stamp;
     return changed;
 }
 
@@ -370,6 +416,14 @@ struct GamepadProxy {
     int rightYCode = -1;
     int triggerRCode = -1;
     int triggerLCode = -1;
+    bool triggerRRestAtMax = false;
+    bool triggerLRestAtMax = false;
+    uint8_t analogRt = 0;
+    uint8_t analogLt = 0;
+    bool digitalRt = false;
+    bool digitalLt = false;
+    bool hasStandardEast = false;
+    bool hasStandardWest = false;
     int hatX = 0;
     int hatY = 0;
     bool dpadUp = false;
@@ -389,9 +443,7 @@ void closeMouse(MouseProxy* p) {
         p->fd = -1;
     }
     destroyUhid(&p->uhid);
-    memset(p, 0, sizeof(*p));
-    p->fd = -1;
-    p->uhid = -1;
+    *p = MouseProxy{};
 }
 
 void closeGamepad(GamepadProxy* p) {
@@ -403,13 +455,15 @@ void closeGamepad(GamepadProxy* p) {
         p->fd = -1;
     }
     destroyUhid(&p->uhid);
-    memset(p, 0, sizeof(*p));
-    p->fd = -1;
-    p->uhid = -1;
+    *p = GamepadProxy{};
 }
 
 int scaleMouseDelta(int delta, int gainPercent, int64_t* residual) {
     if (!residual) return delta;
+    if (gainPercent == 100) {
+        *residual = 0;
+        return delta;
+    }
     int64_t scaled = static_cast<int64_t>(delta) * gainPercent + *residual;
     int out = static_cast<int>(scaled / 100);
     *residual = scaled - static_cast<int64_t>(out) * 100;
@@ -439,14 +493,14 @@ uint8_t mouseButtonMaskForCode(int code) {
     }
 }
 
-int gamepadButtonIndex(int code) {
+int gamepadButtonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
     switch (code) {
         case BTN_SOUTH: return 0;
         case BTN_EAST: return 1;
-        case BTN_C: return 2;
+        case BTN_C: return hasStandardWest ? -1 : 2;
         case BTN_NORTH: return 3;
         case BTN_WEST: return 4;
-        case BTN_Z: return 5;
+        case BTN_Z: return hasStandardEast ? -1 : 5;
         case BTN_TL: return 6;
         case BTN_TR: return 7;
         case BTN_TL2: return 8;
@@ -497,34 +551,75 @@ bool pickGamepadAxes(int fd, GamepadProxy* p) {
     bool hasRx = axisInfo(fd, ABS_RX, &rx);
     bool hasRy = axisInfo(fd, ABS_RY, &ry);
 
-    if (hasZ && hasRz && axisLooksCentered(z) && axisLooksCentered(rz)) {
-        p->rightXCode = ABS_Z;
-        p->rightYCode = ABS_RZ;
-        p->rightX = z;
-        p->rightY = rz;
-    } else if (hasRx && hasRy && axisLooksCentered(rx) && axisLooksCentered(ry)) {
+    bool rrSignedPair = hasRx && hasRy && axisCrossesZero(rx) && axisCrossesZero(ry);
+    bool zrTriggerPair = hasZ && hasRz && axisIsOneSided(z) && axisIsOneSided(rz);
+    int zrScore = (hasZ && hasRz) ? axisCenterScore(z) + axisCenterScore(rz) : 1000000;
+    int rrScore = (hasRx && hasRy) ? axisCenterScore(rx) + axisCenterScore(ry) : 1000000;
+    bool zrCentered = hasZ && hasRz && axisLooksCentered(z) && axisLooksCentered(rz);
+    bool rrCentered = hasRx && hasRy && axisLooksCentered(rx) && axisLooksCentered(ry);
+    if (rrSignedPair && zrTriggerPair) {
         p->rightXCode = ABS_RX;
         p->rightYCode = ABS_RY;
         p->rightX = rx;
         p->rightY = ry;
+    } else if (rrCentered && (!zrCentered || rrScore <= zrScore)) {
+        p->rightXCode = ABS_RX;
+        p->rightYCode = ABS_RY;
+        p->rightX = rx;
+        p->rightY = ry;
+    } else if (zrCentered) {
+        p->rightXCode = ABS_Z;
+        p->rightYCode = ABS_RZ;
+        p->rightX = z;
+        p->rightY = rz;
+    } else if (hasRx && hasRy && rrScore < zrScore) {
+        p->rightXCode = ABS_RX;
+        p->rightYCode = ABS_RY;
+        p->rightX = rx;
+        p->rightY = ry;
+    } else if (hasZ && hasRz) {
+        p->rightXCode = ABS_Z;
+        p->rightYCode = ABS_RZ;
+        p->rightX = z;
+        p->rightY = rz;
     } else {
-        return false; // 灵敏度处理需要完整的右摇杆轴对。
+        return false;
     }
 
     input_absinfo info{};
-    if (axisInfo(fd, ABS_GAS, &info)) {
-        p->triggerRCode = ABS_GAS;
-        p->triggerR = info;
-    } else if (hasZ && p->rightXCode != ABS_Z && !axisLooksCentered(z)) {
-        p->triggerRCode = ABS_Z;
-        p->triggerR = z;
-    }
     if (axisInfo(fd, ABS_BRAKE, &info)) {
         p->triggerLCode = ABS_BRAKE;
         p->triggerL = info;
-    } else if (hasRz && p->rightYCode != ABS_RZ && !axisLooksCentered(rz)) {
-        p->triggerLCode = ABS_RZ;
-        p->triggerL = rz;
+    }
+    if (axisInfo(fd, ABS_GAS, &info)) {
+        p->triggerRCode = ABS_GAS;
+        p->triggerR = info;
+    }
+
+    if (p->triggerLCode < 0 && hasZ && p->rightXCode != ABS_Z && p->rightYCode != ABS_Z) {
+        p->triggerLCode = ABS_Z;
+        p->triggerL = z;
+    }
+    if (p->triggerRCode < 0 && hasRz && p->rightXCode != ABS_RZ && p->rightYCode != ABS_RZ) {
+        p->triggerRCode = ABS_RZ;
+        p->triggerR = rz;
+    }
+    if (p->triggerLCode < 0 && hasRx && p->rightXCode != ABS_RX && p->rightYCode != ABS_RX) {
+        p->triggerLCode = ABS_RX;
+        p->triggerL = rx;
+    }
+    if (p->triggerRCode < 0 && hasRy && p->rightXCode != ABS_RY && p->rightYCode != ABS_RY) {
+        p->triggerRCode = ABS_RY;
+        p->triggerR = ry;
+    }
+
+    if (p->triggerLCode >= 0) {
+        p->triggerLRestAtMax = triggerRestAtMax(p->triggerL);
+        p->analogLt = mapTrigger(p->triggerL, p->triggerL.value, p->triggerLRestAtMax);
+    }
+    if (p->triggerRCode >= 0) {
+        p->triggerRRestAtMax = triggerRestAtMax(p->triggerR);
+        p->analogRt = mapTrigger(p->triggerR, p->triggerR.value, p->triggerRRestAtMax);
     }
     return true;
 }
@@ -551,7 +646,7 @@ bool attachMouse(const char* path, MouseProxy* p) {
         close(fd);
         return false;
     }
-    memset(p, 0, sizeof(*p));
+    *p = MouseProxy{};
     p->fd = fd;
     p->uhid = uhid;
     snprintf(p->path, sizeof(p->path), "%s", path);
@@ -580,6 +675,11 @@ bool attachGamepad(const char* path, GamepadProxy* p) {
         close(fd);
         return false;
     }
+    unsigned long keyBits[16]{};
+    if (getBits(fd, EV_KEY, keyBits)) {
+        candidate.hasStandardEast = bitTest(keyBits, BTN_EAST);
+        candidate.hasStandardWest = bitTest(keyBits, BTN_WEST);
+    }
     int uhid = createUhid("Axon Input Virtual Gamepad", kGamepadDescriptor,
                          sizeof(kGamepadDescriptor), 0x4B44, 0x0002);
     if (uhid < 0) {
@@ -601,8 +701,8 @@ bool attachGamepad(const char* path, GamepadProxy* p) {
     p->report.ly = 0;
     p->report.rx = 0;
     p->report.ry = 0;
-    p->report.rt = 0;
-    p->report.lt = 0;
+    p->report.rt = p->analogRt;
+    p->report.lt = p->analogLt;
     sendUhidReport(p->uhid, &p->report, sizeof(p->report));
     printf("STATUS gamepad-ready %s %s\n", p->path, p->name);
     fflush(stdout);
@@ -699,11 +799,16 @@ void emitGamepadTelemetry(GamepadProxy* p) {
 bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& gains) {
     if (!p || p->fd < 0 || p->uhid < 0) return false;
     if (ev.type == EV_KEY) {
-        int idx = gamepadButtonIndex(ev.code);
+        int idx = gamepadButtonIndex(ev.code, p->hasStandardEast, p->hasStandardWest);
         if (idx >= 0 && idx < 16) {
             uint16_t bit = static_cast<uint16_t>(1u << idx);
-            if (ev.value != 0) p->report.buttons |= bit;
+            bool pressed = ev.value != 0;
+            if (pressed) p->report.buttons |= bit;
             else p->report.buttons &= static_cast<uint16_t>(~bit);
+            if (ev.code == BTN_TL2) p->digitalLt = pressed;
+            else if (ev.code == BTN_TR2) p->digitalRt = pressed;
+            p->report.lt = p->digitalLt ? 255 : p->analogLt;
+            p->report.rt = p->digitalRt ? 255 : p->analogRt;
         } else if (ev.code == BTN_DPAD_UP || ev.code == BTN_DPAD_DOWN
                 || ev.code == BTN_DPAD_LEFT || ev.code == BTN_DPAD_RIGHT) {
             setDpadButton(p, ev.code, ev.value != 0);
@@ -722,9 +827,11 @@ bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& ga
             p->hatY = ev.value < 0 ? -1 : (ev.value > 0 ? 1 : 0);
             p->report.hat = computeHat(*p);
         } else if (ev.code == p->triggerRCode) {
-            p->report.rt = mapTrigger(p->triggerR, ev.value);
+            p->analogRt = mapTrigger(p->triggerR, ev.value, p->triggerRRestAtMax);
+            p->report.rt = p->digitalRt ? 255 : p->analogRt;
         } else if (ev.code == p->triggerLCode) {
-            p->report.lt = mapTrigger(p->triggerL, ev.value);
+            p->analogLt = mapTrigger(p->triggerL, ev.value, p->triggerLRestAtMax);
+            p->report.lt = p->digitalLt ? 255 : p->analogLt;
         }
         return true;
     }
@@ -812,7 +919,8 @@ int main(int argc, char** argv) {
     }
 
     Gains gains{};
-    (void)readGains(gainFile, &gains);
+    uint64_t gainInode = 0;
+    (void)readGainsIfChanged(gainFile, &gains, &gainInode);
     printf("STATUS starting mouse=%d gamepad=%d\n", gains.mouse, gains.gamepad);
 
     MouseProxy mouse{};
@@ -833,7 +941,7 @@ int main(int argc, char** argv) {
             lastHeartbeat = now;
         }
         if (now - lastConfig >= kConfigIntervalMs) {
-            if (readGains(gainFile, &gains)) {
+            if (readGainsIfChanged(gainFile, &gains, &gainInode)) {
                 printf("STATUS gain mouse=%d gamepad=%d\n", gains.mouse, gains.gamepad);
             }
             lastConfig = now;

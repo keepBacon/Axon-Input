@@ -2,7 +2,7 @@ package com.axon.input;
 
 import android.view.KeyEvent;
 
-/** 统一手柄按键语义。轴数据来自 /dev/input，按键名称来自 Android KeyEvent。 */
+/** 统一手柄按键语义。优先使用物理扫描码。 */
 public final class GamepadButtons {
     private GamepadButtons() {}
 
@@ -22,8 +22,35 @@ public final class GamepadButtons {
         };
     }
 
-    /** X/Y 必须同时映射，避免设备编码差异造成状态错误。 */
-    public static int overrideGroupForAndroidKeyCode(int keyCode) {
+    /** Linux evdev 标准扫描码。用于修正厂商错误 KeyCode。 */
+    private static int fromScanCode(int scanCode) {
+        return switch (scanCode) {
+            case 304 -> GamepadOverlayView.BTN_SOUTH; // BTN_SOUTH
+            case 305 -> GamepadOverlayView.BTN_EAST;  // BTN_EAST
+            case 307 -> GamepadOverlayView.BTN_NORTH; // BTN_NORTH
+            case 308 -> GamepadOverlayView.BTN_WEST;  // BTN_WEST
+            case 310 -> GamepadOverlayView.BTN_L1;    // BTN_TL
+            case 311 -> GamepadOverlayView.BTN_R1;    // BTN_TR
+            case 312 -> GamepadOverlayView.BTN_L2;    // BTN_TL2
+            case 313 -> GamepadOverlayView.BTN_R2;    // BTN_TR2
+            case 317 -> GamepadOverlayView.BTN_L3;    // BTN_THUMBL
+            case 318 -> GamepadOverlayView.BTN_R3;    // BTN_THUMBR
+            default -> 0;
+        };
+    }
+
+    public static int fromAndroidEvent(KeyEvent event) {
+        if (event == null) return 0;
+        int scanMapped = fromScanCode(event.getScanCode());
+        if (scanMapped != 0) return scanMapped;
+        return fromAndroidKeyCode(event.getKeyCode());
+    }
+
+    public static int overrideGroupForAndroidEvent(KeyEvent event) {
+        if (event == null) return 0;
+        int scanMapped = fromScanCode(event.getScanCode());
+        if (scanMapped != 0) return scanMapped;
+        int keyCode = event.getKeyCode();
         if (keyCode == KeyEvent.KEYCODE_BUTTON_X || keyCode == KeyEvent.KEYCODE_BUTTON_Y) {
             return GamepadOverlayView.BTN_WEST | GamepadOverlayView.BTN_NORTH;
         }

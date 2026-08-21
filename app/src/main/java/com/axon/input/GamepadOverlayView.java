@@ -49,6 +49,8 @@ public final class GamepadOverlayView extends FrameLayout {
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint accentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect = new RectF();
+    private final Typeface typefaceNormal;
+    private final Typeface typefaceBold;
 
     private DragListener dragListener;
     private boolean dragEnabled;
@@ -112,6 +114,8 @@ public final class GamepadOverlayView extends FrameLayout {
     public GamepadOverlayView(Context context, int displayType) {
         super(context);
         this.displayType = displayType;
+        typefaceNormal = FontManager.normal(context);
+        typefaceBold = FontManager.bold(context);
         setWillNotDraw(false);
         setLayerType(LAYER_TYPE_HARDWARE, null);
 
@@ -122,7 +126,7 @@ public final class GamepadOverlayView extends FrameLayout {
         strokePaint.setColor(UiPalette.overlayStroke(context));
         textPaint.setStyle(Paint.Style.FILL);
         textPaint.setTextAlign(Paint.Align.CENTER);
-        textPaint.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+        textPaint.setTypeface(typefaceBold);
         textPaint.setColor(UiPalette.overlayTextIdle(context));
         accentPaint.setStyle(Paint.Style.FILL);
         accentPaint.setColor(UiPalette.overlayKeyPressed(context));
@@ -385,7 +389,7 @@ public final class GamepadOverlayView extends FrameLayout {
             canvas.drawText(label, cx, primaryBaseline, textPaint);
 
             textPaint.setTextSize(Math.min(radius * 0.28f, dp(7.5f)));
-            textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
+            textPaint.setTypeface(typefaceNormal);
             Paint.FontMetrics dpsFm = textPaint.getFontMetrics();
             float dpsBaseline = cy + radius * 0.62f - dpsFm.descent;
             canvas.drawText(dps + " CPS", cx, dpsBaseline, textPaint);
@@ -462,7 +466,7 @@ public final class GamepadOverlayView extends FrameLayout {
         // CPS 固定在主标签下方，空间不足时优先缩小。
         final float dpsSize = Math.min(area.height() * 0.17f, dp(8.5f));
         textPaint.setTextSize(Math.max(dp(6f), dpsSize));
-        textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
+        textPaint.setTypeface(typefaceNormal);
         Paint.FontMetrics dpsFm = textPaint.getFontMetrics();
         float dpsBaseline = area.bottom - dp(3f) - dpsFm.descent;
         canvas.drawText(dps + " CPS", area.centerX(), dpsBaseline, textPaint);

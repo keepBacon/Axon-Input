@@ -31,6 +31,7 @@ public final class OverlayState {
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_MOUSE_ENABLED = "mouse_enabled";
+    private static final String KEY_INPUT_FULL_KEYBOARD_ENABLED = "input_full_keyboard_enabled";
     private static final String KEY_KEY_PROMPT_ENABLED = "key_prompt_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_ENABLED = "mouse_trajectory_enabled";
     private static final String KEY_CUSTOM_ENABLED = "custom_enabled";
@@ -170,6 +171,15 @@ public final class OverlayState {
         AxonInputAccessibilityService.refreshActiveService();
     }
 
+    public static boolean isInputFullKeyboardEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_INPUT_FULL_KEYBOARD_ENABLED, false);
+    }
+
+    public static void setInputFullKeyboardEnabled(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(KEY_INPUT_FULL_KEYBOARD_ENABLED, enabled).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
     public static boolean isMouseEnabled(Context context) {
         return prefs(context).getBoolean(KEY_MOUSE_ENABLED, false);
     }
@@ -286,7 +296,7 @@ public final class OverlayState {
     }
 
     public static boolean isAnyDisplayEnabled(Context context) {
-        return isEnabled(context) || isMouseEnabled(context) || isKeyPromptEnabled(context)
+        return isEnabled(context) || isInputFullKeyboardEnabled(context) || isMouseEnabled(context) || isKeyPromptEnabled(context)
                 || isCustomEnabled(context) || isMouseTrajectoryEnabled(context)
                 || isDpsEnabled(context) || isAnyGamepadDisplayEnabled(context);
     }
@@ -348,7 +358,7 @@ public final class OverlayState {
     public static void setSensitivityMode(Context context, int mode) {
         int resolved = mode == SENSITIVITY_MODE_ROOT ? SENSITIVITY_MODE_ROOT : SENSITIVITY_MODE_SHIZUKU;
         prefs(context).edit().putInt(KEY_SENSITIVITY_MODE, resolved).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        AxonInputAccessibilityService.refreshSensitivity();
     }
 
     public static boolean isSensitivityEnabled(Context context) {
@@ -357,7 +367,7 @@ public final class OverlayState {
 
     public static void setSensitivityEnabled(Context context, boolean enabled) {
         prefs(context).edit().putBoolean(KEY_SENSITIVITY_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        AxonInputAccessibilityService.refreshSensitivity();
     }
 
     public static int getMouseSensitivity(Context context) {
@@ -366,7 +376,7 @@ public final class OverlayState {
 
     public static void setMouseSensitivity(Context context, int percent) {
         prefs(context).edit().putInt(KEY_MOUSE_SENSITIVITY, clampSensitivity(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        AxonInputAccessibilityService.refreshSensitivity();
     }
 
     public static int getGamepadSensitivity(Context context) {
@@ -375,7 +385,7 @@ public final class OverlayState {
 
     public static void setGamepadSensitivity(Context context, int percent) {
         prefs(context).edit().putInt(KEY_GAMEPAD_SENSITIVITY, clampSensitivity(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        AxonInputAccessibilityService.refreshSensitivity();
     }
 
     public static String getSensitivityStatus(Context context) {

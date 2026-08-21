@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
@@ -49,11 +50,17 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private static final int HTML_REQUEST_GLOBAL = 6200;
     private static final int CONFIG_EXPORT_REQUEST = 6201;
     private static final int CONFIG_IMPORT_REQUEST = 6202;
+    private static final int FONT_IMPORT_REQUEST = 6203;
     private static final int MAX_CONFIG_BYTES = 4 * 1024 * 1024;
     private static final int MAX_HTML_BYTES = 2 * 1024 * 1024;
     private static final int SIZE_MIN = 50;
     private static final int SIZE_MAX = 150;
     private static final int OPACITY_MAX = 100;
+    private static final int SENSITIVITY_FINE_MAX = 200;
+    private static final int SENSITIVITY_HIGH_STEP = 5;
+    private static final int SENSITIVITY_MAX = 500;
+    private static final int SENSITIVITY_SEEKBAR_MAX = 259;
+    private static final String KOOK_CHANNEL_URL = "https://kook.vip/GYYrsE";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -82,6 +89,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private SeekBar customSizeSeekBar;
     private Switch captureSwitch;
     private Switch dragSwitch;
+    private Switch inputFullKeyboardSwitch;
     private Switch dpsSwitch;
     private LinearLayout dpsDetails;
     private TextView dpsTargetText;
@@ -144,6 +152,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private Button globalHtmlImportButton;
     private TextView globalHtmlStatusText;
     private LinearLayout globalHtmlDetails;
+    private Button fontImportButton;
+    private TextView fontStatusText;
 
     private boolean internalChange;
     private boolean waitingForShizuku;
@@ -243,6 +253,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardDetails.addView(spaceDpsSwitch, switchParams(dp(2)));
         addMotionControls(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD, R.string.keyboard_motion_label);
         root.addView(createFeatureGroup(displaySwitch, keyboardDetails), contentParams(dp(10)));
+
+        inputFullKeyboardSwitch = createSwitch(R.string.input_full_keyboard_switch_label);
+        root.addView(createSwitchGroup(inputFullKeyboardSwitch), contentParams(dp(10)));
 
         mouseSwitch = createSwitch(R.string.mouse_switch_label);
         mouseDetails = createDetailsContainer();
@@ -431,6 +444,24 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadSensitivitySeekBar = createSensitivitySeekBar();
         sensitivityDetails.addView(gamepadSensitivitySeekBar, seekBarLayoutParams(dp(4)));
 
+        Button sensitivityResetButton = new Button(this);
+        sensitivityResetButton.setText(R.string.sensitivity_reset);
+        sensitivityResetButton.setAllCaps(false);
+        sensitivityResetButton.setTextSize(12f);
+        sensitivityResetButton.setMinHeight(dp(36));
+        sensitivityResetButton.setMinimumHeight(dp(36));
+        sensitivityDetails.addView(sensitivityResetButton, supportingParams(dp(4)));
+        sensitivityResetButton.setOnClickListener(v -> {
+            OverlayState.setMouseSensitivity(MainActivity.this, 100);
+            OverlayState.setGamepadSensitivity(MainActivity.this, 100);
+            internalChange = true;
+            mouseSensitivitySeekBar.setProgress(sensitivityToProgress(100));
+            gamepadSensitivitySeekBar.setProgress(sensitivityToProgress(100));
+            mouseSensitivityLabel.setText(getString(R.string.mouse_sensitivity_format, 100));
+            gamepadSensitivityLabel.setText(getString(R.string.gamepad_sensitivity_format, 100));
+            internalChange = false;
+        });
+
         TextView sensitivityHint = createSupportingText();
         sensitivityHint.setText(R.string.sensitivity_hint);
         sensitivityDetails.addView(sensitivityHint, supportingParams(dp(6)));
@@ -456,6 +487,27 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         dragSwitch = createSwitch(R.string.drag_switch_label);
         root.addView(createSwitchGroup(dragSwitch), contentParams(dp(10)));
+
+        LinearLayout fontGroup = new LinearLayout(this);
+        fontGroup.setOrientation(LinearLayout.VERTICAL);
+        fontGroup.setPadding(dp(14), dp(10), dp(14), dp(12));
+        fontGroup.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 12f));
+        TextView fontTitle = createLabel();
+        fontTitle.setText(R.string.font_import_title);
+        fontGroup.addView(fontTitle, supportingParams(dp(6)));
+        fontImportButton = new Button(this);
+        fontImportButton.setText(R.string.font_import_button);
+        fontImportButton.setAllCaps(false);
+        fontImportButton.setTextSize(13f);
+        fontImportButton.setMinHeight(dp(38));
+        fontImportButton.setMinimumHeight(dp(38));
+        fontGroup.addView(fontImportButton, supportingParams(dp(4)));
+        fontStatusText = createSupportingText();
+        fontGroup.addView(fontStatusText, supportingParams(dp(2)));
+        TextView fontHint = createSupportingText();
+        fontHint.setText(R.string.font_import_hint);
+        fontGroup.addView(fontHint, supportingParams(0));
+        root.addView(fontGroup, contentParams(dp(10)));
 
         globalHtmlSwitch = createSwitch(R.string.global_html_switch_label);
         globalHtmlDetails = createDetailsContainer();
@@ -492,6 +544,15 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         });
         root.addView(htmlGuideLink, contentParams(0));
 
+        TextView kookJoinLink = createSupportingText();
+        kookJoinLink.setText(R.string.kook_join_link);
+        kookJoinLink.setTextSize(10f);
+        kookJoinLink.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        kookJoinLink.setPaintFlags(kookJoinLink.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+        kookJoinLink.setPadding(0, dp(8), dp(8), dp(2));
+        kookJoinLink.setOnClickListener(v -> openKookChannel());
+        root.addView(kookJoinLink, contentParams(0));
+
         scrollView.addView(root, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -524,6 +585,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         spaceDpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
             if (!internalChange) OverlayState.setKeyboardSpaceDpsEnabled(this, enabled);
+        });
+
+        inputFullKeyboardSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            OverlayState.setInputFullKeyboardEnabled(this, enabled);
+            handleDisplayModeChanged();
         });
 
         mouseSwitch.setOnCheckedChangeListener((button, enabled) -> {
@@ -788,6 +855,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             }
         });
         globalHtmlImportButton.setOnClickListener(v -> openGlobalHtmlPicker());
+        fontImportButton.setOnClickListener(v -> openFontPicker());
 
         autoHideSwitch.setOnCheckedChangeListener((button, enabled) -> {
             if (internalChange) return;
@@ -833,6 +901,26 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             return true;
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    private void openKookChannel() {
+        Uri uri = Uri.parse(KOOK_CHANNEL_URL);
+
+        // 优先交给已安装的 KOOK。
+        Intent kookIntent = new Intent(Intent.ACTION_VIEW, uri);
+        kookIntent.setPackage("cn.kaiheila");
+        try {
+            startActivity(kookIntent);
+            return;
+        } catch (ActivityNotFoundException ignored) {
+            // 未安装 KOOK 时使用浏览器。
+        }
+
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, uri));
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, R.string.kook_open_failed, Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void handleDisplayModeChanged() {
@@ -884,6 +972,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         spaceDisplaySwitch.setChecked(OverlayState.isKeyboardSpaceEnabled(this));
         spaceDpsSwitch.setChecked(OverlayState.isKeyboardSpaceDpsEnabled(this));
         spaceDpsSwitch.setEnabled(spaceDisplaySwitch.isChecked());
+        inputFullKeyboardSwitch.setChecked(OverlayState.isInputFullKeyboardEnabled(this));
         mouseSwitch.setChecked(OverlayState.isMouseEnabled(this));
         keyPromptSwitch.setChecked(OverlayState.isKeyPromptEnabled(this));
         mouseTrajectorySwitch.setChecked(OverlayState.isMouseTrajectoryEnabled(this));
@@ -975,11 +1064,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadRightShoulderSizeLabel.setText(getString(R.string.gamepad_right_shoulder_size_format, gamepadRightShoulderSize));
 
         int mouseSensitivity = OverlayState.getMouseSensitivity(this);
-        mouseSensitivitySeekBar.setProgress(mouseSensitivity - 1);
+        mouseSensitivitySeekBar.setProgress(sensitivityToProgress(mouseSensitivity));
         mouseSensitivityLabel.setText(getString(R.string.mouse_sensitivity_format, mouseSensitivity));
 
         int gamepadSensitivity = OverlayState.getGamepadSensitivity(this);
-        gamepadSensitivitySeekBar.setProgress(gamepadSensitivity - 1);
+        gamepadSensitivitySeekBar.setProgress(sensitivityToProgress(gamepadSensitivity));
         gamepadSensitivityLabel.setText(getString(R.string.gamepad_sensitivity_format, gamepadSensitivity));
         sensitivityStatusText.setText(getString(
                 R.string.sensitivity_status_format, OverlayState.getSensitivityStatus(this)));
@@ -1014,6 +1103,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         setDetailsVisible(sensitivityDetails, sensitivitySwitch.isChecked());
         setDetailsVisible(globalHtmlDetails, globalHtmlSwitch.isChecked());
         syncGlobalHtmlUi();
+        syncFontUi();
         internalChange = false;
         mainHandler.removeCallbacks(sensitivityStatusTicker);
         if (sensitivitySwitch.isChecked()) mainHandler.post(sensitivityStatusTicker);
@@ -1026,10 +1116,22 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
         Uri uri = data.getData();
+        if (requestCode == FONT_IMPORT_REQUEST) {
+            try {
+                FontManager.importFont(this, uri, queryDisplayName(uri, "font.ttf"));
+                syncFontUi();
+                AxonInputAccessibilityService.refreshTheme();
+                Toast.makeText(this, R.string.font_import_success, Toast.LENGTH_SHORT).show();
+            } catch (Throwable error) {
+                Toast.makeText(this, R.string.font_import_failed, Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+
         if (requestCode == HTML_REQUEST_GLOBAL) {
             try {
                 String html = readText(uri, MAX_HTML_BYTES);
-                String name = queryDisplayName(uri);
+                String name = queryDisplayName(uri, "display.html");
                 OverlayState.saveGlobalHtml(this, name, html);
                 internalChange = true;
                 globalHtmlSwitch.setChecked(true);
@@ -1505,6 +1607,27 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         spinner.setSelection(OverlayState.getMotionMode(this, displayType), false);
     }
 
+    private void openFontPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/octet-stream");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                "font/ttf", "font/otf", "application/x-font-ttf",
+                "application/x-font-opentype", "application/octet-stream"});
+        startActivityForResult(intent, FONT_IMPORT_REQUEST);
+    }
+
+    private void syncFontUi() {
+        if (fontStatusText == null) return;
+        if (!FontManager.hasImportedFont(this)) {
+            fontStatusText.setText(R.string.font_import_default);
+            return;
+        }
+        String name = FontManager.getImportedFontName(this);
+        if (name == null || name.isEmpty()) name = "自定义字体";
+        fontStatusText.setText(getString(R.string.font_imported_format, name));
+    }
+
     private void openGlobalHtmlPicker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -1541,8 +1664,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         }
     }
 
-    private String queryDisplayName(Uri uri) {
-        String name = "display.html";
+    private String queryDisplayName(Uri uri, String fallback) {
+        String name = fallback == null || fallback.isEmpty() ? "file" : fallback;
         try (Cursor cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) {
                 int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
@@ -1839,9 +1962,23 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private SeekBar createSensitivitySeekBar() {
         SeekBar seekBar = new SeekBar(this);
-        seekBar.setMax(499); // 范围 1..500%
+        seekBar.setMax(SENSITIVITY_SEEKBAR_MAX);
         seekBar.setPadding(0, 0, 0, 0);
         return seekBar;
+    }
+
+    private int sensitivityFromProgress(int progress) {
+        int p = Math.max(0, Math.min(SENSITIVITY_SEEKBAR_MAX, progress));
+        if (p < SENSITIVITY_FINE_MAX) return p + 1;
+        return Math.min(SENSITIVITY_MAX,
+                SENSITIVITY_FINE_MAX + (p - (SENSITIVITY_FINE_MAX - 1)) * SENSITIVITY_HIGH_STEP);
+    }
+
+    private int sensitivityToProgress(int value) {
+        int v = Math.max(1, Math.min(SENSITIVITY_MAX, value));
+        if (v <= SENSITIVITY_FINE_MAX) return v - 1;
+        return (SENSITIVITY_FINE_MAX - 1)
+                + Math.round((v - SENSITIVITY_FINE_MAX) / (float) SENSITIVITY_HIGH_STEP);
     }
 
     private interface SizeSetter {
@@ -1864,15 +2001,38 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private SeekBar.OnSeekBarChangeListener sensitivityListener(TextView label, int formatRes, SizeSetter setter) {
         return new SeekBar.OnSeekBarChangeListener() {
+            private static final long APPLY_INTERVAL_MS = 40L;
+            private int pendingValue = 100;
+            private int lastAppliedValue = Integer.MIN_VALUE;
+            private long lastApplyAt;
+
+            private final Runnable flush = () -> {
+                if (internalChange || pendingValue == lastAppliedValue) return;
+                setter.set(pendingValue);
+                lastAppliedValue = pendingValue;
+                lastApplyAt = SystemClock.uptimeMillis();
+            };
+
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                int value = progress + 1;
+                int value = sensitivityFromProgress(progress);
                 label.setText(getString(formatRes, value));
-                if (fromUser && !internalChange) setter.set(value);
+                if (!fromUser || internalChange) return;
+                pendingValue = value;
+                long now = SystemClock.uptimeMillis();
+                long wait = APPLY_INTERVAL_MS - (now - lastApplyAt);
+                mainHandler.removeCallbacks(flush);
+                if (wait <= 0L) flush.run();
+                else mainHandler.postDelayed(flush, wait);
             }
 
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                mainHandler.removeCallbacks(flush);
+                flush.run();
+            }
         };
     }
 
