@@ -15,11 +15,7 @@ import android.widget.FrameLayout;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * “最近按键提示”在 KeyDisplay 中的适配版本。
- * 原生模式保留最近六个输入、按压反馈、释放停留、横向让位和 CPS。
- * 开启全局 HTML 后，同一输入状态会发送给 HTML，页面可完全重写颜色、形状和动效。
- */
+/** 最近按键提示。原生模式显示最近六个输入和 CPS。HTML 模式接收相同输入状态。 */
 public final class KeyPromptOverlayView extends FrameLayout {
     public static final int DISPLAY_KEY_PROMPT = 20;
 

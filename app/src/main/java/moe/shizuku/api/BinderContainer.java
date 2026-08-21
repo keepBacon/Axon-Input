@@ -4,7 +4,7 @@ import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
 
-/** Minimal BinderContainer compatible with the Shizuku provider protocol. */
+/** 兼容 Shizuku Provider 协议的 Binder 容器。 */
 public final class BinderContainer implements Parcelable {
     public final IBinder binder;
 

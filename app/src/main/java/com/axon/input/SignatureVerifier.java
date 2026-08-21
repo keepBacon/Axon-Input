@@ -7,10 +7,7 @@ import android.content.pm.Signature;
 
 import java.security.MessageDigest;
 
-/**
- * Lightweight APK signing-certificate verification.
- * Runs once per process from AxonApplication and never participates in input/render hot paths.
- */
+/** APK 签名证书校验。每个进程只执行一次。 */
 final class SignatureVerifier {
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
@@ -32,7 +29,7 @@ final class SignatureVerifier {
                 digest.reset();
             }
         } catch (Exception ignored) {
-            // Fail closed: an unreadable or unexpected signing state is treated as invalid.
+            // 签名状态无法读取时按无效处理。
         }
         return false;
     }

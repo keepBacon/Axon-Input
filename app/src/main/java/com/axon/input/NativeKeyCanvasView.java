@@ -10,10 +10,7 @@ import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
 
-/**
- * 键盘、鼠标、自定义键位的原生 Canvas 绘制器。
- * 每个按键独立保存动画状态。大小、透明、无动效都在这里处理，避免不同悬浮窗重复实现。
- */
+/** 键盘、鼠标和自定义键位的 Canvas 绘制器。统一处理尺寸、透明度和动画。 */
 public final class NativeKeyCanvasView extends View {
     public static final int DISPLAY_KEYBOARD = 1;
     public static final int DISPLAY_CUSTOM = 2;
@@ -164,14 +161,14 @@ public final class NativeKeyCanvasView extends View {
         postInvalidateOnAnimation();
     }
 
-    /** Reverse-safe enter animation. Calling this while exiting simply reverses the spring. */
+    /** 进入动画支持从退出状态反向恢复。 */
     public void animateIn() {
         exitCallback = null;
         windowTarget = 1f;
         postInvalidateOnAnimation();
     }
 
-    /** Scale-only exit animation. */
+    /** 退出动画只改变缩放。 */
     public void animateOut(Runnable endAction) {
         exitCallback = endAction;
         windowTarget = 0f;
@@ -228,7 +225,7 @@ public final class NativeKeyCanvasView extends View {
             }
         }
 
-        // Content changes pop in through geometry only; there is no alpha animation.
+        // 内容变化只调整几何参数，不改变透明度。
         revealProgress = 0f;
         revealVelocity = 0f;
         postInvalidateOnAnimation();
@@ -345,7 +342,7 @@ public final class NativeKeyCanvasView extends View {
         float centerY = getHeight() * 0.5f;
         float top = dp(5);
 
-        // Window enter/exit is 92% <-> 100%. Drag adds a subtle 1.6% compression.
+        // 窗口进入和退出使用 92% 到 100% 缩放。拖动时压缩 1.6%。
         float windowScale = 0.92f + 0.08f * clamp(windowProgress, 0f, 1.08f);
         float dragScale = 1f - 0.016f * clamp(dragProgress, 0f, 1.05f);
         canvas.scale(windowScale * dragScale, windowScale * dragScale, centerX, centerY);
@@ -457,7 +454,7 @@ public final class NativeKeyCanvasView extends View {
         final float mouseRadius = dp(24);
         final RectF shell = new RectF(left, top, right, bottom);
 
-        // Dark underlay makes each independently scaling mouse button visible during release too.
+        // 底层深色区域用于保持鼠标按键释放时可见。
         fillPaint.setStyle(Paint.Style.FILL);
         fillPaint.setColor(shellColor);
         canvas.drawRoundRect(shell, mouseRadius, mouseRadius, fillPaint);
@@ -502,7 +499,7 @@ public final class NativeKeyCanvasView extends View {
         canvas.scale(scale, scale, cx, cy);
 
         textPaint.setColor(withMotionAlpha(pressed ? textPressedColor : textIdleColor, motion));
-        // Keep L/R at its original 13dp. DPS is smaller and always subordinate below it.
+        // L/R 保持 13dp。DPS 使用更小字号。
         textPaint.setTextSize(dp(13));
         textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
         canvas.drawText(side, cx, cy - dp(5), textPaint);
@@ -533,14 +530,14 @@ public final class NativeKeyCanvasView extends View {
 
         textPaint.setColor(withMotionAlpha(pressed ? textPressedColor : textIdleColor, motion));
         if (space && showSpaceDps) {
-            // Space keeps the same 14dp size as when DPS is off.
+            // Space 始终保持 14dp。
             textPaint.setTextSize(dp(14));
             textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
             Paint.FontMetrics fm = textPaint.getFontMetrics();
             float centerBaseline = cy - (fm.ascent + fm.descent) * 0.5f;
             canvas.drawText(label, cx, centerBaseline - dp(5), textPaint);
 
-            // Shrink DPS first if the key is tight; never shrink the primary Space label.
+            // 空间不足时只缩小 DPS，不缩小 Space。
             float dpsSize = Math.min(dp(8f), Math.max(dp(6f), height * 0.16f));
             textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
             textPaint.setTextSize(dpsSize);
@@ -615,7 +612,7 @@ public final class NativeKeyCanvasView extends View {
         return true;
     }
 
-    /** Updates springScratch[0]=value and springScratch[1]=velocity without per-frame allocations. */
+    /** 更新弹簧值和速度，不产生每帧分配。 */
     private boolean advanceScalarSpring(float value, float currentVelocity, float targetValue,
                                         float dt, float stiffness, float damping) {
         float acceleration = stiffness * (targetValue - value) - damping * currentVelocity;

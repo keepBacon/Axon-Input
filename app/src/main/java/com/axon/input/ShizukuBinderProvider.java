@@ -9,7 +9,7 @@ import android.os.IBinder;
 
 import moe.shizuku.api.BinderContainer;
 
-/** 按 Shizuku provider 协议接收服务端 Binder。 */
+/** 按 Shizuku Provider 协议接收服务端 Binder。 */
 public final class ShizukuBinderProvider extends ContentProvider {
     private static final String METHOD_SEND_BINDER = "sendBinder";
     private static final String METHOD_GET_BINDER = "getBinder";

@@ -2,12 +2,7 @@ package com.axon.input;
 
 import android.view.KeyEvent;
 
-/**
- * 手柄数字按键的统一语义层。
- *
- * 原始 /dev/input 主要负责低延迟轴数据；Android KeyEvent 负责确认 A/B/X/Y 等文字语义。
- * 这样可以避开部分手柄驱动在 BTN_NORTH / BTN_WEST 上的标签差异。
- */
+/** 统一手柄按键语义。轴数据来自 /dev/input，按键名称来自 Android KeyEvent。 */
 public final class GamepadButtons {
     private GamepadButtons() {}
 
@@ -27,9 +22,7 @@ public final class GamepadButtons {
         };
     }
 
-    /**
-     * X/Y 必须成组接管。若设备底层把两者的 evdev 编码对调，只覆盖一个会造成两个灯同时亮。
-     */
+    /** X/Y 必须同时映射，避免设备编码差异造成状态错误。 */
     public static int overrideGroupForAndroidKeyCode(int keyCode) {
         if (keyCode == KeyEvent.KEYCODE_BUTTON_X || keyCode == KeyEvent.KEYCODE_BUTTON_Y) {
             return GamepadOverlayView.BTN_WEST | GamepadOverlayView.BTN_NORTH;

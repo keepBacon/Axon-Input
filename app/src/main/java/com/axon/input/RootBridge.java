@@ -7,7 +7,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.concurrent.TimeUnit;
 
-/** Root 灵敏度超频模式使用的最小 su 命令通道。 */
+/** Root 模式使用的 su 命令通道。 */
 public final class RootBridge {
     private RootBridge() {}
 
@@ -47,7 +47,7 @@ public final class RootBridge {
                 .start();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
             while (reader.readLine() != null) {
-                // Drain output so root managers / shells cannot block on a full pipe.
+                // 持续读取输出，避免管道阻塞。
             }
         }
         return process.waitFor();

@@ -16,14 +16,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Set;
 
-/** 显式保存、加载、导出、导入用户配置。运行参数会保留到当前应用任务真正退出。 */
+/** 处理配置保存、加载、导出和导入。 */
 public final class ConfigManager {
     private static final String FORMAT = "KeyDisplayConfig";
     private static final int VERSION = 1;
     private static final int MAX_CONFIG_BYTES = 4 * 1024 * 1024;
     private static final String SLOT1_FILE = "config_slot_1.json";
 
-    // 密码授权和临时录入状态不属于配置文件，导出时跳过。
+    // 导出时跳过密码授权和临时录入状态。
     private static final String KEY_ENTRY_AUTHORIZED = "entry_authorized";
     private static final String KEY_CUSTOM_CAPTURE = "custom_capture";
     private static final String KEY_CUSTOM_DRAFT = "custom_draft";
@@ -98,7 +98,7 @@ public final class ConfigManager {
             }
         }
 
-        // 密码授权单独持久化，不属于配置文件。录入中的临时状态也不恢复。
+        // 密码授权单独保存，临时录入状态不恢复。
         editor.putBoolean(KEY_CUSTOM_CAPTURE, false);
         editor.putString(KEY_CUSTOM_DRAFT, "");
         editor.putString(KEY_SENSITIVITY_STATUS, "未启用");

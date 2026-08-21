@@ -10,10 +10,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 
-/**
- * 原生 Canvas 手柄 HUD。左摇杆、右摇杆、ABXY、左肩键、右肩键分别是独立悬浮窗口。
- * 此类只维护绘制和动画状态，不负责读取设备文件。
- */
+/** 手柄 HUD。各区域使用独立悬浮窗口，只负责绘制和动画。 */
 public final class GamepadOverlayView extends FrameLayout {
     public static final int DISPLAY_LEFT_STICK = 10;
     public static final int DISPLAY_RIGHT_STICK = 11;
@@ -252,7 +249,7 @@ public final class GamepadOverlayView extends FrameLayout {
         invalidate();
     }
 
-    /** State ranges: sticks -1000..1000, triggers 0..1000, buttons use Linux gamepad bits. */
+    /** 状态范围：摇杆 -1000..1000，扳机 0..1000，按键使用 Linux 位状态。 */
     public void setGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttonMask) {
         if (displayType == DISPLAY_LEFT_STICK) {
             targetX = clamp(lx / 1000f, -1f, 1f);
@@ -269,7 +266,7 @@ public final class GamepadOverlayView extends FrameLayout {
             boolean pressed = displayType == DISPLAY_LEFT_STICK
                     ? (buttons & BTN_L3) != 0 : (buttons & BTN_R3) != 0;
             if (pressed && !stickPressDown) {
-                // L3/R3 feedback is size-only: a short radial pulse without moving the knob.
+                // L3/R3 反馈只改变大小，不移动摇杆中心。
                 stickPulseVelocity += 8.2f;
                 postFrame();
             }
@@ -321,8 +318,8 @@ public final class GamepadOverlayView extends FrameLayout {
             canvas.drawCircle(cx, cy, outer, strokePaint);
         }
 
-        // Travel is based on the un-pulsed knob radius so L3/R3 size feedback never
-        // changes the knob center position, even while the stick is tilted.
+        // 移动范围按原始摇杆半径计算。
+        // L3/R3 缩放不会改变摇杆中心位置。
         float travel = outer - innerBase - side * 0.04f;
         float knobX = cx + shownX * travel;
         float knobY = cy + shownY * travel;
@@ -376,14 +373,14 @@ public final class GamepadOverlayView extends FrameLayout {
         canvas.drawCircle(cx, cy, r, body);
         canvas.drawCircle(cx, cy, r, strokePaint);
 
-        // Keep the primary label at exactly the same size whether DPS is enabled or not.
+        // DPS 开关不改变主标签字号。
         final float primarySize = radius * 0.92f;
         textPaint.setTextSize(primarySize);
         Paint.FontMetrics primaryFm = textPaint.getFontMetrics();
         float primaryBaseline = cy - (primaryFm.ascent + primaryFm.descent) * 0.5f;
 
         if (showDps) {
-            // Move only the baseline upward; never shrink Y/X/B/A just to make room for DPS.
+            // 显示 DPS 时只上移主标签，不缩小 Y/X/B/A。
             primaryBaseline -= radius * 0.16f;
             canvas.drawText(label, cx, primaryBaseline, textPaint);
 
@@ -453,7 +450,7 @@ public final class GamepadOverlayView extends FrameLayout {
         Typeface oldTypeface = textPaint.getTypeface();
         textPaint.setColor(pressed ? UiPalette.overlayTextPressed(getContext()) : UiPalette.overlayTextIdle(getContext()));
 
-        // Primary L1/R1 text uses the exact same size/typeface as drawCenteredText().
+        // L1/R1 主标签使用统一字号和字体。
         final float primarySize = Math.min(area.height() * 0.43f, dp(18f));
         textPaint.setTextSize(primarySize);
         textPaint.setTypeface(oldTypeface);
@@ -462,7 +459,7 @@ public final class GamepadOverlayView extends FrameLayout {
         primaryBaseline -= Math.min(dp(4f), area.height() * 0.09f);
         canvas.drawText(text, area.centerX(), primaryBaseline, textPaint);
 
-        // DPS is a subordinate readout: always below and allowed to shrink first when space is tight.
+        // DPS 固定在主标签下方，空间不足时优先缩小。
         final float dpsSize = Math.min(area.height() * 0.17f, dp(8.5f));
         textPaint.setTextSize(Math.max(dp(6f), dpsSize));
         textPaint.setTypeface(Typeface.create("sans", Typeface.NORMAL));
@@ -564,7 +561,7 @@ public final class GamepadOverlayView extends FrameLayout {
         float dt = Math.min(0.022f, Math.max(0.001f, (now - lastFrameMs) / 1000f));
         lastFrameMs = now;
 
-        // Stick: quick, near-critically-damped tracking. No deliberate overshoot.
+        // 摇杆使用接近临界阻尼的快速跟随。
         float ax = 210f * (targetX - shownX) - 28f * velocityX;
         float ay = 210f * (targetY - shownY) - 28f * velocityY;
         velocityX += ax * dt;
@@ -579,8 +576,8 @@ public final class GamepadOverlayView extends FrameLayout {
         shownLt += triggerVelocityLt * dt;
         shownRt += triggerVelocityRt * dt;
 
-        // L3/R3 radial pulse. Slightly under-damped so the knob gives one compact tactile-looking
-        // size vibration while its center position remains exactly unchanged.
+        // L3/R3 使用轻微欠阻尼缩放。
+        // 缩放时保持摇杆中心位置不变。
         float stickPulseA = -300f * stickPulse - 24f * stickPulseVelocity;
         stickPulseVelocity += stickPulseA * dt;
         stickPulse += stickPulseVelocity * dt;

@@ -11,7 +11,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-/** 应用内 HTML API 文档页面。示例与 GlobalHtmlWebView 的公开状态结构保持同步。 */
+/** 应用内 HTML API 文档页。 */
 public final class HtmlGuideActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {

@@ -18,12 +18,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Lightweight startup update check.
- *
- * The network request runs once per process and never touches the input/render hot path.
- * Update metadata is controlled by version.json in the public GitHub repository.
- */
+/** 启动时检查更新。每个进程只请求一次 version.json。 */
 final class UpdateChecker {
     private static final String VERSION_INFO_URL =
             "https://raw.githubusercontent.com/keepBacon/Axon-Input/main/version.json";
@@ -76,7 +71,7 @@ final class UpdateChecker {
             String changelog = json.optString("changelog", "").trim();
             return new UpdateInfo(versionCode, versionName, changelog);
         } catch (Exception ignored) {
-            // Version checking must never interfere with app startup or input handling.
+            // 版本检查失败不影响启动和输入。
             return null;
         } finally {
             if (connection != null) connection.disconnect();

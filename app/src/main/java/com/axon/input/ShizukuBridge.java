@@ -16,9 +16,7 @@ import java.io.InputStream;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * 无 Gradle 构建使用的最小 Shizuku 客户端。只实现 Binder 连接、权限请求和受控 shell 执行。
- */
+/** Shizuku 客户端。负责 Binder 连接、权限请求和 shell 执行。 */
 public final class ShizukuBridge {
     public interface Listener {
         default void onShizukuReady(boolean permissionGranted) {}
@@ -30,15 +28,15 @@ public final class ShizukuBridge {
     private static final String APP_DESCRIPTOR = "moe.shizuku.server.IShizukuApplication";
     private static final String REMOTE_PROCESS_DESCRIPTOR = "moe.shizuku.server.IRemoteProcess";
 
-    // AIDL explicit transaction IDs are encoded as FIRST_CALL_TRANSACTION + id.
-    private static final int TX_NEW_PROCESS = 8;          // id 7
-    private static final int TX_REQUEST_PERMISSION = 15; // id 14
-    private static final int TX_CHECK_SELF_PERMISSION = 16; // id 15
-    private static final int TX_ATTACH_APPLICATION = 18; // id 17
+    // AIDL 事务号按 FIRST_CALL_TRANSACTION + id 计算。
+    private static final int TX_NEW_PROCESS = 8;          // 事务 7
+    private static final int TX_REQUEST_PERMISSION = 15; // 事务 14
+    private static final int TX_CHECK_SELF_PERMISSION = 16; // 事务 15
+    private static final int TX_ATTACH_APPLICATION = 18; // 事务 17
 
-    private static final int APP_TX_BIND_APPLICATION = 2; // id 1
-    private static final int APP_TX_PERMISSION_RESULT = 3; // id 2
-    private static final int APP_TX_SHOW_PERMISSION = 10001; // id 10000
+    private static final int APP_TX_BIND_APPLICATION = 2; // 事务 1
+    private static final int APP_TX_PERMISSION_RESULT = 3; // 事务 2
+    private static final int APP_TX_SHOW_PERMISSION = 10001; // 事务 10000
 
     private static final int PROCESS_TX_GET_INPUT_STREAM = 2;
     private static final int PROCESS_TX_WAIT_FOR = 4;
@@ -180,7 +178,7 @@ public final class ShizukuBridge {
         try {
             permissionGranted = checkSelfPermissionRemote();
         } catch (Throwable ignored) {
-            // Keep the permission state received from attachApplication.
+            // 保留 attachApplication 返回的权限状态。
         }
         return permissionGranted;
     }
@@ -209,7 +207,7 @@ public final class ShizukuBridge {
         }
     }
 
-    /** Long-running Shizuku shell process with readable stdout. */
+    /** 可持续读取输出的 Shizuku shell 进程。 */
     public static final class ShellProcess implements Closeable {
         private final IBinder processBinder;
         private final ParcelFileDescriptor stdoutFd;
@@ -241,7 +239,7 @@ public final class ShizukuBridge {
         }
     }
 
-    /** Starts a long-running shell command and exposes its stdout stream. */
+    /** 启动持续运行的 shell 命令并返回输出流。 */
     public static ShellProcess startShell(String command) throws RemoteException {
         if (!hasPermission()) {
             throw new SecurityException("Shizuku permission is not granted");
@@ -255,7 +253,7 @@ public final class ShizukuBridge {
         return new ShellProcess(processBinder, stdout);
     }
 
-    /** Executes a fixed shell command with Shizuku identity. Call off the UI thread. */
+    /** 使用 Shizuku 身份执行固定命令。不要在 UI 线程调用。 */
     public static int runShell(String command) throws RemoteException {
         if (!hasPermission()) {
             throw new SecurityException("Shizuku permission is not granted");

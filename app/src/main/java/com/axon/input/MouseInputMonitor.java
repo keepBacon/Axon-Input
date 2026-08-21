@@ -6,7 +6,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.util.StringTokenizer;
 
-/** 通过 Shizuku shell 权限读取鼠标按键和相对移动，不修改原始鼠标事件。 */
+/** 通过 Shizuku shell 读取鼠标按键和相对移动，不修改原始事件。 */
 public final class MouseInputMonitor {
     public interface Listener {
         void onMouseState(long packedStats);
@@ -102,7 +102,7 @@ public final class MouseInputMonitor {
         return colon >= 0 ? line.substring(colon + 1).trim() : line.trim();
     }
 
-    /** 0 = REL_X, 1 = REL_Y, -1 = not a relative mouse axis event. */
+    /** 0 表示 REL_X，1 表示 REL_Y，-1 表示非相对轴事件。 */
     private int detectRelativeAxis(String payload) {
         if (payload.contains("REL_X")) return 0;
         if (payload.contains("REL_Y")) return 1;
@@ -111,9 +111,9 @@ public final class MouseInputMonitor {
         if (tokens.countTokens() < 3) return -1;
         int eventType = parseHexToken(tokens.nextToken());
         int eventCode = parseHexToken(tokens.nextToken());
-        if (eventType != 0x0002) return -1; // EV_REL
-        if (eventCode == 0x0000) return 0;  // REL_X
-        if (eventCode == 0x0001) return 1;  // REL_Y
+        if (eventType != 0x0002) return -1; // 相对轴事件
+        if (eventCode == 0x0000) return 0;  // X 轴
+        if (eventCode == 0x0001) return 1;  // Y 轴
         return -1;
     }
 
@@ -123,7 +123,7 @@ public final class MouseInputMonitor {
     }
 
     private int detectButton(String payload) {
-        // Android getevent may label Linux code 0x110 as BTN_LEFT or BTN_MOUSE.
+        // Android getevent 可能将 0x110 标记为 BTN_LEFT 或 BTN_MOUSE。
         if (payload.contains("BTN_LEFT") || payload.contains("BTN_MOUSE")) {
             return NativeKeyEngine.MOUSE_LEFT;
         }
@@ -136,7 +136,7 @@ public final class MouseInputMonitor {
         if (tokens.countTokens() < 2) return -1;
         int eventType = parseHexToken(tokens.nextToken());
         int eventCode = parseHexToken(tokens.nextToken());
-        if (eventType != 0x0001) return -1; // EV_KEY
+        if (eventType != 0x0001) return -1; // 按键事件
         if (eventCode == 0x0110) return NativeKeyEngine.MOUSE_LEFT;
         if (eventCode == 0x0111) return NativeKeyEngine.MOUSE_RIGHT;
         if (eventCode == 0x0112) return BUTTON_MIDDLE;
@@ -168,7 +168,7 @@ public final class MouseInputMonitor {
         }
     }
 
-    /** Parses Linux input_event values such as ffffffff as signed 32-bit integers. */
+    /** 将 Linux input_event 数值解析为有符号 32 位整数。 */
     private int parseSignedHexToken(String token) {
         try {
             long raw = Long.parseLong(token, 16) & 0xffffffffL;

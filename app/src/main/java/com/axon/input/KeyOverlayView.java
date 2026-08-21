@@ -6,10 +6,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 
-/**
- * 键盘、鼠标、自定义键位的悬浮窗容器。
- * 默认使用原生 Canvas。只有启用 HTML 自定义显示时才创建 WebView，关闭后立即销毁。
- */
+/** 键盘、鼠标和自定义键位的悬浮窗容器。默认使用 Canvas。HTML 模式启用时才创建 WebView。 */
 public final class KeyOverlayView extends FrameLayout {
     public static final int DISPLAY_KEYBOARD = 1;
     public static final int DISPLAY_CUSTOM = 2;

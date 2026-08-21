@@ -1,4 +1,4 @@
-// 灵敏度超频核心：读取物理 evdev，按倍率处理移动/摇杆，再通过 UHID 输出虚拟设备。
+// 灵敏度超频核心。读取 evdev，按倍率处理后通过 UHID 输出。
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -29,7 +29,7 @@ namespace {
 constexpr int kMaxEvents = 256;
 constexpr int kScanIntervalMs = 900;
 constexpr int kConfigIntervalMs = 80;
-constexpr int kMotionTelemetryIntervalMs = 8; // <= 125 Hz to keep stdout cheap.
+constexpr int kMotionTelemetryIntervalMs = 8; // 输出频率不超过 125 Hz。
 constexpr const char* kVirtualPrefix = "Axon Input Virtual";
 
 volatile sig_atomic_t gStop = 0;
@@ -99,7 +99,7 @@ bool axisLooksCentered(const input_absinfo& info) {
     long long minSide = center - info.minimum;
     long long maxSide = info.maximum - center;
     long long balance = minSide < maxSide ? minSide : maxSide;
-    return balance * 100 >= range * 35; // both sides have at least ~35% of full range.
+    return balance * 100 >= range * 35; // 两侧至少保留约 35% 的完整范围。
 }
 
 int16_t mapAxis(const input_absinfo& info, int value, int gainPercent) {
@@ -128,8 +128,8 @@ int16_t mapAxis(const input_absinfo& info, int value, int gainPercent) {
     double gain = gainPercent / 100.0;
     if (gain < 0.01) gain = 0.01;
     if (gain > 5.0) gain = 5.0;
-    // Endpoint-preserving sensitivity curve: derivative at center = gain,
-    // while full stick remains full stick. This avoids losing maximum range.
+    // 灵敏度曲线保持端点不变，中心斜率等于倍率。
+    // 满摇杆仍保持满量程。
     double curved = (gain * mag) / (1.0 + (gain - 1.0) * mag);
     if (curved > 1.0) curved = 1.0;
     int out = static_cast<int>(sign * curved * 32767.0);
@@ -225,86 +225,86 @@ void destroyUhid(int* fd) {
 }
 
 constexpr uint8_t kMouseDescriptor[] = {
-    0x05, 0x01,       // Usage Page (Generic Desktop)
-    0x09, 0x02,       // Usage (Mouse)
-    0xA1, 0x01,       // Collection (Application)
-    0x09, 0x01,       //   Usage (Pointer)
-    0xA1, 0x00,       //   Collection (Physical)
-    0x05, 0x09,       //     Usage Page (Button)
-    0x19, 0x01,       //     Usage Minimum (1)
-    0x29, 0x05,       //     Usage Maximum (5)
-    0x15, 0x00,       //     Logical Minimum (0)
-    0x25, 0x01,       //     Logical Maximum (1)
-    0x95, 0x05,       //     Report Count (5)
-    0x75, 0x01,       //     Report Size (1)
-    0x81, 0x02,       //     Input (Data,Var,Abs)
-    0x95, 0x03,       //     Report Count (3)
-    0x75, 0x01,       //     Report Size (1)
-    0x81, 0x03,       //     Input (Const,Var,Abs)
-    0x05, 0x01,       //     Usage Page (Generic Desktop)
-    0x09, 0x30,       //     Usage (X)
-    0x09, 0x31,       //     Usage (Y)
-    0x16, 0x01, 0x80, //     Logical Minimum (-32767)
-    0x26, 0xFF, 0x7F, //     Logical Maximum (32767)
-    0x75, 0x10,       //     Report Size (16)
-    0x95, 0x02,       //     Report Count (2)
-    0x81, 0x06,       //     Input (Data,Var,Rel)
-    0x09, 0x38,       //     Usage (Wheel)
-    0x15, 0x81,       //     Logical Minimum (-127)
-    0x25, 0x7F,       //     Logical Maximum (127)
-    0x75, 0x08,       //     Report Size (8)
-    0x95, 0x01,       //     Report Count (1)
-    0x81, 0x06,       //     Input (Data,Var,Rel)
-    0x05, 0x0C,       //     Usage Page (Consumer)
-    0x0A, 0x38, 0x02, //     Usage (AC Pan)
+    0x05, 0x01,       // 用途页：通用桌面
+    0x09, 0x02,       // 用途：鼠标
+    0xA1, 0x01,       // 集合：应用
+    0x09, 0x01,       // 用途：指针
+    0xA1, 0x00,       // 集合：物理
+    0x05, 0x09,       // 用途页：按键
+    0x19, 0x01,       // 用途最小值：1
+    0x29, 0x05,       // 用途最大值：5
+    0x15, 0x00,       // 逻辑最小值：0
+    0x25, 0x01,       // 逻辑最大值：1
+    0x95, 0x05,       // 报告数量：5
+    0x75, 0x01,       // 报告位宽：1
+    0x81, 0x02,       // 输入：Data,Var,Abs
+    0x95, 0x03,       // 报告数量：3
+    0x75, 0x01,       // 报告位宽：1
+    0x81, 0x03,       // 输入：Const,Var,Abs
+    0x05, 0x01,       // 用途页：通用桌面
+    0x09, 0x30,       // 用途：X
+    0x09, 0x31,       // 用途：Y
+    0x16, 0x01, 0x80, // 逻辑最小值：-32767
+    0x26, 0xFF, 0x7F, // 逻辑最大值：32767
+    0x75, 0x10,       // 报告位宽：16
+    0x95, 0x02,       // 报告数量：2
+    0x81, 0x06,       // 输入：Data,Var,Rel
+    0x09, 0x38,       // 用途：滚轮
+    0x15, 0x81,       // 逻辑最小值：-127
+    0x25, 0x7F,       // 逻辑最大值：127
+    0x75, 0x08,       // 报告位宽：8
+    0x95, 0x01,       // 报告数量：1
+    0x81, 0x06,       // 输入：Data,Var,Rel
+    0x05, 0x0C,       // 用途页：消费设备
+    0x0A, 0x38, 0x02, // 用途：AC Pan
     0x15, 0x81,
     0x25, 0x7F,
     0x75, 0x08,
     0x95, 0x01,
     0x81, 0x06,
-    0xC0,             //   End Collection
-    0xC0              // End Collection
+    0xC0,             // 结束集合
+    0xC0              // 结束集合
 };
 
 constexpr uint8_t kGamepadDescriptor[] = {
-    0x05, 0x01,       // Usage Page (Generic Desktop)
-    0x09, 0x05,       // Usage (Game Pad)
-    0xA1, 0x01,       // Collection (Application)
-    0x05, 0x09,       //   Usage Page (Button)
-    0x19, 0x01,       //   Usage Minimum (1)
-    0x29, 0x10,       //   Usage Maximum (16)
+    0x05, 0x01,       // 用途页：通用桌面
+    0x09, 0x05,       // 用途：手柄
+    0xA1, 0x01,       // 集合：应用
+    0x05, 0x09,       // 用途页：按键
+    0x19, 0x01,       // 用途最小值：1
+    0x29, 0x10,       // 用途最大值：16
     0x15, 0x00,
     0x25, 0x01,
     0x75, 0x01,
     0x95, 0x10,
-    0x81, 0x02,       //   16 buttons
+    0x81, 0x02,       // 16 个按键
     0x05, 0x01,
-    0x09, 0x39,       //   Hat switch
+    0x09, 0x39,       // 方向帽
     0x15, 0x00,
     0x25, 0x07,
     0x35, 0x00,
-    0x46, 0x3B, 0x01, //   Physical max 315 deg
-    0x65, 0x14,       //   Unit degrees
+    0x46, 0x3B, 0x01, // 物理最大值：315 度
+    0x65, 0x14,       // 单位：度
     0x75, 0x04,
     0x95, 0x01,
-    0x81, 0x42,       //   Data,Var,Abs,Null
+    0x81, 0x42,       // 数据字段：Data,Var,Abs,Null
     0x65, 0x00,
     0x75, 0x04,
     0x95, 0x01,
-    0x81, 0x03,       //   padding
+    0x81, 0x03,       // 填充位
     0x05, 0x01,
-    0x09, 0x30,       //   X (left X)
-    0x09, 0x31,       //   Y (left Y)
-    0x09, 0x32,       //   Z (right X on Android generic pads)
-    0x09, 0x35,       //   Rz (right Y)
+    0x09, 0x30,       // X：左摇杆 X
+    0x09, 0x31,       // Y：左摇杆 Y
+    0x09, 0x32,       // Z：右摇杆 X
+    0x09, 0x35,       // Rz：右摇杆 Y
     0x16, 0x01, 0x80,
     0x26, 0xFF, 0x7F,
     0x75, 0x10,
     0x95, 0x04,
     0x81, 0x02,
-    0x05, 0x02,       //   Usage Page (Simulation Controls)
-    0x09, 0xC4,       //   Accelerator -> ABS_GAS / RTRIGGER
-    0x09, 0xC5,       //   Brake -> ABS_BRAKE / LTRIGGER
+    0x05, 0x02,       // 用途页：模拟控制
+    0x09, 0xC4,       // 油门对应 ABS_GAS / RTRIGGER
+    0x09, 0xC5,       // 刹车对应 ABS_BRAKE / LTRIGGER
     0x15, 0x00,
     0x26, 0xFF, 0x00,
     0x75, 0x08,
@@ -350,7 +350,7 @@ struct MouseProxy {
     int telemetryX = 0;
     int telemetryY = 0;
     long long lastTelemetryMs = 0;
-    int64_t residualX = 0; // fixed-point, denominator 100.
+    int64_t residualX = 0; // 定点数，分母为 100。
     int64_t residualY = 0;
 };
 
@@ -508,7 +508,7 @@ bool pickGamepadAxes(int fd, GamepadProxy* p) {
         p->rightX = rx;
         p->rightY = ry;
     } else {
-        return false; // sensitivity needs a real right-stick pair; don't guess.
+        return false; // 灵敏度处理需要完整的右摇杆轴对。
     }
 
     input_absinfo info{};
@@ -772,7 +772,7 @@ void drainUhid(int fd) {
     if (fd < 0) return;
     uhid_event event{};
     while (read(fd, &event, sizeof(event)) > 0) {
-        // Output / feature reports are intentionally ignored. This proxy handles input only.
+        // 忽略输出和功能报告，只处理输入。
     }
 }
 
@@ -783,7 +783,7 @@ bool probeUhid() {
     return true;
 }
 
-} // namespace
+} // 命名空间
 
 int main(int argc, char** argv) {
     const char* gainFile = nullptr;

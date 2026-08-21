@@ -1,4 +1,4 @@
-// 手柄只读监听：扫描 evdev，标准化摇杆/扳机/按键状态，只在状态变化时输出遥测。
+// 手柄只读监听。扫描 evdev，只在状态变化时输出。
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -286,7 +286,7 @@ bool readEvents(Device* d) {
         return n != 0;
     }
 }
-} // namespace
+} // 命名空间
 
 int main() {
     signal(SIGTERM, onSignal);

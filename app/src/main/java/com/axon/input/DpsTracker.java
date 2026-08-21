@@ -1,6 +1,6 @@
 package com.axon.input;
 
-/** 固定容量的一秒滑动计数器。记录过程中不创建集合对象。 */
+/** 固定容量的一秒滑动计数器，不创建集合对象。 */
 final class DpsTracker {
     static final int SPACE = 0;
     static final int FACE_Y = 1;
@@ -9,8 +9,9 @@ final class DpsTracker {
     static final int FACE_A = 4;
     static final int L1 = 5;
     static final int R1 = 6;
+    static final int TARGET = 7;
 
-    private static final int CHANNELS = 7;
+    private static final int CHANNELS = 8;
     private static final int CAPACITY = 128;
     private static final long WINDOW_MS = 1000L;
 
@@ -41,6 +42,12 @@ final class DpsTracker {
             head[i] = 0;
             size[i] = 0;
         }
+    }
+
+    synchronized void resetChannel(int channel) {
+        if (channel < 0 || channel >= CHANNELS) return;
+        head[channel] = 0;
+        size[channel] = 0;
     }
 
     private void trim(int channel, long nowMs) {

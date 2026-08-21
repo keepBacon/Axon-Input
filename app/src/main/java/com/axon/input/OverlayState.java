@@ -15,11 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-/**
- * 运行配置的统一入口。
- * 普通设置保存在会话配置中：切到后台或进程被系统回收时仍保留，只有用户真正退出任务时才清除。
- * 密码授权等明确需要长期保留的数据使用独立持久存储。
- */
+/** 运行配置入口。普通设置保留到任务退出，长期数据单独保存。 */
 public final class OverlayState {
     public static final int MOTION_SIZE = 0;
     public static final int MOTION_ALPHA = 1;
@@ -28,6 +24,7 @@ public final class OverlayState {
     public static final int UI_THEME_BLACK = 1;
     public static final int SENSITIVITY_MODE_SHIZUKU = 0;
     public static final int SENSITIVITY_MODE_ROOT = 1;
+    public static final int DPS_TARGET_NONE = -1;
     private static final String SESSION_PREFS = "axon_input_session";
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";
@@ -36,6 +33,11 @@ public final class OverlayState {
     private static final String KEY_MOUSE_TRAJECTORY_ENABLED = "mouse_trajectory_enabled";
     private static final String KEY_CUSTOM_ENABLED = "custom_enabled";
     private static final String KEY_DRAG_ENABLED = "drag_enabled";
+    private static final String KEY_DPS_ENABLED = "dps_enabled";
+    private static final String KEY_DPS_TARGET_KEY_CODE = "dps_target_key_code";
+    private static final String KEY_DPS_OPACITY = "dps_opacity";
+    private static final String KEY_DPS_POSITION_X = "dps_position_x";
+    private static final String KEY_DPS_POSITION_Y = "dps_position_y";
     private static final String KEY_CUSTOM_CAPTURE = "custom_capture";
     private static final String KEY_CUSTOM_KEYS = "custom_keys";
     private static final String KEY_CUSTOM_DRAFT = "custom_draft";
@@ -129,6 +131,8 @@ public final class OverlayState {
     private static final int DEFAULT_KEY_PROMPT_Y = 14;
     private static final int DEFAULT_MOUSE_TRAJECTORY_X = 50;
     private static final int DEFAULT_MOUSE_TRAJECTORY_Y = 52;
+    private static final int DEFAULT_DPS_X = 50;
+    private static final int DEFAULT_DPS_Y = 8;
     private static final int DEFAULT_GAMEPAD_LEFT_STICK_X = 14;
     private static final int DEFAULT_GAMEPAD_LEFT_STICK_Y = 68;
     private static final int DEFAULT_GAMEPAD_RIGHT_STICK_X = 66;
@@ -209,6 +213,25 @@ public final class OverlayState {
         AxonInputAccessibilityService.refreshActiveService();
     }
 
+    public static boolean isDpsEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_DPS_ENABLED, false);
+    }
+
+    public static void setDpsEnabled(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(KEY_DPS_ENABLED, enabled).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static int getDpsTargetKeyCode(Context context) {
+        return prefs(context).getInt(KEY_DPS_TARGET_KEY_CODE, DPS_TARGET_NONE);
+    }
+
+    public static void setDpsTargetKeyCode(Context context, int keyCode) {
+        int resolved = keyCode < 0 ? DPS_TARGET_NONE : keyCode;
+        prefs(context).edit().putInt(KEY_DPS_TARGET_KEY_CODE, resolved).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
     public static boolean isGamepadLeftStickEnabled(Context context) {
         return prefs(context).getBoolean(KEY_GAMEPAD_LEFT_STICK_ENABLED, false);
     }
@@ -263,7 +286,7 @@ public final class OverlayState {
     public static boolean isAnyDisplayEnabled(Context context) {
         return isEnabled(context) || isMouseEnabled(context) || isKeyPromptEnabled(context)
                 || isCustomEnabled(context) || isMouseTrajectoryEnabled(context)
-                || isAnyGamepadDisplayEnabled(context);
+                || isDpsEnabled(context) || isAnyGamepadDisplayEnabled(context);
     }
 
     public static boolean isAutoHideBackground(Context context) {
@@ -279,7 +302,7 @@ public final class OverlayState {
         if (durable.contains(KEY_ENTRY_AUTHORIZED)) {
             return durable.getBoolean(KEY_ENTRY_AUTHORIZED, false);
         }
-        // 仅迁移旧版本的密码授权。旧版本其他运行配置不会迁移到新会话。
+        // 只迁移旧版本的密码授权。
         boolean legacy = context.getSharedPreferences("key_display", Context.MODE_PRIVATE)
                 .getBoolean(KEY_ENTRY_AUTHORIZED, false);
         if (legacy) durable.edit().putBoolean(KEY_ENTRY_AUTHORIZED, true).apply();
@@ -290,16 +313,13 @@ public final class OverlayState {
         durablePrefs(context).edit().putBoolean(KEY_ENTRY_AUTHORIZED, authorized).apply();
     }
 
-    /** 新建根任务时开始新会话；普通后台恢复不会走到这里。 */
+    /** 显式重置入口。普通 Activity 创建和重开不会调用。 */
     public static void beginAppSession(Context context) {
         prefs(context).edit().clear().commit();
         AxonInputAccessibilityService.refreshActiveService();
     }
 
-    /**
-     * 用户真正退出根任务时清理本次运行配置。普通切后台、再次进入以及系统回收进程都不会触发。
-     * 手动保存的“配置1”、导入文件和密码授权不会被删除。
-     */
+    /** 根任务退出时清理运行配置。手动保存配置和密码授权不删除。 */
     public static void endAppSession(Context context) {
         prefs(context).edit().clear().commit();
         AxonInputAccessibilityService.refreshActiveService();
@@ -369,7 +389,7 @@ public final class OverlayState {
         return prefs(context).getBoolean(KEY_CUSTOM_CAPTURE, false);
     }
 
-    /** Starts a fresh recording session. Existing saved keys stay active until recording is stopped. */
+    /** 开始新的按键录入。录入结束前保留已保存按键。 */
     public static void beginCustomCapture(Context context) {
         prefs(context).edit()
                 .putBoolean(KEY_CUSTOM_CAPTURE, true)
@@ -377,7 +397,7 @@ public final class OverlayState {
                 .apply();
     }
 
-    /** Saves the recorded draft, including an empty draft, then stops recording. */
+    /** 保存录入结果并结束录入。 */
     public static void finishCustomCapture(Context context) {
         SharedPreferences p = prefs(context);
         String draft = p.getString(KEY_CUSTOM_DRAFT, "");
@@ -392,7 +412,7 @@ public final class OverlayState {
         prefs(context).edit().putBoolean(KEY_CUSTOM_CAPTURE, false).apply();
     }
 
-    /** Adds one unique key code to the active draft. */
+    /** 向当前录入结果加入唯一按键码。 */
     public static boolean addDraftKey(Context context, int keyCode) {
         if (keyCode <= 0 || !isCustomCaptureEnabled(context)) return false;
         SharedPreferences p = prefs(context);
@@ -658,6 +678,7 @@ public final class OverlayState {
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_OPACITY;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_OPACITY;
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: return KEY_KEY_PROMPT_OPACITY;
+            case DpsOverlayView.DISPLAY_DPS: return KEY_DPS_OPACITY;
             default: return null;
         }
     }
@@ -755,6 +776,8 @@ public final class OverlayState {
                 return clampFreePositionPercent(p.getInt(KEY_KEY_PROMPT_POSITION_X, DEFAULT_KEY_PROMPT_X));
             case MouseTrajectoryView.DISPLAY_TRAJECTORY:
                 return clampFreePositionPercent(p.getInt(KEY_MOUSE_TRAJECTORY_POSITION_X, DEFAULT_MOUSE_TRAJECTORY_X));
+            case DpsOverlayView.DISPLAY_DPS:
+                return clampFreePositionPercent(p.getInt(KEY_DPS_POSITION_X, DEFAULT_DPS_X));
             case GamepadOverlayView.DISPLAY_LEFT_STICK:
                 return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_STICK_POSITION_X, DEFAULT_GAMEPAD_LEFT_STICK_X));
             case GamepadOverlayView.DISPLAY_RIGHT_STICK:
@@ -783,6 +806,8 @@ public final class OverlayState {
                 return clampFreePositionPercent(p.getInt(KEY_KEY_PROMPT_POSITION_Y, DEFAULT_KEY_PROMPT_Y));
             case MouseTrajectoryView.DISPLAY_TRAJECTORY:
                 return clampFreePositionPercent(p.getInt(KEY_MOUSE_TRAJECTORY_POSITION_Y, DEFAULT_MOUSE_TRAJECTORY_Y));
+            case DpsOverlayView.DISPLAY_DPS:
+                return clampFreePositionPercent(p.getInt(KEY_DPS_POSITION_Y, DEFAULT_DPS_Y));
             case GamepadOverlayView.DISPLAY_LEFT_STICK:
                 return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_STICK_POSITION_Y, DEFAULT_GAMEPAD_LEFT_STICK_Y));
             case GamepadOverlayView.DISPLAY_RIGHT_STICK:
@@ -798,7 +823,7 @@ public final class OverlayState {
         }
     }
 
-    /** Saves the position of one independent display window after dragging. */
+    /** 保存独立悬浮窗口的拖动位置。 */
     public static void savePosition(Context context, int displayType, int xPercent, int yPercent) {
         String xKey;
         String yKey;
@@ -822,6 +847,10 @@ public final class OverlayState {
             case MouseTrajectoryView.DISPLAY_TRAJECTORY:
                 xKey = KEY_MOUSE_TRAJECTORY_POSITION_X;
                 yKey = KEY_MOUSE_TRAJECTORY_POSITION_Y;
+                break;
+            case DpsOverlayView.DISPLAY_DPS:
+                xKey = KEY_DPS_POSITION_X;
+                yKey = KEY_DPS_POSITION_Y;
                 break;
             case GamepadOverlayView.DISPLAY_LEFT_STICK:
                 xKey = KEY_GAMEPAD_LEFT_STICK_POSITION_X;
@@ -868,11 +897,7 @@ public final class OverlayState {
         return Math.max(0, Math.min(100, value));
     }
 
-    /**
-     * Drag positions may be outside the visible frame. A wide sanity range prevents a
-     * corrupted/imported value from creating pathological WindowManager coordinates while
-     * still allowing the overlay to be placed anywhere on or around the physical screen.
-     */
+    /** 拖动位置可超出屏幕。仅限制异常坐标。 */
     private static int clampFreePositionPercent(int value) {
         return Math.max(-1000, Math.min(1000, value));
     }

@@ -28,6 +28,7 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.ScrollView;
@@ -42,10 +43,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
-/**
- * 应用主界面。
- * 只负责展示设置、接收用户操作和发起权限流程。底层输入读取、悬浮窗绘制不放在 Activity 中。
- */
+/** 应用主界面。负责设置、用户操作和权限流程。 */
 public final class MainActivity extends Activity implements ShizukuBridge.Listener {
     private static final int SHIZUKU_REQUEST_CODE = 4107;
     private static final int HTML_REQUEST_GLOBAL = 6200;
@@ -84,6 +82,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private SeekBar customSizeSeekBar;
     private Switch captureSwitch;
     private Switch dragSwitch;
+    private Switch dpsSwitch;
+    private LinearLayout dpsDetails;
+    private TextView dpsTargetText;
     private Switch autoHideSwitch;
     private Switch sensitivitySwitch;
     private Spinner sensitivityModeSpinner;
@@ -146,6 +147,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private boolean internalChange;
     private boolean waitingForShizuku;
+    private boolean dpsCaptureArmed;
 
     private final Runnable sensitivityStatusTicker = new Runnable() {
         @Override
@@ -162,8 +164,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        // 只有真正的新根任务才清理上一次运行配置；Home/后台后重新进入不会触发。
-        if (savedInstanceState == null && isTaskRoot()) OverlayState.beginAppSession(this);
+        // 只在 Android 确认任务被移除时清理运行配置。
+        // 重新创建或打开 Activity 不清理配置。
 
         setTheme(OverlayState.getUiTheme(this) == OverlayState.UI_THEME_BLACK
                 ? R.style.AppThemeBlack : R.style.AppThemeLight);
@@ -428,6 +430,16 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         behaviorSection.setText(R.string.section_behavior);
         root.addView(behaviorSection, contentParams(dp(8)));
+
+        dpsSwitch = createSwitch(R.string.dps_switch_label);
+        dpsDetails = createDetailsContainer();
+        dpsTargetText = createSupportingText();
+        dpsDetails.addView(dpsTargetText, supportingParams(dp(2)));
+        TextView dpsHint = createSupportingText();
+        dpsHint.setText(R.string.dps_target_hint);
+        dpsDetails.addView(dpsHint, supportingParams(dp(2)));
+        addOpacityControl(dpsDetails, DpsOverlayView.DISPLAY_DPS);
+        root.addView(createFeatureGroup(dpsSwitch, dpsDetails), contentParams(dp(10)));
 
         dragSwitch = createSwitch(R.string.drag_switch_label);
         root.addView(createSwitchGroup(dragSwitch), contentParams(dp(10)));
@@ -731,6 +743,21 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 gamepadSensitivityLabel, R.string.gamepad_sensitivity_format,
                 value -> OverlayState.setGamepadSensitivity(MainActivity.this, value)));
 
+        dpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            setDetailsVisible(dpsDetails, enabled);
+            if (internalChange) return;
+            if (enabled) {
+                OverlayState.setDpsTargetKeyCode(this, OverlayState.DPS_TARGET_NONE);
+                dpsCaptureArmed = true;
+                OverlayState.setDpsEnabled(this, true);
+            } else {
+                dpsCaptureArmed = false;
+                OverlayState.setDpsEnabled(this, false);
+            }
+            updateDpsTargetUi();
+            handleDisplayModeChanged();
+        });
+
         dragSwitch.setOnCheckedChangeListener((button, enabled) -> {
             if (!internalChange) OverlayState.setDragEnabled(this, enabled);
         });
@@ -747,7 +774,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         globalHtmlImportButton.setOnClickListener(v -> openGlobalHtmlPicker());
 
         autoHideSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setAutoHideBackground(this, enabled);
+            if (internalChange) return;
+            OverlayState.setAutoHideBackground(this, enabled);
+            // 前台 Activity 保持正常显示。
+            // 最后一个 Activity 离开前台后再执行隐藏。
+            AxonApplication.syncTaskVisibility(this, false);
         });
         internalChange = false;
         showEntryPasswordIfNeeded();
@@ -755,6 +786,17 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (dpsCaptureArmed
+                && dpsSwitch != null
+                && dpsSwitch.isChecked()
+                && isPhysicalKeyboardEvent(event)) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                OverlayState.setDpsTargetKeyCode(this, event.getKeyCode());
+                dpsCaptureArmed = false;
+                updateDpsTargetUi();
+            }
+            return true;
+        }
         if (captureSwitch != null
                 && OverlayState.isCustomCaptureEnabled(this)
                 && isPhysicalKeyboardEvent(event)) {
@@ -763,7 +805,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                     updateRecordedKeys(true);
                 }
             }
-            // Capture mode intentionally consumes keys inside this setup screen so controls do not react.
+            // 录入模式会在设置页消费按键，避免控件误触。
             return true;
         }
         return super.dispatchKeyEvent(event);
@@ -795,8 +837,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     protected void onDestroy() {
-        boolean endSession = isTaskRoot() && isFinishing() && !isChangingConfigurations();
-        if (endSession) OverlayState.endAppSession(this);
+        // 这里不清理运行配置。
+        // Back、进程重建和隐藏任务都可能销毁 Activity。
         super.onDestroy();
     }
 
@@ -809,6 +851,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     @Override
     protected void onResume() {
         super.onResume();
+        AxonApplication.syncTaskVisibility(this, false);
 
         internalChange = true;
         themeSpinner.setSelection(OverlayState.getUiTheme(this) == OverlayState.UI_THEME_BLACK ? 1 : 0, false);
@@ -841,6 +884,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadLeftStickShapeSpinner.setSelection(OverlayState.getGamepadLeftStickShape(this) == GamepadOverlayView.SHAPE_SQUARE ? 1 : 0, false);
         gamepadRightStickShapeSpinner.setSelection(OverlayState.getGamepadRightStickShape(this) == GamepadOverlayView.SHAPE_SQUARE ? 1 : 0, false);
         captureSwitch.setChecked(OverlayState.isCustomCaptureEnabled(this));
+        dpsSwitch.setChecked(OverlayState.isDpsEnabled(this));
+        dpsCaptureArmed = OverlayState.isDpsEnabled(this)
+                && OverlayState.getDpsTargetKeyCode(this) == OverlayState.DPS_TARGET_NONE;
+        updateDpsTargetUi();
         dragSwitch.setChecked(OverlayState.isDragEnabled(this));
         globalHtmlSwitch.setChecked(OverlayState.isGlobalHtmlEnabled(this));
         autoHideSwitch.setChecked(OverlayState.isAutoHideBackground(this));
@@ -1029,8 +1076,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             return;
         }
 
-        // Root mode is truly independent from Shizuku for the overclock path. It can also enable
-        // this app's accessibility service directly, so users do not need two privilege systems.
+        // Root 超频模式不依赖 Shizuku。
+        // Root 模式可直接启用无障碍服务。
         if (rootMode) {
             grantAccessibilityWithRoot();
             return;
@@ -1286,16 +1333,41 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private void showAuthorDialog() {
         String[] options = new String[]{
-                getString(R.string.author_github), getString(R.string.author_bilibili)};
+                getString(R.string.author_github),
+                getString(R.string.author_bilibili),
+                getString(R.string.author_reward)};
         new AlertDialog.Builder(this)
                 .setTitle(R.string.author_title)
                 .setItems(options, (dialog, which) -> {
                     if (which == 0) {
                         openGithubProfile();
-                    } else {
+                    } else if (which == 1) {
                         openPasswordSource();
+                    } else {
+                        showRewardDialog();
                     }
                 })
+                .show();
+    }
+
+    private void showRewardDialog() {
+        ImageView image = new ImageView(this);
+        image.setImageResource(R.drawable.reward_code);
+        image.setAdjustViewBounds(true);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        int padding = dp(12);
+        image.setPadding(padding, padding, padding, padding);
+
+        ScrollView container = new ScrollView(this);
+        container.setFillViewport(true);
+        container.addView(image, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.author_reward)
+                .setView(container)
+                .setPositiveButton(R.string.reward_close, null)
                 .show();
     }
 
@@ -1380,6 +1452,16 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
+    }
+
+    private void updateDpsTargetUi() {
+        if (dpsTargetText == null) return;
+        int keyCode = OverlayState.getDpsTargetKeyCode(this);
+        if (!OverlayState.isDpsEnabled(this) || keyCode == OverlayState.DPS_TARGET_NONE) {
+            dpsTargetText.setText(R.string.dps_target_waiting);
+            return;
+        }
+        dpsTargetText.setText(getString(R.string.dps_target_selected, KeyLabel.fromKeyCode(keyCode)));
     }
 
     private void syncMotionUi(int displayType) {
@@ -1722,7 +1804,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private SeekBar createSensitivitySeekBar() {
         SeekBar seekBar = new SeekBar(this);
-        seekBar.setMax(499); // 1..500%
+        seekBar.setMax(499); // 范围 1..500%
         seekBar.setPadding(0, 0, 0, 0);
         return seekBar;
     }

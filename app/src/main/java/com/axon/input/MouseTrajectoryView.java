@@ -9,11 +9,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 
-/**
- * 鼠标相对运动显示。
- * 圆点只读取方向和相对移动量，不读取屏幕绝对坐标。输入先改变短期目标，阻尼状态再追踪目标；
- * 停止输入后目标回到中心。动画稳定后不再请求下一帧。
- */
+/** 鼠标相对运动显示。只读取方向和相对位移。停止输入后回到中心。 */
 public final class MouseTrajectoryView extends FrameLayout {
     public static final int DISPLAY_TRAJECTORY = 4;
 
@@ -160,10 +156,7 @@ public final class MouseTrajectoryView extends FrameLayout {
         postFrame();
     }
 
-    /**
-     * Adds relative movement. Direction maps directly; magnitude is softened so fast swipes remain
-     * inside the square instead of slamming against an edge.
-     */
+    /** 加入相对位移。大幅移动会压缩，避免圆点直接顶到边缘。 */
     public void addMotion(int dx, int dy) {
         if (dx == 0 && dy == 0) return;
         if (htmlView != null) htmlView.addPointerDelta(dx, dy);
@@ -174,8 +167,8 @@ public final class MouseTrajectoryView extends FrameLayout {
         targetX += soften(safeDx) * impulse;
         targetY += soften(safeDy) * impulse;
 
-        // A tiny direct component makes the first frame feel immediate, while the target follower
-        // provides the actual smooth motion.
+        // 首帧加入少量直接位移。
+        // 后续移动由目标跟随处理。
         offsetX += soften(safeDx) * dp(0.06f);
         offsetY += soften(safeDy) * dp(0.06f);
         clampState();
@@ -296,13 +289,13 @@ public final class MouseTrajectoryView extends FrameLayout {
         float dt = Math.min(0.022f, Math.max(0.001f, (now - lastFrameMs) / 1000f));
         lastFrameMs = now;
 
-        // Target memory is deliberately short. It makes repeated motion feel weighted without
-        // leaving the dot stuck near an edge after the hand stops.
+        // 目标状态只保留短时间。
+        // 停止输入后圆点不会停在边缘。
         float targetDecay = (float) Math.exp(-8.6f * dt);
         targetX *= targetDecay;
         targetY *= targetDecay;
 
-        // Near-critical damping: fast arrival, essentially no visible bounce.
+        // 使用接近临界阻尼，减少回弹。
         final float stiffness = 225f;
         final float damping = 28.5f;
         velocityX += (stiffness * (targetX - offsetX) - damping * velocityX) * dt;
@@ -363,7 +356,7 @@ public final class MouseTrajectoryView extends FrameLayout {
     private float soften(int delta) {
         float sign = delta < 0 ? -1f : 1f;
         float magnitude = Math.abs(delta);
-        // Sub-linear mapping preserves precision for tiny mouse deltas and compresses large bursts.
+        // 小位移保留精度，大位移进行压缩。
         return sign * (float) Math.sqrt(magnitude);
     }
 

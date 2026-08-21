@@ -2,7 +2,7 @@ package com.axon.input;
 
 import android.view.KeyEvent;
 
-/** 将 Android KeyCode 转为适合悬浮显示的短标签。 */
+/** 将 Android KeyCode 转为短标签。 */
 public final class KeyLabel {
     private KeyLabel() {}
 

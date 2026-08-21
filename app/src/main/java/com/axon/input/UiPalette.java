@@ -4,7 +4,7 @@ import android.content.Context;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 
-/** 用户手动选择的浅色/黑色调色板。系统深浅色变化不会覆盖这里的选择。 */
+/** 用户选择的浅色和黑色调色板。系统主题不会覆盖。 */
 public final class UiPalette {
     private UiPalette() {}
 

@@ -13,13 +13,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/**
- * HTML 自定义显示层。
- *
- * 每个悬浮窗口各自运行一份 HTML。HTML 可以自由使用 DOM、CSS、SVG、Canvas、Web Animations。
- * Android 端只向页面推送输入和配置状态，不暴露高权限 Java 接口，避免导入文件直接执行系统操作。
- * 高频鼠标和手柄数据按显示帧合并，减少 evaluateJavascript 次数。
- */
+/** HTML 自定义显示层。每个悬浮窗口独立运行。Android 只推送输入和配置状态。 */
 public final class GlobalHtmlWebView extends WebView {
     public static final int API_VERSION = 9;
     public static final String RENDERER_VERSION = "v26";
@@ -113,7 +107,7 @@ public final class GlobalHtmlWebView extends WebView {
         @Override public void run() {
             realtimeFramePosted = false;
             if (!pageReady) return;
-            // 高频输入只发送局部状态，不重建整份 JSON。这样摇杆和鼠标连续移动时开销更低。
+            // 高频输入只发送变化状态，减少 JSON 重建。
             if (pointerDirty) {
                 pointerDirty = false;
                 dispatchRealtime("keydisplay:pointer", "pointer", pointerObject());
@@ -172,7 +166,7 @@ public final class GlobalHtmlWebView extends WebView {
         }
         currentHtml = normalized;
         pageReady = false;
-        // 在用户脚本执行前注入只读辅助 API。这样 HTML 可以在普通 <script> 中直接调用 KeyDisplay.on()。
+        // 用户脚本执行前注入只读 API。
         String document = injectRuntimeBootstrap(normalized);
         loadDataWithBaseURL(
                 "https://keydisplay.local/",
@@ -251,7 +245,7 @@ public final class GlobalHtmlWebView extends WebView {
         if (changed) dispatchFullState();
     }
 
-    /** 最近按键提示的动态键列表。只在列表/状态变化时更新。 */
+    /** 最近按键列表只在状态变化时更新。 */
     public void setPromptState(int[] ids, String[] labels, boolean[] pressed, int[] cps, int[] pressCount) {
         promptIds = ids == null ? new int[0] : ids.clone();
         promptLabels = labels == null ? new String[0] : labels.clone();
@@ -595,7 +589,7 @@ public final class GlobalHtmlWebView extends WebView {
     }
 
 
-    /** HTML 侧可直接使用完整调色板，不需要复制原生颜色。 */
+    /** 向 HTML 提供完整调色板。 */
     private JSONObject paletteObject() throws JSONException {
         JSONObject p = new JSONObject();
         Context c = getContext();
@@ -619,7 +613,7 @@ public final class GlobalHtmlWebView extends WebView {
         return p;
     }
 
-    /** 当前运行环境。HTML 可以根据这些值决定布局、细节量和动效强度。 */
+    /** 向 HTML 提供当前运行环境。 */
     private JSONObject runtimeObject() throws JSONException {
         JSONObject r = new JSONObject();
         Context c = getContext();
@@ -638,10 +632,7 @@ public final class GlobalHtmlWebView extends WebView {
         return r;
     }
 
-    /**
-     * 当前应用功能的完整只读快照。HTML 可以跨显示读取这些值，但不能直接修改 Android 配置。
-     * 需要改变外观时直接在页面内部处理，避免为自定义显示开放高权限桥接接口。
-     */
+    /** 向 HTML 提供只读状态快照。HTML 不能直接修改 Android 配置。 */
     private JSONObject settingsObject() throws JSONException {
         Context c = getContext();
         JSONObject root = new JSONObject();
@@ -832,7 +823,7 @@ public final class GlobalHtmlWebView extends WebView {
     }
 
     private void installRuntimeApi() {
-        // onPageFinished 再覆盖一次，兼容页面主动重写 window.KeyDisplay 的情况。
+        // 页面加载完成后再次写入 KeyDisplay。
         evaluateJavascript(runtimeApiSource(), null);
     }
 
@@ -860,10 +851,7 @@ public final class GlobalHtmlWebView extends WebView {
         evaluateJavascript(js, null);
     }
 
-    /**
-     * 高频输入只修补 window.__KEYDISPLAY_STATE__ 对应字段。
-     * 页面仍可通过 KeyDisplay.getState() 读取最新值，同时避免每帧序列化完整 settings/palette。
-     */
+    /** 高频输入只更新对应字段，避免每帧序列化完整状态。 */
     private void dispatchRealtime(String eventName, String stateKey, JSONObject detail) {
         if (!pageReady || detail == null) return;
         String payload = detail.toString();

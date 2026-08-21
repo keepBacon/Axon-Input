@@ -9,10 +9,7 @@ import java.io.Closeable;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 
-/**
- * 手柄只读遥测监听。普通模式不独占 evdev，因此游戏继续接收原始手柄输入。
- * 灵敏度超频开启后改由超频代理回传遥测，本监听停止，避免同一设备被重复读取。
- */
+/** 手柄只读监听。普通模式不独占 evdev。启用灵敏度超频后改用代理数据。 */
 public final class GamepadInputMonitor {
     public interface Listener {
         void onGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons);
@@ -81,7 +78,7 @@ public final class GamepadInputMonitor {
                     while (running && (line = reader.readLine()) != null) parseLine(line);
                 }
             } catch (Throwable ignored) {
-                // Root denial should not trigger repeated su prompts. Shizuku mode can retry later.
+                // Root 被拒绝后不重复请求 su。Shizuku 模式可稍后重试。
                 if (mode == OverlayState.SENSITIVITY_MODE_ROOT) running = false;
             } finally {
                 if (process == current) process = null;

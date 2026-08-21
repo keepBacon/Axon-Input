@@ -17,10 +17,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 
-/**
- * 全局输入服务：只观察输入并绘制悬浮层，不消费原始游戏输入。
- * 键盘使用 Accessibility KeyEvent，鼠标/手柄轴使用低延迟原始输入监听。
- */
+/** 全局输入服务。读取输入并绘制悬浮层，不消费原始输入。 */
 public final class AxonInputAccessibilityService extends AccessibilityService
         implements InputManager.InputDeviceListener,
         ShizukuBridge.Listener,
@@ -30,7 +27,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         MouseTrajectoryView.DragListener,
         GamepadOverlayView.DragListener,
         GamepadInputMonitor.Listener,
-        SensitivityProxyController.Listener {
+        SensitivityProxyController.Listener,
+        DpsOverlayView.DragListener {
 
     private static final int KEYBOARD_WIDTH_DP = 280;
     private static final int KEYBOARD_HEIGHT_DP = 180;
@@ -46,9 +44,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private static final int GAMEPAD_FACE_SIZE_DP = 142;
     private static final int GAMEPAD_SHOULDER_WIDTH_DP = 132;
     private static final int GAMEPAD_SHOULDER_HEIGHT_DP = 86;
+    private static final int DPS_WIDTH_DP = 112;
+    private static final int DPS_HEIGHT_DP = 40;
 
     private static volatile AxonInputAccessibilityService activeService;
-    private static volatile boolean appForeground;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -63,6 +62,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private boolean dpsTickerRunning;
     private final DpsTracker dpsTracker = new DpsTracker();
     private int previousGamepadButtonsForDps;
+    private int activeDpsTargetKeyCode = OverlayState.DPS_TARGET_NONE;
     private int proxyMouseButtons;
     private int gamepadLx, gamepadLy, gamepadRx, gamepadRy, gamepadLt, gamepadRt, gamepadButtons;
     private int rawGamepadButtons;
@@ -89,6 +89,14 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private int keyPromptDragStartWindowX;
     private int keyPromptDragStartWindowY;
     private int keyPromptMouseButtons;
+
+    private DpsOverlayView dpsView;
+    private WindowManager.LayoutParams dpsParams;
+    private boolean dpsAttached;
+    private float dpsDragStartRawX;
+    private float dpsDragStartRawY;
+    private int dpsDragStartWindowX;
+    private int dpsDragStartWindowY;
 
     private MouseTrajectoryView trajectoryView;
     private WindowManager.LayoutParams trajectoryParams;
@@ -168,17 +176,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         else service.mainHandler.post(service::applySavedState);
     }
 
-    public static void setAppForeground(boolean foreground) {
-        appForeground = foreground;
-        AxonInputAccessibilityService service = activeService;
-        if (service == null) return;
-        Runnable action = service::applyOverlayVisibility;
-        if (Looper.myLooper() == Looper.getMainLooper()) action.run();
-        else service.mainHandler.post(action);
-    }
 
-
-    /** Rebuilds lightweight overlay views so an explicit user-selected palette is applied immediately. */
+    /** 重建轻量悬浮视图并立即应用用户配色。 */
     public static void refreshTheme() {
         AxonInputAccessibilityService service = activeService;
         if (service == null) return;
@@ -187,6 +186,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             service.removeWindowImmediate(service.customWindow);
             service.removeWindowImmediate(service.mouseWindow);
             service.removeKeyPromptImmediate();
+            service.removeDpsImmediate();
             service.removeTrajectoryImmediate();
             service.removeGamepadWindowImmediate(service.leftStickWindow);
             service.removeGamepadWindowImmediate(service.rightStickWindow);
@@ -226,8 +226,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        // Theme is user-selected rather than system-driven. Only re-apply geometry after
-        // rotations/density changes; do not switch palette because system night mode changed.
+        // 主题由用户选择。系统配置变化后只更新布局。
+        // 旋转或密度变化不修改用户配色。
         mainHandler.post(this::applySavedState);
     }
 
@@ -241,7 +241,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         int action = event.getAction();
         if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) return false;
 
-        // 手柄按键先走 Android 语义层。轴仍由 /dev/input 读取，二者互不冲突。
+        // 手柄按键使用 Android 语义层，轴数据继续读取 /dev/input。
         if (isPhysicalGamepadEvent(event)) {
             int logicalBit = GamepadButtons.fromAndroidKeyCode(event.getKeyCode());
             if (logicalBit != 0) {
@@ -259,11 +259,25 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         boolean custom = OverlayState.isCustomEnabled(this);
         boolean capture = OverlayState.isCustomCaptureEnabled(this);
         boolean keyPrompt = OverlayState.isKeyPromptEnabled(this);
-        if (!builtin && !custom && !capture && !keyPrompt) return false;
+        boolean dpsEnabled = OverlayState.isDpsEnabled(this);
+        if (!builtin && !custom && !capture && !keyPrompt && !dpsEnabled) return false;
         if (!isPhysicalKeyboardEvent(event)) return false;
 
         int keyCode = event.getKeyCode();
         boolean pressed = action == KeyEvent.ACTION_DOWN;
+
+        int dpsTarget = OverlayState.getDpsTargetKeyCode(this);
+        if (dpsEnabled && dpsTarget == OverlayState.DPS_TARGET_NONE
+                && pressed && event.getRepeatCount() == 0) {
+            // 启用后第一次按键用于绑定，不计入 DPS。
+            OverlayState.setDpsTargetKeyCode(this, keyCode);
+            dpsTarget = keyCode;
+            if (dpsView != null) dpsView.setDpsValue(0);
+        } else if (dpsEnabled && dpsTarget != OverlayState.DPS_TARGET_NONE
+                && keyCode == dpsTarget && pressed && event.getRepeatCount() == 0) {
+            dpsTracker.record(DpsTracker.TARGET, event.getEventTime());
+            if (dpsView != null) pushDpsToViews(event.getEventTime());
+        }
 
         if (keyPrompt && keyPromptView != null) {
             boolean countPress = pressed && event.getRepeatCount() == 0;
@@ -371,7 +385,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
     @Override
     public void onSensitivityStatus(String status) {
-        // 状态只用于当前会话的设置页，不写入持久配置。
+        // 状态只用于当前会话，不写入长期配置。
     }
 
     @Override
@@ -417,8 +431,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
         int x = target.dragStartWindowX + Math.round(rawX - target.dragStartRawX);
         int y = target.dragStartWindowY + Math.round(rawY - target.dragStartRawY);
-        // Deliberately do not clamp to the visible frame. FLAG_LAYOUT_NO_LIMITS lets the
-        // user place the overlay at the screen edges or partially outside the display.
+        // 不限制到可见区域。
+        // 允许悬浮层拖到屏幕边缘或屏幕外。
         target.params.x = x;
         target.params.y = y;
         windowManager.updateViewLayout(target.view, target.params);
@@ -510,6 +524,29 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     }
 
     @Override
+    public void onDragStart(DpsOverlayView source, float rawX, float rawY) {
+        if (!OverlayState.isDragEnabled(this) || dpsParams == null) return;
+        dpsDragStartRawX = rawX;
+        dpsDragStartRawY = rawY;
+        dpsDragStartWindowX = dpsParams.x;
+        dpsDragStartWindowY = dpsParams.y;
+    }
+
+    @Override
+    public void onDragMove(DpsOverlayView source, float rawX, float rawY) {
+        if (!OverlayState.isDragEnabled(this) || windowManager == null || !dpsAttached
+                || dpsParams == null || dpsView == null) return;
+        dpsParams.x = dpsDragStartWindowX + Math.round(rawX - dpsDragStartRawX);
+        dpsParams.y = dpsDragStartWindowY + Math.round(rawY - dpsDragStartRawY);
+        windowManager.updateViewLayout(dpsView, dpsParams);
+    }
+
+    @Override
+    public void onDragEnd(DpsOverlayView source) {
+        saveDpsPosition();
+    }
+
+    @Override
     public void onTaskRemoved(Intent rootIntent) {
         OverlayState.endAppSession(this);
         super.onTaskRemoved(rootIntent);
@@ -531,6 +568,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         removeWindowImmediate(customWindow);
         removeWindowImmediate(mouseWindow);
         removeKeyPromptImmediate();
+        removeDpsImmediate();
         removeTrajectoryImmediate();
         removeGamepadWindowImmediate(leftStickWindow);
         removeGamepadWindowImmediate(rightStickWindow);
@@ -554,7 +592,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         boolean gamepadSource = (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
                 || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
         if (!gamepadSource) return false;
-        // 灵敏度超频会把物理手柄代理成虚拟 UHID。此时虚拟设备的 Android KeyEvent 仍是需要的语义来源。
+        // 灵敏度超频使用虚拟 UHID。按键语义仍来自 Android KeyEvent。
         return !device.isVirtual() || OverlayState.isSensitivityEnabled(this);
     }
 
@@ -567,6 +605,12 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         syncWindow(customWindow, OverlayState.isCustomEnabled(this));
         syncWindow(mouseWindow, OverlayState.isMouseEnabled(this));
         syncKeyPromptWindow(OverlayState.isKeyPromptEnabled(this));
+        int nextDpsTarget = OverlayState.getDpsTargetKeyCode(this);
+        if (nextDpsTarget != activeDpsTargetKeyCode) {
+            activeDpsTargetKeyCode = nextDpsTarget;
+            dpsTracker.resetChannel(DpsTracker.TARGET);
+        }
+        syncDpsWindow(OverlayState.isDpsEnabled(this));
         syncTrajectoryWindow(OverlayState.isMouseTrajectoryEnabled(this));
         syncGamepadWindow(leftStickWindow, OverlayState.isGamepadLeftStickEnabled(this));
         syncGamepadWindow(rightStickWindow, OverlayState.isGamepadRightStickEnabled(this));
@@ -585,7 +629,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                     OverlayState.getSensitivityMode(this));
         }
         if (sensitivity) {
-            // The native proxy owns the physical devices and mirrors mouse + gamepad telemetry.
+            // native 代理读取物理设备并回传鼠标和手柄状态。
             stopMouseMonitor();
             stopGamepadMonitor();
         } else {
@@ -597,22 +641,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     }
 
     private void applyOverlayVisibility() {
-        int visibility = OverlayState.isAutoHideBackground(this) && !appForeground
-                ? View.INVISIBLE : View.VISIBLE;
-        setVisibility(keyboardWindow.view, visibility);
-        setVisibility(customWindow.view, visibility);
-        setVisibility(mouseWindow.view, visibility);
-        setVisibility(keyPromptView, visibility);
-        setVisibility(trajectoryView, visibility);
-        setVisibility(leftStickWindow.view, visibility);
-        setVisibility(rightStickWindow.view, visibility);
-        setVisibility(faceWindow.view, visibility);
-        setVisibility(leftShoulderWindow.view, visibility);
-        setVisibility(rightShoulderWindow.view, visibility);
-    }
-
-    private static void setVisibility(View view, int visibility) {
-        if (view != null && view.getVisibility() != visibility) view.setVisibility(visibility);
+        // “隐藏后台”只影响最近任务卡片。
+        // 悬浮层由各显示开关独立控制。
+        // 应用进入后台后按键、DPS 和手柄显示继续工作。
     }
 
     private void syncWindow(DisplayWindow window, boolean enabled) {
@@ -921,7 +952,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
     private void applyGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons) {
         rawGamepadButtons = buttons;
-        // Android KeyEvent 已确认过的按键采用 Android 语义；其余按键继续使用原始 evdev 状态。
+        // 已确认的按键使用 Android 语义，其余使用 evdev 状态。
         int effectiveButtons = (buttons & ~androidGamepadKnownMask)
                 | (androidGamepadButtons & androidGamepadKnownMask);
 
@@ -1048,6 +1079,80 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyPromptView = null;
         keyPromptParams = null;
         keyPromptMouseButtons = 0;
+    }
+
+    private void syncDpsWindow(boolean enabled) {
+        if (!enabled) {
+            removeDpsImmediate();
+            return;
+        }
+        ensureDpsWindow();
+        updateDpsLayout();
+        if (dpsView != null) {
+            int target = OverlayState.getDpsTargetKeyCode(this);
+            dpsView.setDpsValue(target == OverlayState.DPS_TARGET_NONE
+                    ? -1 : dpsTracker.count(DpsTracker.TARGET, SystemClock.uptimeMillis()));
+        }
+    }
+
+    private void ensureDpsWindow() {
+        if (dpsAttached || windowManager == null) return;
+        dpsView = new DpsOverlayView(this);
+        dpsView.setDragListener(this);
+        dpsView.setDragEnabled(OverlayState.isDragEnabled(this));
+        dpsView.setUserOpacity(OverlayState.getDisplayOpacity(this, DpsOverlayView.DISPLAY_DPS));
+        dpsParams = new WindowManager.LayoutParams(
+                dp(DPS_WIDTH_DP), dp(DPS_HEIGHT_DP),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                windowFlags(), PixelFormat.TRANSLUCENT);
+        dpsParams.gravity = Gravity.TOP | Gravity.START;
+        dpsParams.setTitle("AxonInputDps");
+        applyDpsPosition();
+        windowManager.addView(dpsView, dpsParams);
+        dpsAttached = true;
+    }
+
+    private void updateDpsLayout() {
+        if (!dpsAttached || dpsView == null || dpsParams == null || windowManager == null) return;
+        dpsParams.width = dp(DPS_WIDTH_DP);
+        dpsParams.height = dp(DPS_HEIGHT_DP);
+        dpsParams.flags = windowFlags();
+        dpsView.setDragEnabled(OverlayState.isDragEnabled(this));
+        dpsView.setUserOpacity(OverlayState.getDisplayOpacity(this, DpsOverlayView.DISPLAY_DPS));
+        applyDpsPosition();
+        windowManager.updateViewLayout(dpsView, dpsParams);
+    }
+
+    private void applyDpsPosition() {
+        if (dpsParams == null) return;
+        DisplayMetrics metrics = getResources().getDisplayMetrics();
+        int maxX = Math.max(0, metrics.widthPixels - dpsParams.width);
+        int maxY = Math.max(0, metrics.heightPixels - dpsParams.height);
+        dpsParams.x = Math.round(maxX * (OverlayState.getPositionX(this, DpsOverlayView.DISPLAY_DPS) / 100f));
+        dpsParams.y = Math.round(maxY * (OverlayState.getPositionY(this, DpsOverlayView.DISPLAY_DPS) / 100f));
+    }
+
+    private void saveDpsPosition() {
+        if (dpsParams == null) return;
+        DisplayMetrics metrics = getResources().getDisplayMetrics();
+        int maxX = Math.max(0, metrics.widthPixels - dpsParams.width);
+        int maxY = Math.max(0, metrics.heightPixels - dpsParams.height);
+        int x = maxX == 0 ? 0 : Math.round((dpsParams.x / (float) maxX) * 100f);
+        int y = maxY == 0 ? 0 : Math.round((dpsParams.y / (float) maxY) * 100f);
+        OverlayState.savePosition(this, DpsOverlayView.DISPLAY_DPS, x, y);
+    }
+
+    private void removeDpsImmediate() {
+        if (!dpsAttached || windowManager == null || dpsView == null) {
+            dpsAttached = false;
+            dpsView = null;
+            dpsParams = null;
+            return;
+        }
+        windowManager.removeView(dpsView);
+        dpsAttached = false;
+        dpsView = null;
+        dpsParams = null;
     }
 
     private void syncTrajectoryWindow(boolean enabled) {
@@ -1240,6 +1345,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private void pushDpsToViews(long now) {
         int space = dpsTracker.count(DpsTracker.SPACE, now);
         if (keyboardWindow.view != null) keyboardWindow.view.setKeyboardDps(space);
+        if (dpsView != null) {
+            int target = OverlayState.getDpsTargetKeyCode(this);
+            dpsView.setDpsValue(target == OverlayState.DPS_TARGET_NONE
+                    ? -1 : dpsTracker.count(DpsTracker.TARGET, now));
+        }
         pushDpsToView(faceWindow.view, now);
         pushDpsToView(leftShoulderWindow.view, now);
         pushDpsToView(rightShoulderWindow.view, now);
@@ -1263,7 +1373,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         boolean faceDps = faceWindow.view != null && OverlayState.isAnyGamepadFaceDpsEnabled(this);
         boolean leftDps = leftShoulderWindow.view != null && OverlayState.isGamepadL1DpsEnabled(this);
         boolean rightDps = rightShoulderWindow.view != null && OverlayState.isGamepadR1DpsEnabled(this);
-        return keyboardDps || faceDps || leftDps || rightDps;
+        boolean targetDps = dpsView != null && OverlayState.isDpsEnabled(this)
+                && OverlayState.getDpsTargetKeyCode(this) != OverlayState.DPS_TARGET_NONE;
+        return keyboardDps || faceDps || leftDps || rightDps || targetDps;
     }
 
     private void refreshDpsTicker() {
@@ -1293,6 +1405,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (mouseWindow.view != null) mouseWindow.view.setMouseStats(mouseStats);
         if (trajectoryView != null) trajectoryView.resetMotion();
         if (keyPromptView != null) keyPromptView.clearAll();
+        if (dpsView != null) {
+            dpsView.setDpsValue(OverlayState.getDpsTargetKeyCode(this) == OverlayState.DPS_TARGET_NONE ? -1 : 0);
+        }
         keyPromptMouseButtons = 0;
         applyGamepadState(0, 0, 0, 0, 0, 0, 0);
     }

@@ -15,11 +15,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * 灵敏度超频进程控制器。
- * 免 Root 模式通过 Shizuku shell 启动，Root 模式通过 su 启动。两种模式共用 native evdev -> UHID 代理。
- * Activity 只负责启停和倍率更新，持续输入处理不依赖 Activity 生命周期。
- */
+/** 灵敏度超频进程控制器。Shizuku 和 Root 模式共用 native evdev 到 UHID 代理。 */
 public final class SensitivityProxyController {
     public interface Listener {
         void onSensitivityStatus(String status);
@@ -74,7 +70,7 @@ public final class SensitivityProxyController {
         gainFileBase = "/data/local/tmp/axon_input_sensitivity_gain_" + uid;
     }
 
-    /** Applies persisted state without restarting unless the privilege mode actually changes. */
+    /** 应用已保存状态。权限模式变化时才重启代理。 */
     public synchronized void apply(boolean enabled, int mousePercent, int gamepadPercent, int mode) {
         int resolvedMode = mode == OverlayState.SENSITIVITY_MODE_ROOT
                 ? OverlayState.SENSITIVITY_MODE_ROOT
@@ -275,7 +271,7 @@ public final class SensitivityProxyController {
                     + " > \"$tmp\" && mv \"$tmp\" " + q(gainFile);
             runPrivileged(mode, command);
         } catch (Throwable ignored) {
-            // The proxy keeps the last valid gain; the next slider update retries.
+            // 代理保留上次有效倍率，下次滑动时重试。
         }
     }
 
