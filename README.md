@@ -16,6 +16,7 @@
 
 欢迎提交 Bug 修复、功能改进、性能优化和 UI 优化。
 - 加入我们的频道*https://kook.vip/GYYrsE*
+- QQ交流群:1080086855
 
 # Features
 
