@@ -95,6 +95,11 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_LEFT_STICK_SHAPE = "gamepad_left_stick_shape";
     private static final String KEY_GAMEPAD_RIGHT_STICK_SHAPE = "gamepad_right_stick_shape";
     private static final String KEY_GAMEPAD_FACE_REVERSED = "gamepad_face_reversed";
+    private static final String KEY_GAMEPAD_COMPATIBILITY_MODE = "gamepad_compatibility_mode";
+    private static final String KEY_GAMEPAD_SWAP_XY = "gamepad_swap_xy";
+    private static final String KEY_GAMEPAD_SWAP_AB = "gamepad_swap_ab";
+    private static final String KEY_GAMEPAD_SWAP_STICKS = "gamepad_swap_sticks";
+    private static final String KEY_GAMEPAD_SWAP_TRIGGERS = "gamepad_swap_triggers";
     private static final String KEY_GAMEPAD_FACE_Y_DPS = "gamepad_face_y_dps";
     private static final String KEY_GAMEPAD_FACE_X_DPS = "gamepad_face_x_dps";
     private static final String KEY_GAMEPAD_FACE_B_DPS = "gamepad_face_b_dps";
@@ -161,6 +166,14 @@ public final class OverlayState {
     private static final int DEFAULT_SENSITIVITY = 100;
     private static final int MIN_SENSITIVITY = 1;
     private static final int MAX_SENSITIVITY = 500;
+
+    public static final int GAMEPAD_COMPAT_AUTO = 0;
+    public static final int GAMEPAD_COMPAT_LOOSE = 1;
+    public static final int GAMEPAD_COMPAT_ANDROID = 2;
+    public static final int GAMEPAD_COMPAT_EVDEV = 3;
+    private static final int LEGACY_GAMEPAD_COMPAT_SWAP_XY = 4;
+    private static final int LEGACY_GAMEPAD_COMPAT_SWAP_AB = 5;
+    private static final int LEGACY_GAMEPAD_COMPAT_SWAP_FACE = 6;
 
     private OverlayState() {}
 
@@ -633,6 +646,85 @@ public final class OverlayState {
 
     public static void setGamepadFaceReversed(Context context, boolean reversed) {
         prefs(context).edit().putBoolean(KEY_GAMEPAD_FACE_REVERSED, reversed).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static int getGamepadCompatibilityMode(Context context) {
+        SharedPreferences preferences = prefs(context);
+        int mode = preferences.getInt(KEY_GAMEPAD_COMPATIBILITY_MODE, GAMEPAD_COMPAT_AUTO);
+
+        // 迁移旧版把交换功能放在模式列表中的配置。
+        if (mode >= LEGACY_GAMEPAD_COMPAT_SWAP_XY && mode <= LEGACY_GAMEPAD_COMPAT_SWAP_FACE) {
+            SharedPreferences.Editor editor = preferences.edit()
+                    .putInt(KEY_GAMEPAD_COMPATIBILITY_MODE, GAMEPAD_COMPAT_AUTO);
+            if (mode == LEGACY_GAMEPAD_COMPAT_SWAP_XY || mode == LEGACY_GAMEPAD_COMPAT_SWAP_FACE) {
+                editor.putBoolean(KEY_GAMEPAD_SWAP_XY, true);
+            }
+            if (mode == LEGACY_GAMEPAD_COMPAT_SWAP_AB || mode == LEGACY_GAMEPAD_COMPAT_SWAP_FACE) {
+                editor.putBoolean(KEY_GAMEPAD_SWAP_AB, true);
+            }
+            editor.apply();
+            return GAMEPAD_COMPAT_AUTO;
+        }
+        return mode >= GAMEPAD_COMPAT_AUTO && mode <= GAMEPAD_COMPAT_EVDEV
+                ? mode : GAMEPAD_COMPAT_AUTO;
+    }
+
+    public static void setGamepadCompatibilityMode(Context context, int mode) {
+        int value = mode >= GAMEPAD_COMPAT_AUTO && mode <= GAMEPAD_COMPAT_EVDEV
+                ? mode : GAMEPAD_COMPAT_AUTO;
+        prefs(context).edit().putInt(KEY_GAMEPAD_COMPATIBILITY_MODE, value).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static boolean isGamepadSwapXY(Context context) {
+        getGamepadCompatibilityMode(context);
+        return prefs(context).getBoolean(KEY_GAMEPAD_SWAP_XY, false);
+    }
+
+    public static void setGamepadSwapXY(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(KEY_GAMEPAD_SWAP_XY, enabled).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static boolean isGamepadSwapAB(Context context) {
+        getGamepadCompatibilityMode(context);
+        return prefs(context).getBoolean(KEY_GAMEPAD_SWAP_AB, false);
+    }
+
+    public static void setGamepadSwapAB(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(KEY_GAMEPAD_SWAP_AB, enabled).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static boolean isGamepadSwapSticks(Context context) {
+        getGamepadCompatibilityMode(context);
+        return prefs(context).getBoolean(KEY_GAMEPAD_SWAP_STICKS, false);
+    }
+
+    public static void setGamepadSwapSticks(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(KEY_GAMEPAD_SWAP_STICKS, enabled).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static boolean isGamepadSwapTriggers(Context context) {
+        getGamepadCompatibilityMode(context);
+        return prefs(context).getBoolean(KEY_GAMEPAD_SWAP_TRIGGERS, false);
+    }
+
+    public static void setGamepadSwapTriggers(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(KEY_GAMEPAD_SWAP_TRIGGERS, enabled).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static void resetGamepadCompatibility(Context context) {
+        prefs(context).edit()
+                .putInt(KEY_GAMEPAD_COMPATIBILITY_MODE, GAMEPAD_COMPAT_AUTO)
+                .putBoolean(KEY_GAMEPAD_SWAP_XY, false)
+                .putBoolean(KEY_GAMEPAD_SWAP_AB, false)
+                .putBoolean(KEY_GAMEPAD_SWAP_STICKS, false)
+                .putBoolean(KEY_GAMEPAD_SWAP_TRIGGERS, false)
+                .apply();
         AxonInputAccessibilityService.refreshActiveService();
     }
 

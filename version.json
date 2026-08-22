@@ -1,5 +1,5 @@
 {
-  "versionCode": 4,
-  "versionName": "1.3",
-  "changelog": "大幅增强手柄兼容性，改善部分手柄R2/L2无反应的问题，修复手柄按键录入后CPS始终为0的bug，新增云端公告"
+  "versionCode": 5,
+  "versionName": "1.3 Fix",
+  "changelog": "新增手柄兼容调试；兼容模式与按键交换分离；支持独立交换 X/Y、A/B、左右摇杆、L2/R2；进一步优化手柄映射兼容性。"
 }

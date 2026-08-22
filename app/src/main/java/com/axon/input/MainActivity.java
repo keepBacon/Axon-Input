@@ -154,6 +154,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private LinearLayout globalHtmlDetails;
     private Button fontImportButton;
     private TextView fontStatusText;
+    private Spinner gamepadCompatibilitySpinner;
+    private Switch gamepadSwapXYSwitch;
+    private Switch gamepadSwapABSwitch;
+    private Switch gamepadSwapSticksSwitch;
+    private Switch gamepadSwapTriggersSwitch;
 
     private boolean internalChange;
     private boolean waitingForShizuku;
@@ -509,6 +514,52 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         fontGroup.addView(fontHint, supportingParams(0));
         root.addView(fontGroup, contentParams(dp(10)));
 
+        LinearLayout compatibilityGroup = new LinearLayout(this);
+        compatibilityGroup.setOrientation(LinearLayout.VERTICAL);
+        compatibilityGroup.setPadding(dp(14), dp(10), dp(14), dp(12));
+        compatibilityGroup.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 12f));
+        TextView compatibilityTitle = createLabel();
+        compatibilityTitle.setText(R.string.gamepad_compat_title);
+        compatibilityGroup.addView(compatibilityTitle, supportingParams(dp(6)));
+
+        gamepadCompatibilitySpinner = createChoiceSpinner(new String[]{
+                getString(R.string.gamepad_compat_auto),
+                getString(R.string.gamepad_compat_loose),
+                getString(R.string.gamepad_compat_android),
+                getString(R.string.gamepad_compat_evdev)});
+        compatibilityGroup.addView(createInlineChoiceRow(
+                R.string.gamepad_compat_mode_label, gamepadCompatibilitySpinner), supportingParams(dp(4)));
+
+        TextView compatibilityHint = createSupportingText();
+        compatibilityHint.setText(R.string.gamepad_compat_hint);
+        compatibilityGroup.addView(compatibilityHint, supportingParams(0));
+
+        addDivider(compatibilityGroup, dp(10), dp(6));
+        TextView independentCompatibilityLabel = createLabel();
+        independentCompatibilityLabel.setText(R.string.gamepad_compat_independent_label);
+        compatibilityGroup.addView(independentCompatibilityLabel, supportingParams(dp(2)));
+
+        gamepadSwapXYSwitch = createSwitch(R.string.gamepad_compat_swap_xy);
+        compatibilityGroup.addView(gamepadSwapXYSwitch, switchParams(0));
+
+        gamepadSwapABSwitch = createSwitch(R.string.gamepad_compat_swap_ab);
+        compatibilityGroup.addView(gamepadSwapABSwitch, switchParams(0));
+
+        gamepadSwapSticksSwitch = createSwitch(R.string.gamepad_compat_swap_sticks);
+        compatibilityGroup.addView(gamepadSwapSticksSwitch, switchParams(0));
+
+        gamepadSwapTriggersSwitch = createSwitch(R.string.gamepad_compat_swap_triggers);
+        compatibilityGroup.addView(gamepadSwapTriggersSwitch, switchParams(dp(4)));
+
+        Button compatibilityResetButton = new Button(this);
+        compatibilityResetButton.setText(R.string.gamepad_compat_reset);
+        compatibilityResetButton.setAllCaps(false);
+        compatibilityResetButton.setTextSize(12f);
+        compatibilityResetButton.setMinHeight(dp(36));
+        compatibilityResetButton.setMinimumHeight(dp(36));
+        compatibilityGroup.addView(compatibilityResetButton, supportingParams(0));
+        root.addView(compatibilityGroup, contentParams(dp(10)));
+
         globalHtmlSwitch = createSwitch(R.string.global_html_switch_label);
         globalHtmlDetails = createDetailsContainer();
         TextView globalHtmlHint = createSupportingText();
@@ -857,6 +908,39 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         globalHtmlImportButton.setOnClickListener(v -> openGlobalHtmlPicker());
         fontImportButton.setOnClickListener(v -> openFontPicker());
 
+        gamepadCompatibilitySpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (internalChange) return;
+                OverlayState.setGamepadCompatibilityMode(MainActivity.this, position);
+            }
+
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        gamepadSwapXYSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (!internalChange) OverlayState.setGamepadSwapXY(MainActivity.this, enabled);
+        });
+        gamepadSwapABSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (!internalChange) OverlayState.setGamepadSwapAB(MainActivity.this, enabled);
+        });
+        gamepadSwapSticksSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (!internalChange) OverlayState.setGamepadSwapSticks(MainActivity.this, enabled);
+        });
+        gamepadSwapTriggersSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (!internalChange) OverlayState.setGamepadSwapTriggers(MainActivity.this, enabled);
+        });
+        compatibilityResetButton.setOnClickListener(v -> {
+            OverlayState.resetGamepadCompatibility(MainActivity.this);
+            internalChange = true;
+            gamepadCompatibilitySpinner.setSelection(OverlayState.GAMEPAD_COMPAT_AUTO, false);
+            gamepadSwapXYSwitch.setChecked(false);
+            gamepadSwapABSwitch.setChecked(false);
+            gamepadSwapSticksSwitch.setChecked(false);
+            gamepadSwapTriggersSwitch.setChecked(false);
+            internalChange = false;
+            Toast.makeText(MainActivity.this, R.string.gamepad_compat_reset_done, Toast.LENGTH_SHORT).show();
+        });
+
         autoHideSwitch.setOnCheckedChangeListener((button, enabled) -> {
             if (internalChange) return;
             OverlayState.setAutoHideBackground(this, enabled);
@@ -1004,6 +1088,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadR1DpsSwitch.setChecked(OverlayState.isGamepadR1DpsEnabled(this));
         gamepadLeftStickShapeSpinner.setSelection(OverlayState.getGamepadLeftStickShape(this) == GamepadOverlayView.SHAPE_SQUARE ? 1 : 0, false);
         gamepadRightStickShapeSpinner.setSelection(OverlayState.getGamepadRightStickShape(this) == GamepadOverlayView.SHAPE_SQUARE ? 1 : 0, false);
+        gamepadCompatibilitySpinner.setSelection(OverlayState.getGamepadCompatibilityMode(this), false);
+        gamepadSwapXYSwitch.setChecked(OverlayState.isGamepadSwapXY(this));
+        gamepadSwapABSwitch.setChecked(OverlayState.isGamepadSwapAB(this));
+        gamepadSwapSticksSwitch.setChecked(OverlayState.isGamepadSwapSticks(this));
+        gamepadSwapTriggersSwitch.setChecked(OverlayState.isGamepadSwapTriggers(this));
         captureSwitch.setChecked(OverlayState.isCustomCaptureEnabled(this));
         dpsSwitch.setChecked(OverlayState.isDpsEnabled(this));
         dpsCaptureArmed = OverlayState.isDpsEnabled(this)

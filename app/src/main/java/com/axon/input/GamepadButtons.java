@@ -59,21 +59,30 @@ public final class GamepadButtons {
         };
     }
 
+    private static boolean isCanonicalFaceKeyCode(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BUTTON_A
+                || keyCode == KeyEvent.KEYCODE_BUTTON_B
+                || keyCode == KeyEvent.KEYCODE_BUTTON_X
+                || keyCode == KeyEvent.KEYCODE_BUTTON_Y;
+    }
+
     public static int fromAndroidEvent(KeyEvent event) {
         if (event == null) return 0;
+        int keyCode = event.getKeyCode();
+        // ABXY 优先使用 Android 语义。部分手柄的物理扫描码与面键文字不一致。
+        if (isCanonicalFaceKeyCode(keyCode)) return fromAndroidKeyCode(keyCode);
+        // 肩键和扳机优先扫描码，避免厂商错误 KeyCode 导致串键。
         int scanMapped = fromScanCode(event.getScanCode());
         if (scanMapped != 0) return scanMapped;
-        return fromAndroidKeyCode(event.getKeyCode());
+        return fromAndroidKeyCode(keyCode);
     }
 
     public static int overrideGroupForAndroidEvent(KeyEvent event) {
         if (event == null) return 0;
+        int keyCode = event.getKeyCode();
+        if (isCanonicalFaceKeyCode(keyCode)) return fromAndroidKeyCode(keyCode);
         int scanMapped = fromScanCode(event.getScanCode());
         if (scanMapped != 0) return scanMapped;
-        int keyCode = event.getKeyCode();
-        if (keyCode == KeyEvent.KEYCODE_BUTTON_X || keyCode == KeyEvent.KEYCODE_BUTTON_Y) {
-            return GamepadOverlayView.BTN_WEST | GamepadOverlayView.BTN_NORTH;
-        }
         return fromAndroidKeyCode(keyCode);
     }
 }

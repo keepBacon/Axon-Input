@@ -1162,15 +1162,98 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         window.params = null;
     }
 
+    private int mergeGamepadButtons(int rawButtons) {
+        int mode = OverlayState.getGamepadCompatibilityMode(this);
+        int triggerMask = GamepadOverlayView.BTN_L2 | GamepadOverlayView.BTN_R2;
+
+        if (mode == OverlayState.GAMEPAD_COMPAT_LOOSE) {
+            // 宽松模式保留两路按键。适合单一路径缺键的设备。
+            return rawButtons | androidGamepadButtons;
+        }
+        if (mode == OverlayState.GAMEPAD_COMPAT_EVDEV) {
+            // 底层模式不使用 Android 的按键语义。
+            return rawButtons;
+        }
+
+        // 自动和 Android 优先模式使用 Android 已识别的按键覆盖对应底层位。
+        int semanticMask = androidGamepadKnownMask & ~triggerMask;
+        int merged = (rawButtons & ~semanticMask) | (androidGamepadButtons & semanticMask);
+        // 扳机同时接受数字键和模拟轴对应的底层状态。
+        merged = (merged & ~triggerMask)
+                | ((rawButtons | androidGamepadButtons) & triggerMask);
+
+        // Android 已确认某个 ABXY 正在按下时，清掉底层同组的冲突位。
+        // 只处理当前按下状态，不永久屏蔽另一颗按键。
+        if ((androidGamepadButtons & GamepadOverlayView.BTN_WEST) != 0) {
+            merged &= ~GamepadOverlayView.BTN_NORTH;
+        } else if ((androidGamepadButtons & GamepadOverlayView.BTN_NORTH) != 0) {
+            merged &= ~(GamepadOverlayView.BTN_WEST | GamepadOverlayView.BTN_C);
+        }
+        if ((androidGamepadButtons & GamepadOverlayView.BTN_SOUTH) != 0) {
+            merged &= ~(GamepadOverlayView.BTN_EAST | GamepadOverlayView.BTN_Z);
+        } else if ((androidGamepadButtons & GamepadOverlayView.BTN_EAST) != 0) {
+            merged &= ~GamepadOverlayView.BTN_SOUTH;
+        }
+        merged |= androidGamepadButtons;
+
+        if (mode == OverlayState.GAMEPAD_COMPAT_ANDROID) {
+            int known = androidGamepadKnownMask;
+            merged = (rawButtons & ~known) | (androidGamepadButtons & known);
+        }
+        return merged;
+    }
+
+    private int swapGamepadButtonGroups(int buttons, int firstMask, int secondMask) {
+        boolean first = (buttons & firstMask) != 0;
+        boolean second = (buttons & secondMask) != 0;
+        int result = buttons & ~(firstMask | secondMask);
+        if (first) result |= canonicalGamepadBit(secondMask);
+        if (second) result |= canonicalGamepadBit(firstMask);
+        return result;
+    }
+
+    private int canonicalGamepadBit(int mask) {
+        if ((mask & GamepadOverlayView.BTN_WEST) != 0 || (mask & GamepadOverlayView.BTN_C) != 0) {
+            return GamepadOverlayView.BTN_WEST;
+        }
+        if ((mask & GamepadOverlayView.BTN_EAST) != 0 || (mask & GamepadOverlayView.BTN_Z) != 0) {
+            return GamepadOverlayView.BTN_EAST;
+        }
+        return Integer.lowestOneBit(mask);
+    }
+
     private void applyGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons) {
         rawGamepadButtons = buttons;
-        // X/Y 等按键使用 Android 语义修正。L2/R2 同时接受 Android 和 evdev，兼容双切扳机。
-        int triggerMask = GamepadOverlayView.BTN_L2 | GamepadOverlayView.BTN_R2;
-        int semanticMask = androidGamepadKnownMask & ~triggerMask;
-        int effectiveButtons = (buttons & ~semanticMask)
-                | (androidGamepadButtons & semanticMask);
-        effectiveButtons = (effectiveButtons & ~triggerMask)
-                | ((buttons | androidGamepadButtons) & triggerMask);
+        int effectiveButtons = mergeGamepadButtons(buttons);
+
+        if (OverlayState.isGamepadSwapXY(this)) {
+            effectiveButtons = swapGamepadButtonGroups(
+                    effectiveButtons,
+                    GamepadOverlayView.BTN_WEST | GamepadOverlayView.BTN_C,
+                    GamepadOverlayView.BTN_NORTH);
+        }
+        if (OverlayState.isGamepadSwapAB(this)) {
+            effectiveButtons = swapGamepadButtonGroups(
+                    effectiveButtons,
+                    GamepadOverlayView.BTN_SOUTH,
+                    GamepadOverlayView.BTN_EAST | GamepadOverlayView.BTN_Z);
+        }
+
+        if (OverlayState.isGamepadSwapSticks(this)) {
+            int tx = lx;
+            int ty = ly;
+            lx = rx;
+            ly = ry;
+            rx = tx;
+            ry = ty;
+        }
+        if (OverlayState.isGamepadSwapTriggers(this)) {
+            int t = lt;
+            lt = rt;
+            rt = t;
+            effectiveButtons = swapGamepadButtonGroups(
+                    effectiveButtons, GamepadOverlayView.BTN_L2, GamepadOverlayView.BTN_R2);
+        }
 
         long now = SystemClock.uptimeMillis();
         // 模拟扳机超过一半行程时按一次按键处理，供 CPS 绑定和统计。
