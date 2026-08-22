@@ -18,6 +18,17 @@ public final class GamepadButtons {
             case KeyEvent.KEYCODE_BUTTON_R2 -> GamepadOverlayView.BTN_R2;
             case KeyEvent.KEYCODE_BUTTON_THUMBL -> GamepadOverlayView.BTN_L3;
             case KeyEvent.KEYCODE_BUTTON_THUMBR -> GamepadOverlayView.BTN_R3;
+            // 部分蓝牙手柄只上报通用 BUTTON_1..16。
+            case KeyEvent.KEYCODE_BUTTON_1 -> GamepadOverlayView.BTN_SOUTH;
+            case KeyEvent.KEYCODE_BUTTON_2 -> GamepadOverlayView.BTN_EAST;
+            case KeyEvent.KEYCODE_BUTTON_3 -> GamepadOverlayView.BTN_WEST;
+            case KeyEvent.KEYCODE_BUTTON_4 -> GamepadOverlayView.BTN_NORTH;
+            case KeyEvent.KEYCODE_BUTTON_5 -> GamepadOverlayView.BTN_L1;
+            case KeyEvent.KEYCODE_BUTTON_6 -> GamepadOverlayView.BTN_R1;
+            case KeyEvent.KEYCODE_BUTTON_7 -> GamepadOverlayView.BTN_L2;
+            case KeyEvent.KEYCODE_BUTTON_8 -> GamepadOverlayView.BTN_R2;
+            case KeyEvent.KEYCODE_BUTTON_11 -> GamepadOverlayView.BTN_L3;
+            case KeyEvent.KEYCODE_BUTTON_12 -> GamepadOverlayView.BTN_R3;
             default -> 0;
         };
     }
@@ -25,6 +36,15 @@ public final class GamepadButtons {
     /** Linux evdev 标准扫描码。用于修正厂商错误 KeyCode。 */
     private static int fromScanCode(int scanCode) {
         return switch (scanCode) {
+            // 旧式 HID/蓝牙手柄可能使用 joystick 按键扫描码。
+            case 288 -> GamepadOverlayView.BTN_SOUTH; // BTN_TRIGGER
+            case 289 -> GamepadOverlayView.BTN_EAST;  // BTN_THUMB
+            case 290 -> GamepadOverlayView.BTN_WEST;  // BTN_THUMB2
+            case 291 -> GamepadOverlayView.BTN_NORTH; // BTN_TOP
+            case 292 -> GamepadOverlayView.BTN_L1;    // BTN_TOP2
+            case 293 -> GamepadOverlayView.BTN_R1;    // BTN_PINKIE
+            case 294 -> GamepadOverlayView.BTN_L2;    // BTN_BASE
+            case 295 -> GamepadOverlayView.BTN_R2;    // BTN_BASE2
             case 304 -> GamepadOverlayView.BTN_SOUTH; // BTN_SOUTH
             case 305 -> GamepadOverlayView.BTN_EAST;  // BTN_EAST
             case 307 -> GamepadOverlayView.BTN_NORTH; // BTN_NORTH

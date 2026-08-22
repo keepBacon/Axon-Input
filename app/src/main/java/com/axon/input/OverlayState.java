@@ -27,6 +27,7 @@ public final class OverlayState {
     public static final int DPS_TARGET_NONE = -1;
     public static final int DPS_TARGET_MOUSE_LEFT = 0x10000;
     public static final int DPS_TARGET_MOUSE_RIGHT = 0x10001;
+    public static final int DPS_TARGET_GAMEPAD_BASE = 0x20000;
     private static final String SESSION_PREFS = "axon_input_session";
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";
@@ -74,6 +75,7 @@ public final class OverlayState {
     private static final String KEY_MOUSE_TRAJECTORY_POSITION_Y = "mouse_trajectory_position_y";
     private static final String KEY_AUTO_HIDE_BACKGROUND = "auto_hide_background";
     private static final String KEY_ENTRY_AUTHORIZED = "entry_authorized";
+    private static final String KEY_LAST_CLOUD_NOTICE_ID = "last_cloud_notice_id";
     private static final String KEY_KEYBOARD_MOTION_MODE = "keyboard_motion_mode";
     private static final String KEY_MOUSE_MOTION_MODE = "mouse_motion_mode";
     private static final String KEY_CUSTOM_MOTION_MODE = "custom_motion_mode";
@@ -244,6 +246,18 @@ public final class OverlayState {
         AxonInputAccessibilityService.refreshActiveService();
     }
 
+    public static int gamepadDpsTarget(int buttonBit) {
+        return DPS_TARGET_GAMEPAD_BASE | (buttonBit & 0xffff);
+    }
+
+    public static boolean isGamepadDpsTarget(int target) {
+        return (target & 0xf0000) == DPS_TARGET_GAMEPAD_BASE && (target & 0xffff) != 0;
+    }
+
+    public static int getGamepadDpsTargetBit(int target) {
+        return isGamepadDpsTarget(target) ? (target & 0xffff) : 0;
+    }
+
     public static boolean isGamepadLeftStickEnabled(Context context) {
         return prefs(context).getBoolean(KEY_GAMEPAD_LEFT_STICK_ENABLED, false);
     }
@@ -323,6 +337,15 @@ public final class OverlayState {
 
     public static void setEntryAuthorized(Context context, boolean authorized) {
         durablePrefs(context).edit().putBoolean(KEY_ENTRY_AUTHORIZED, authorized).apply();
+    }
+
+    public static String getLastCloudNoticeId(Context context) {
+        return durablePrefs(context).getString(KEY_LAST_CLOUD_NOTICE_ID, "");
+    }
+
+    public static void setLastCloudNoticeId(Context context, String noticeId) {
+        String value = noticeId == null ? "" : noticeId.trim();
+        durablePrefs(context).edit().putString(KEY_LAST_CLOUD_NOTICE_ID, value).apply();
     }
 
     /** 显式重置入口。普通 Activity 创建和重开不会调用。 */

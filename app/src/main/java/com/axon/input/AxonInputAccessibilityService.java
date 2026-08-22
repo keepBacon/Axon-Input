@@ -660,7 +660,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         int sources = event.getSource();
         boolean gamepadSource = (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
                 || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
-        if (!gamepadSource) return false;
+        // 部分手柄会错误标记为键盘来源。明确的手柄 KeyCode/ScanCode 仍按手柄处理。
+        boolean mappedGamepadKey = GamepadButtons.fromAndroidEvent(event) != 0;
+        if (!gamepadSource && !mappedGamepadKey) return false;
         // 灵敏度超频使用虚拟 UHID。按键语义仍来自 Android KeyEvent。
         return !device.isVirtual() || OverlayState.isSensitivityEnabled(this);
     }
@@ -1171,9 +1173,14 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                 | ((buttons | androidGamepadButtons) & triggerMask);
 
         long now = SystemClock.uptimeMillis();
+        // 模拟扳机超过一半行程时按一次按键处理，供 CPS 绑定和统计。
+        int cpsButtons = effectiveButtons;
+        if (lt >= 500) cpsButtons |= GamepadOverlayView.BTN_L2;
+        if (rt >= 500) cpsButtons |= GamepadOverlayView.BTN_R2;
         int previousButtons = previousGamepadButtonsForDps;
-        recordGamepadDpsTransitions(previousButtons, effectiveButtons, now);
-        previousGamepadButtonsForDps = effectiveButtons;
+        updateCpsGamepadTarget(previousButtons, cpsButtons, now);
+        recordGamepadDpsTransitions(previousButtons, cpsButtons, now);
+        previousGamepadButtonsForDps = cpsButtons;
         gamepadLx = lx; gamepadLy = ly; gamepadRx = rx; gamepadRy = ry;
         gamepadLt = lt; gamepadRt = rt; gamepadButtons = effectiveButtons;
         pushGamepadState(leftStickWindow, lx, ly, rx, ry, lt, rt, effectiveButtons);
@@ -1513,7 +1520,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     }
 
     private boolean needsGamepadMonitor() {
-        return !OverlayState.isSensitivityEnabled(this) && OverlayState.isAnyGamepadDisplayEnabled(this);
+        int target = OverlayState.getDpsTargetKeyCode(this);
+        boolean cpsNeedsGamepad = OverlayState.isDpsEnabled(this)
+                && (target == OverlayState.DPS_TARGET_NONE || OverlayState.isGamepadDpsTarget(target));
+        return !OverlayState.isSensitivityEnabled(this)
+                && (OverlayState.isAnyGamepadDisplayEnabled(this) || cpsNeedsGamepad);
     }
 
     private void startGamepadMonitor() {
@@ -1546,6 +1557,55 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (trajectoryView != null) trajectoryView.resetMotion();
         if (keyPromptView != null) keyPromptView.clearAll();
         keyPromptMouseButtons = 0;
+    }
+
+    private void updateCpsGamepadTarget(int previous, int current, long now) {
+        if (!OverlayState.isDpsEnabled(this)) return;
+        int rising = (~previous) & current & 0x7fff;
+        if (rising == 0) return;
+
+        int target = OverlayState.getDpsTargetKeyCode(this);
+        if (target == OverlayState.DPS_TARGET_NONE) {
+            int buttonBit = firstGamepadCpsButton(rising);
+            if (buttonBit == 0) return;
+            OverlayState.setDpsTargetKeyCode(this, OverlayState.gamepadDpsTarget(buttonBit));
+            dpsTracker.resetChannel(DpsTracker.TARGET);
+            if (dpsView != null) dpsView.setDpsValue(0);
+            return;
+        }
+
+        if (!OverlayState.isGamepadDpsTarget(target)) return;
+        int targetBit = OverlayState.getGamepadDpsTargetBit(target);
+        int targetMask = gamepadCpsMask(targetBit);
+        if ((rising & targetMask) != 0) {
+            dpsTracker.record(DpsTracker.TARGET, now);
+            if (dpsView != null) pushDpsToViews(now);
+        }
+    }
+
+    private int firstGamepadCpsButton(int rising) {
+        int[] priority = {
+                GamepadOverlayView.BTN_SOUTH, GamepadOverlayView.BTN_EAST,
+                GamepadOverlayView.BTN_WEST, GamepadOverlayView.BTN_NORTH,
+                GamepadOverlayView.BTN_L1, GamepadOverlayView.BTN_R1,
+                GamepadOverlayView.BTN_L2, GamepadOverlayView.BTN_R2,
+                GamepadOverlayView.BTN_L3, GamepadOverlayView.BTN_R3,
+                1 << 10, 1 << 11, 1 << 12
+        };
+        for (int bit : priority) {
+            if ((rising & gamepadCpsMask(bit)) != 0) return bit;
+        }
+        return 0;
+    }
+
+    private int gamepadCpsMask(int buttonBit) {
+        if (buttonBit == GamepadOverlayView.BTN_WEST) {
+            return GamepadOverlayView.BTN_WEST | GamepadOverlayView.BTN_C;
+        }
+        if (buttonBit == GamepadOverlayView.BTN_EAST) {
+            return GamepadOverlayView.BTN_EAST | GamepadOverlayView.BTN_Z;
+        }
+        return buttonBit;
     }
 
     private void recordGamepadDpsTransitions(int previous, int current, long now) {

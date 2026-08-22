@@ -1,4 +1,4 @@
-Axon Input 版本：1.2
+Axon Input 版本：1.3
 
 Axon Input 代码结构说明
 

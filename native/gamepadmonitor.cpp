@@ -49,15 +49,38 @@ bool getDeviceName(int fd, char* out, size_t size) {
     return ioctl(fd, EVIOCGNAME(static_cast<int>(size - 1)), out) >= 0;
 }
 
-bool isGamepadDevice(int fd) {
+int gamepadDeviceScore(int fd) {
     unsigned long evBits[8]{};
     unsigned long absBits[8]{};
     unsigned long keyBits[16]{};
-    if (!getBits(fd, 0, evBits) || !bitTest(evBits, EV_ABS) || !bitTest(evBits, EV_KEY)) return false;
-    if (!getBits(fd, EV_ABS, absBits) || !bitTest(absBits, ABS_X) || !bitTest(absBits, ABS_Y)) return false;
-    if (!getBits(fd, EV_KEY, keyBits)) return false;
-    return bitTest(keyBits, BTN_GAMEPAD) || bitTest(keyBits, BTN_SOUTH)
-            || bitTest(keyBits, BTN_EAST) || bitTest(keyBits, BTN_START);
+    if (!getBits(fd, 0, evBits) || !bitTest(evBits, EV_KEY)) return 0;
+    if (!getBits(fd, EV_KEY, keyBits)) return 0;
+
+    int buttonCount = 0;
+    const int gamepadKeys[] = {
+        BTN_GAMEPAD, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_C, BTN_Z,
+        BTN_TL, BTN_TR, BTN_TL2, BTN_TR2, BTN_SELECT, BTN_START, BTN_MODE,
+        BTN_THUMBL, BTN_THUMBR, BTN_TRIGGER, BTN_THUMB, BTN_THUMB2, BTN_TOP,
+        BTN_TOP2, BTN_PINKIE, BTN_BASE, BTN_BASE2
+    };
+    for (int code : gamepadKeys) if (bitTest(keyBits, code)) ++buttonCount;
+
+    int axisCount = 0;
+    if (bitTest(evBits, EV_ABS) && getBits(fd, EV_ABS, absBits)) {
+        const int axes[] = {ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_BRAKE, ABS_GAS, ABS_HAT0X, ABS_HAT0Y};
+        for (int code : axes) if (bitTest(absBits, code)) ++axisCount;
+    }
+
+    // 至少有两个典型手柄按键，或同时具备摇杆轴和手柄按键。
+    if (buttonCount < 2 && !(buttonCount >= 1 && axisCount >= 2)) return 0;
+    int score = buttonCount * 10 + axisCount * 3;
+    if (bitTest(keyBits, BTN_GAMEPAD) || bitTest(keyBits, BTN_SOUTH)) score += 30;
+    if (axisCount >= 4) score += 20;
+    return score;
+}
+
+bool isGamepadDevice(int fd) {
+    return gamepadDeviceScore(fd) > 0;
 }
 
 bool axisInfo(int fd, int code, input_absinfo* out) {
@@ -156,6 +179,15 @@ int buttonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
         case BTN_MODE: return 12;
         case BTN_THUMBL: return 13;
         case BTN_THUMBR: return 14;
+        // 旧式 HID/蓝牙手柄可能只上报 BTN_TRIGGER 系列。
+        case BTN_TRIGGER: return 0;
+        case BTN_THUMB: return 1;
+        case BTN_THUMB2: return 4;
+        case BTN_TOP: return 3;
+        case BTN_TOP2: return 6;
+        case BTN_PINKIE: return 7;
+        case BTN_BASE: return 8;
+        case BTN_BASE2: return 9;
         default: return -1;
     }
 }
@@ -197,7 +229,11 @@ void closeDevice(Device* d) {
 
 bool selectAxes(int fd, Device* d) {
     if (!d) return false;
-    if (!axisInfo(fd, ABS_X, &d->leftX) || !axisInfo(fd, ABS_Y, &d->leftY)) return false;
+    // 有些手柄把按键和摇杆拆成不同 event 节点。按键节点不能因为缺少 X/Y 被丢弃。
+    bool hasLeftX = axisInfo(fd, ABS_X, &d->leftX);
+    bool hasLeftY = axisInfo(fd, ABS_Y, &d->leftY);
+    (void)hasLeftX;
+    (void)hasLeftY;
 
     input_absinfo z{}, rz{}, rx{}, ry{};
     bool hasZ = axisInfo(fd, ABS_Z, &z);
@@ -314,12 +350,24 @@ bool attachDevice(const char* path, Device* d) {
 
 void scan(Device* d) {
     if (!d || d->fd >= 0) return;
-    for (int i = 0; i < kMaxEvents && d->fd < 0; ++i) {
+    int bestScore = 0;
+    char bestPath[64]{};
+    for (int i = 0; i < kMaxEvents; ++i) {
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         if (access(path, R_OK) != 0) continue;
-        (void)attachDevice(path, d);
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) continue;
+        char name[128]{};
+        getDeviceName(fd, name, sizeof(name));
+        int score = (name[0] && strstr(name, kVirtualPrefix)) ? 0 : gamepadDeviceScore(fd);
+        close(fd);
+        if (score > bestScore) {
+            bestScore = score;
+            snprintf(bestPath, sizeof(bestPath), "%s", path);
+        }
     }
+    if (bestScore > 0) (void)attachDevice(bestPath, d);
 }
 
 bool same(const GamepadState& a, const GamepadState& b) {

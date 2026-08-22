@@ -70,7 +70,7 @@
     <string name="reward_close">关闭</string>
     <string name="author_github_open_failed">无法打开 GitHub</string>
     <string name="dps_switch_label">CPS 显示</string>
-    <string name="dps_target_waiting">等待输入：请按下要统计的键盘按键或鼠标左右键</string>
+    <string name="dps_target_waiting">等待输入：请按下要统计的键盘、鼠标左右键或手柄按键</string>
     <string name="dps_target_selected">统计按键：%1$s</string>
     <string name="cps_target_mouse_left">鼠标左键</string>
     <string name="cps_target_mouse_right">鼠标右键</string>
@@ -164,4 +164,5 @@
     <string name="update_later">稍后</string>
     <string name="update_open_failed">无法打开更新页面</string>
 
+    <string name="link_open_failed">无法打开链接</string>
 </resources>

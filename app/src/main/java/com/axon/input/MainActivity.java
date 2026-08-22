@@ -903,24 +903,31 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         return super.dispatchKeyEvent(event);
     }
 
-    private void openKookChannel() {
-        Uri uri = Uri.parse(KOOK_CHANNEL_URL);
+    static void openExternalUrl(Activity activity, String url) {
+        if (activity == null || url == null || url.trim().isEmpty()) return;
+        try {
+            activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url.trim())));
+        } catch (ActivityNotFoundException | SecurityException error) {
+            Toast.makeText(activity, R.string.link_open_failed, Toast.LENGTH_SHORT).show();
+        }
+    }
 
-        // 优先交给已安装的 KOOK。
+    static void openKookUrl(Activity activity, String url) {
+        if (activity == null || url == null || url.trim().isEmpty()) return;
+        Uri uri = Uri.parse(url.trim());
         Intent kookIntent = new Intent(Intent.ACTION_VIEW, uri);
         kookIntent.setPackage("cn.kaiheila");
         try {
-            startActivity(kookIntent);
+            activity.startActivity(kookIntent);
             return;
-        } catch (ActivityNotFoundException ignored) {
+        } catch (ActivityNotFoundException | SecurityException ignored) {
             // 未安装 KOOK 时使用浏览器。
         }
+        openExternalUrl(activity, url);
+    }
 
-        try {
-            startActivity(new Intent(Intent.ACTION_VIEW, uri));
-        } catch (ActivityNotFoundException e) {
-            Toast.makeText(this, R.string.kook_open_failed, Toast.LENGTH_SHORT).show();
-        }
+    private void openKookChannel() {
+        openKookUrl(this, KOOK_CHANNEL_URL);
     }
 
     private void handleDisplayModeChanged() {
@@ -1419,8 +1426,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private void showEntryPasswordIfNeeded() {
         if (isFinishing()) return;
         if (OverlayState.isEntryAuthorized(this)) {
-            mainHandler.post(this::ensureAccessibility);
-            mainHandler.post(() -> UpdateChecker.check(this));
+            mainHandler.post(this::checkCloudNoticeThenContinue);
             return;
         }
 
@@ -1447,8 +1453,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                     OverlayState.setEntryAuthorized(MainActivity.this, true);
                     input.setError(null);
                     dialog.dismiss();
-                    mainHandler.post(MainActivity.this::ensureAccessibility);
-                    mainHandler.post(() -> UpdateChecker.check(MainActivity.this));
+                    mainHandler.post(MainActivity.this::checkCloudNoticeThenContinue);
                 } else {
                     input.setError(getString(R.string.password_wrong));
                     input.selectAll();
@@ -1458,6 +1463,16 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             input.requestFocus();
         });
         dialog.show();
+    }
+
+    private void checkCloudNoticeThenContinue() {
+        if (isFinishing()) return;
+        CloudNoticeChecker.check(this, this::continueAfterEntry);
+    }
+
+    private void continueAfterEntry() {
+        mainHandler.post(this::ensureAccessibility);
+        mainHandler.post(() -> UpdateChecker.check(this));
     }
 
     private void showAuthorDialog() {
@@ -1595,10 +1610,31 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             label = getString(R.string.cps_target_mouse_left);
         } else if (target == OverlayState.DPS_TARGET_MOUSE_RIGHT) {
             label = getString(R.string.cps_target_mouse_right);
+        } else if (OverlayState.isGamepadDpsTarget(target)) {
+            label = gamepadCpsLabel(OverlayState.getGamepadDpsTargetBit(target));
         } else {
             label = KeyLabel.fromKeyCode(target);
         }
         dpsTargetText.setText(getString(R.string.dps_target_selected, label));
+    }
+
+    private String gamepadCpsLabel(int bit) {
+        return switch (bit) {
+            case GamepadOverlayView.BTN_SOUTH -> "手柄 A";
+            case GamepadOverlayView.BTN_EAST -> "手柄 B";
+            case GamepadOverlayView.BTN_WEST -> "手柄 X";
+            case GamepadOverlayView.BTN_NORTH -> "手柄 Y";
+            case GamepadOverlayView.BTN_L1 -> "手柄 L1";
+            case GamepadOverlayView.BTN_R1 -> "手柄 R1";
+            case GamepadOverlayView.BTN_L2 -> "手柄 L2";
+            case GamepadOverlayView.BTN_R2 -> "手柄 R2";
+            case GamepadOverlayView.BTN_L3 -> "手柄 L3";
+            case GamepadOverlayView.BTN_R3 -> "手柄 R3";
+            case 1 << 10 -> "手柄 Select";
+            case 1 << 11 -> "手柄 Start";
+            case 1 << 12 -> "手柄 Mode";
+            default -> "手柄按键";
+        };
     }
 
     private void syncMotionUi(int displayType) {

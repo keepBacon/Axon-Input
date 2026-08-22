@@ -79,11 +79,24 @@ bool isGamepadDevice(int fd) {
     unsigned long evBits[8]{};
     unsigned long absBits[8]{};
     unsigned long keyBits[16]{};
-    if (!getBits(fd, 0, evBits) || !bitTest(evBits, EV_ABS) || !bitTest(evBits, EV_KEY)) return false;
-    if (!getBits(fd, EV_ABS, absBits) || !bitTest(absBits, ABS_X) || !bitTest(absBits, ABS_Y)) return false;
+    if (!getBits(fd, 0, evBits) || !bitTest(evBits, EV_KEY)) return false;
     if (!getBits(fd, EV_KEY, keyBits)) return false;
-    return bitTest(keyBits, BTN_GAMEPAD) || bitTest(keyBits, BTN_SOUTH)
-            || bitTest(keyBits, BTN_EAST) || bitTest(keyBits, BTN_START);
+
+    int buttonCount = 0;
+    const int gamepadKeys[] = {
+        BTN_GAMEPAD, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_C, BTN_Z,
+        BTN_TL, BTN_TR, BTN_TL2, BTN_TR2, BTN_SELECT, BTN_START, BTN_MODE,
+        BTN_THUMBL, BTN_THUMBR, BTN_TRIGGER, BTN_THUMB, BTN_THUMB2, BTN_TOP,
+        BTN_TOP2, BTN_PINKIE, BTN_BASE, BTN_BASE2
+    };
+    for (int code : gamepadKeys) if (bitTest(keyBits, code)) ++buttonCount;
+
+    int axisCount = 0;
+    if (bitTest(evBits, EV_ABS) && getBits(fd, EV_ABS, absBits)) {
+        const int axes[] = {ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_BRAKE, ABS_GAS};
+        for (int code : axes) if (bitTest(absBits, code)) ++axisCount;
+    }
+    return buttonCount >= 2 || (buttonCount >= 1 && axisCount >= 2);
 }
 
 bool axisInfo(int fd, int code, input_absinfo* out) {

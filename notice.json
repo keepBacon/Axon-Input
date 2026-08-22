@@ -1,0 +1,10 @@
+{
+  "id": "2026-08-22-feedback-1",
+  "enabled": true,
+  "title": "公告",
+  "message": "出现问题、Bug 请加入 KOOK 频道反馈，并附上问题视频，以及你的键盘、鼠标、手柄型号。",
+  "joinUrl": "https://kook.vip/GYYrsE",
+  "joinText": "立即加入",
+  "confirmText": "确定",
+  "waitSeconds": 3
+}
