@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.os.SystemClock;
@@ -37,12 +38,18 @@ public final class NativeKeyCanvasView extends View {
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dividerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint ripplePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path mouseClipPath = new Path();
     private final Typeface typefaceNormal;
     private final Typeface typefaceBold;
 
-    private final int keyIdleColor;
+    private int keyIdleColor;
     private final int keyPressedColor;
-    private final int textIdleColor;
+    private int pressColor;
+    private int keyStyle = KeyAppearance.STYLE_ROUNDED;
+    private int textIdleColor;
+    private int cornerScalePercent = 100;
+    private int rippleStrengthPercent = 100;
     private final int textPressedColor;
     private final int strokeColor;
     private final int shellColor;
@@ -51,6 +58,7 @@ public final class NativeKeyCanvasView extends View {
     private final float[] progress = new float[7];
     private final float[] velocity = new float[7];
     private final boolean[] target = new boolean[7];
+    private final long[] rippleStartedAt = new long[7];
 
     private final int displayType;
     private int[] customKeyCodes = new int[0];
@@ -58,7 +66,10 @@ public final class NativeKeyCanvasView extends View {
     private float[] customProgress = new float[0];
     private float[] customVelocity = new float[0];
     private boolean[] customTarget = new boolean[0];
+    private long[] customRippleStartedAt = new long[0];
     private int customColumns = 4;
+    private int keyboardSpacingDp = 8;
+    private int customSpacingDp = 6;
 
     private final float keySize;
     private final float gap;
@@ -109,6 +120,7 @@ public final class NativeKeyCanvasView extends View {
 
         keyIdleColor = UiPalette.overlayKeyIdle(context);
         keyPressedColor = UiPalette.overlayKeyPressed(context);
+        pressColor = keyPressedColor;
         textIdleColor = UiPalette.overlayTextIdle(context);
         textPressedColor = UiPalette.overlayTextPressed(context);
         strokeColor = UiPalette.overlayStroke(context);
@@ -135,6 +147,42 @@ public final class NativeKeyCanvasView extends View {
 
     public int getDisplayType() {
         return displayType;
+    }
+
+    public void setKeyAppearance(int style, int color) {
+        keyStyle = KeyAppearance.clampStyle(style);
+        pressColor = 0xff000000 | (color & 0x00ffffff);
+        postInvalidateOnAnimation();
+    }
+
+    public void setKeyColors(int idleColor, int textColor) {
+        keyIdleColor = 0xff000000 | (idleColor & 0x00ffffff);
+        textIdleColor = 0xff000000 | (textColor & 0x00ffffff);
+        postInvalidateOnAnimation();
+    }
+
+    public void setKeyEffects(int cornerScalePercent, int rippleStrengthPercent) {
+        this.cornerScalePercent = Math.max(0, Math.min(200, cornerScalePercent));
+        this.rippleStrengthPercent = Math.max(0, Math.min(200, rippleStrengthPercent));
+        postInvalidateOnAnimation();
+    }
+
+    private float keyRadius(float baseRadius) {
+        return KeyAppearance.scaleRadius(baseRadius, cornerScalePercent);
+    }
+
+    public void setKeySpacing(int spacingDp) {
+        int value = Math.max(0, Math.min(16, spacingDp));
+        if (displayType == DISPLAY_KEYBOARD) {
+            if (keyboardSpacingDp == value) return;
+            keyboardSpacingDp = value;
+        } else if (displayType == DISPLAY_CUSTOM) {
+            if (customSpacingDp == value) return;
+            customSpacingDp = value;
+        } else {
+            return;
+        }
+        postInvalidateOnAnimation();
     }
 
     public void setAnimationMode(int mode) {
@@ -216,6 +264,8 @@ public final class NativeKeyCanvasView extends View {
         customProgress = new float[keyCodes.length];
         customVelocity = new float[keyCodes.length];
         customTarget = new boolean[keyCodes.length];
+        long[] oldRippleStartedAt = customRippleStartedAt;
+        customRippleStartedAt = new long[keyCodes.length];
 
         for (int i = 0; i < keyCodes.length; i++) {
             customLabels[i] = KeyLabel.fromKeyCode(keyCodes[i]);
@@ -224,6 +274,7 @@ public final class NativeKeyCanvasView extends View {
                     customProgress[i] = oldProgress[j];
                     customVelocity[i] = oldVelocity.length > j ? oldVelocity[j] : 0f;
                     customTarget[i] = oldTarget[j];
+                    customRippleStartedAt[i] = oldRippleStartedAt.length > j ? oldRippleStartedAt[j] : 0L;
                     break;
                 }
             }
@@ -266,6 +317,7 @@ public final class NativeKeyCanvasView extends View {
         for (int i = 0; i < customKeyCodes.length; i++) {
             if (customKeyCodes[i] == keyCode) {
                 if (customTarget[i] != pressed) {
+                    if (pressed) customRippleStartedAt[i] = SystemClock.uptimeMillis();
                     customTarget[i] = pressed;
                     if (animationMode == OverlayState.MOTION_NONE) {
                         customProgress[i] = pressed ? 1f : 0f;
@@ -340,6 +392,8 @@ public final class NativeKeyCanvasView extends View {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         boolean animating = updateMotion();
+        long now = SystemClock.uptimeMillis();
+        if (animationMode == OverlayState.MOTION_RIPPLE && hasActiveRipple(now)) animating = true;
 
         int save = canvas.save();
         float centerX = getWidth() * 0.5f;
@@ -375,7 +429,7 @@ public final class NativeKeyCanvasView extends View {
     }
 
     private void drawKeyboard(Canvas canvas, float centerX, float top) {
-        final float rowStep = keySize + gap;
+        final float rowStep = keySize + dp(keyboardSpacingDp);
         drawKey(canvas, SLOT_W, "W", centerX, top + keySize * 0.5f, keySize, keySize, false);
 
         final float secondY = top + rowStep + keySize * 0.5f;
@@ -407,13 +461,13 @@ public final class NativeKeyCanvasView extends View {
         }
 
         float horizontalPadding = dp(10);
-        float cellGap = dp(6);
+        float cellGap = dp(customSpacingDp);
         float baseWidth = dp(280);
         float available = baseWidth - horizontalPadding * 2f;
         float contentLeft = getWidth() * 0.5f - baseWidth * 0.5f + horizontalPadding;
         float cellWidth = (available - cellGap * (customColumns - 1)) / customColumns;
         float cellHeight = dp(42);
-        float rowStep = dp(CUSTOM_ROW_HEIGHT_DP);
+        float rowStep = dp(44 + customSpacingDp);
 
         for (int i = 0; i < customKeyCodes.length; i++) {
             int row = i / customColumns;
@@ -435,15 +489,19 @@ public final class NativeKeyCanvasView extends View {
         boolean pressed = customTarget[index];
 
         fillPaint.setStyle(Paint.Style.FILL);
-        fillPaint.setColor(withMotionAlpha(pressed ? keyPressedColor : keyIdleColor, motion));
-        canvas.drawRoundRect(rect, radius, radius, fillPaint);
+        fillPaint.setColor(withMotionAlpha(pressed ? pressColor : keyIdleColor, motion));
+        KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(radius), fillPaint);
+        if (animationMode == OverlayState.MOTION_RIPPLE) {
+            KeyAppearance.drawRipple(canvas, rect, pressColor,
+                    customRippleStartedAt[index], SystemClock.uptimeMillis(), rippleStrengthPercent, ripplePaint);
+        }
 
         if (!pressed) {
             strokePaint.setColor(withMotionAlpha(strokeColor, motion));
-            canvas.drawRoundRect(rect, radius, radius, strokePaint);
+            KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(radius), strokePaint);
         }
 
-        textPaint.setColor(withMotionAlpha(pressed ? textPressedColor : textIdleColor, motion));
+        textPaint.setColor(withMotionAlpha(pressed ? KeyAppearance.pressedTextColor(pressColor) : textIdleColor, motion));
         float textSize = width < dp(36) ? 10f : width < dp(52) ? 12f : 14f;
         textPaint.setTextSize(dp(textSize));
         Paint.FontMetrics fm = textPaint.getFontMetrics();
@@ -452,66 +510,75 @@ public final class NativeKeyCanvasView extends View {
     }
 
     private void drawMouse(Canvas canvas, float centerX, float top) {
-        final float left = centerX - mouseWidth * 0.5f;
-        final float right = centerX + mouseWidth * 0.5f;
-        final float bottom = top + mouseHeight;
-        final float mouseRadius = dp(24);
-        final RectF shell = new RectF(left, top, right, bottom);
+        float left = centerX - mouseWidth * 0.5f;
+        float right = centerX + mouseWidth * 0.5f;
+        float bottom = top + mouseHeight;
+        float middle = centerX;
+        float cy = top + mouseHeight * 0.5f;
+        RectF outer = new RectF(left, top, right, bottom);
+        RectF leftArea = new RectF(left, top, middle, bottom);
+        RectF rightArea = new RectF(middle, top, right, bottom);
+        float outerRadius = mouseOuterRadius();
+        int leftCps = (int) ((mouseStats >>> 8) & 0xffL);
+        int rightCps = (int) ((mouseStats >>> 16) & 0xffL);
 
-        // 底层深色区域用于保持鼠标按键释放时可见。
-        fillPaint.setStyle(Paint.Style.FILL);
-        fillPaint.setColor(shellColor);
-        canvas.drawRoundRect(shell, mouseRadius, mouseRadius, fillPaint);
-
-        drawMouseHalf(canvas, shell, true, SLOT_MOUSE_L);
-        drawMouseHalf(canvas, shell, false, SLOT_MOUSE_R);
+        // 左右按键共用一个外框。中间没有间距和圆角。
+        drawMouseHalf(canvas, outer, leftArea, SLOT_MOUSE_L, "L", leftCps, outerRadius, cy);
+        drawMouseHalf(canvas, outer, rightArea, SLOT_MOUSE_R, "R", rightCps, outerRadius, cy);
 
         strokePaint.setColor(strokeColor);
-        canvas.drawRoundRect(shell, mouseRadius, mouseRadius, strokePaint);
-        canvas.drawLine(centerX, top + dp(5), centerX, bottom - dp(5), dividerPaint);
-
-        int leftDps = (int) ((mouseStats >>> 8) & 0xffL);
-        int rightDps = (int) ((mouseStats >>> 16) & 0xffL);
-        drawMouseText(canvas, centerX - mouseWidth * 0.25f, top + mouseHeight * 0.42f,
-                "L", leftDps, SLOT_MOUSE_L);
-        drawMouseText(canvas, centerX + mouseWidth * 0.25f, top + mouseHeight * 0.42f,
-                "R", rightDps, SLOT_MOUSE_R);
+        drawMouseOuterShape(canvas, outer, outerRadius, strokePaint);
+        dividerPaint.setColor(strokeColor);
+        canvas.drawLine(middle, top + dp(1), middle, bottom - dp(1), dividerPaint);
     }
 
-    private void drawMouseHalf(Canvas canvas, RectF shell, boolean leftHalf, int slot) {
-        float mid = shell.centerX();
-        float halfCenterX = leftHalf ? (shell.left + mid) * 0.5f : (mid + shell.right) * 0.5f;
+    private void drawMouseHalf(Canvas canvas, RectF outer, RectF area, int slot,
+                               String label, int cps, float outerRadius, float cy) {
         float motion = progress[slot];
-        float scale = pressScale(motion);
         boolean pressed = target[slot];
-
         int save = canvas.save();
-        if (leftHalf) canvas.clipRect(shell.left, shell.top, mid, shell.bottom);
-        else canvas.clipRect(mid, shell.top, shell.right, shell.bottom);
-        canvas.scale(scale, scale, halfCenterX, shell.centerY());
+        clipMouseOuterShape(canvas, outer, outerRadius);
+        canvas.clipRect(area);
 
-        fillPaint.setColor(withMotionAlpha(pressed ? keyPressedColor : keyIdleColor, motion));
-        canvas.drawRoundRect(shell, dp(24), dp(24), fillPaint);
+        fillPaint.setStyle(Paint.Style.FILL);
+        fillPaint.setColor(withMotionAlpha(pressed ? pressColor : keyIdleColor, motion));
+        canvas.drawRect(area, fillPaint);
+        if (animationMode == OverlayState.MOTION_RIPPLE) {
+            KeyAppearance.drawRipple(canvas, area, pressColor,
+                    rippleStartedAt[slot], SystemClock.uptimeMillis(), rippleStrengthPercent, ripplePaint);
+        }
         canvas.restoreToCount(save);
-    }
 
-    private void drawMouseText(Canvas canvas, float cx, float cy, String side, int dps, int slot) {
-        float motion = progress[slot];
-        float scale = pressScale(motion);
-        boolean pressed = target[slot];
-        int save = canvas.save();
-        canvas.scale(scale, scale, cx, cy);
-
-        textPaint.setColor(withMotionAlpha(pressed ? textPressedColor : textIdleColor, motion));
-        // L/R 保持 13dp。CPS 使用更小字号。
+        float cx = area.centerX();
+        textPaint.setColor(withMotionAlpha(pressed ? KeyAppearance.pressedTextColor(pressColor) : textIdleColor, motion));
         textPaint.setTextSize(dp(13));
         textPaint.setTypeface(typefaceBold);
-        canvas.drawText(side, cx, cy - dp(5), textPaint);
+        canvas.drawText(label, cx, cy - dp(5), textPaint);
         textPaint.setTextSize(dp(8));
         textPaint.setTypeface(typefaceNormal);
-        canvas.drawText(dps + " CPS", cx, cy + dp(13), textPaint);
+        canvas.drawText(cps + " CPS", cx, cy + dp(13), textPaint);
         textPaint.setTypeface(typefaceBold);
-        canvas.restoreToCount(save);
+    }
+
+    private float mouseOuterRadius() {
+        if (keyStyle == KeyAppearance.STYLE_SQUARE) return 0f;
+        if (keyStyle == KeyAppearance.STYLE_CIRCLE) return mouseHeight * 0.5f;
+        return Math.min(keyRadius(radius * 1.35f), mouseHeight * 0.48f);
+    }
+
+    private void drawMouseOuterShape(Canvas canvas, RectF area, float outerRadius, Paint paint) {
+        if (outerRadius <= 0f) canvas.drawRect(area, paint);
+        else canvas.drawRoundRect(area, outerRadius, outerRadius, paint);
+    }
+
+    private void clipMouseOuterShape(Canvas canvas, RectF area, float outerRadius) {
+        if (outerRadius <= 0f) {
+            canvas.clipRect(area);
+            return;
+        }
+        mouseClipPath.reset();
+        mouseClipPath.addRoundRect(area, outerRadius, outerRadius, Path.Direction.CW);
+        canvas.clipPath(mouseClipPath);
     }
 
     private void drawKey(Canvas canvas, int slot, String label, float cx, float cy,
@@ -524,15 +591,19 @@ public final class NativeKeyCanvasView extends View {
         final boolean pressed = target[slot];
 
         fillPaint.setStyle(Paint.Style.FILL);
-        fillPaint.setColor(withMotionAlpha(pressed ? keyPressedColor : keyIdleColor, motion));
-        canvas.drawRoundRect(rect, radius, radius, fillPaint);
+        fillPaint.setColor(withMotionAlpha(pressed ? pressColor : keyIdleColor, motion));
+        KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(radius), fillPaint);
+        if (animationMode == OverlayState.MOTION_RIPPLE) {
+            KeyAppearance.drawRipple(canvas, rect, pressColor,
+                    rippleStartedAt[slot], SystemClock.uptimeMillis(), rippleStrengthPercent, ripplePaint);
+        }
 
         if (!pressed) {
             strokePaint.setColor(withMotionAlpha(strokeColor, motion));
-            canvas.drawRoundRect(rect, radius, radius, strokePaint);
+            KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(radius), strokePaint);
         }
 
-        textPaint.setColor(withMotionAlpha(pressed ? textPressedColor : textIdleColor, motion));
+        textPaint.setColor(withMotionAlpha(pressed ? KeyAppearance.pressedTextColor(pressColor) : textIdleColor, motion));
         if (space && showSpaceDps) {
             // Space 始终保持 14dp。
             textPaint.setTextSize(dp(14));
@@ -647,7 +718,7 @@ public final class NativeKeyCanvasView extends View {
 
     public int customBaseHeightDp() {
         int rows = Math.max(1, (customKeyCodes.length + customColumns - 1) / customColumns);
-        return Math.max(Math.round(CUSTOM_MIN_HEIGHT_DP), rows * Math.round(CUSTOM_ROW_HEIGHT_DP) + 4);
+        return Math.max(Math.round(CUSTOM_MIN_HEIGHT_DP), rows * (44 + customSpacingDp) + 4);
     }
 
     private float clampScale(float value) {
@@ -655,11 +726,22 @@ public final class NativeKeyCanvasView extends View {
     }
 
     private void setTarget(int slot, boolean value) {
+        if (value && !target[slot]) rippleStartedAt[slot] = SystemClock.uptimeMillis();
         target[slot] = value;
         if (animationMode == OverlayState.MOTION_NONE) {
             progress[slot] = value ? 1f : 0f;
             velocity[slot] = 0f;
         }
+    }
+
+    private boolean hasActiveRipple(long now) {
+        for (long start : rippleStartedAt) {
+            if (start > 0L && now - start < KeyAppearance.RIPPLE_MS) return true;
+        }
+        for (long start : customRippleStartedAt) {
+            if (start > 0L && now - start < KeyAppearance.RIPPLE_MS) return true;
+        }
+        return false;
     }
 
     private float clamp(float value, float min, float max) {

@@ -51,22 +51,54 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private static final int CONFIG_EXPORT_REQUEST = 6201;
     private static final int CONFIG_IMPORT_REQUEST = 6202;
     private static final int FONT_IMPORT_REQUEST = 6203;
-    private static final int MAX_CONFIG_BYTES = 4 * 1024 * 1024;
-    private static final int MAX_HTML_BYTES = 2 * 1024 * 1024;
     private static final int SIZE_MIN = 50;
     private static final int SIZE_MAX = 150;
     private static final int OPACITY_MAX = 100;
+    private static final int APPEARANCE_EFFECT_MAX = 200;
+    private static final int KEY_COLOR_IDLE = 0;
+    private static final int KEY_COLOR_PRESSED = 1;
+    private static final int KEY_COLOR_TEXT = 2;
+    private static final int KEY_SPACING_MAX = 16;
     private static final int SENSITIVITY_FINE_MAX = 200;
     private static final int SENSITIVITY_HIGH_STEP = 5;
     private static final int SENSITIVITY_MAX = 500;
     private static final int SENSITIVITY_SEEKBAR_MAX = 259;
     private static final String KOOK_CHANNEL_URL = "https://kook.vip/GYYrsE";
+    private static final int[] MOTION_DISPLAY_TYPES = {
+            KeyOverlayView.DISPLAY_KEYBOARD,
+            KeyOverlayView.DISPLAY_MOUSE,
+            KeyOverlayView.DISPLAY_CUSTOM
+    };
+    private static final int[] OPACITY_DISPLAY_TYPES = {
+            KeyOverlayView.DISPLAY_KEYBOARD,
+            KeyOverlayView.DISPLAY_MOUSE,
+            KeyPromptOverlayView.DISPLAY_KEY_PROMPT,
+            MouseTrajectoryView.DISPLAY_TRAJECTORY,
+            KeyOverlayView.DISPLAY_CUSTOM,
+            GamepadOverlayView.DISPLAY_LEFT_STICK,
+            GamepadOverlayView.DISPLAY_RIGHT_STICK,
+            GamepadOverlayView.DISPLAY_FACE,
+            GamepadOverlayView.DISPLAY_LEFT_SHOULDER,
+            GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
+    };
+    private static final int[] KEY_APPEARANCE_DISPLAY_TYPES = {
+            KeyOverlayView.DISPLAY_KEYBOARD,
+            KeyOverlayView.DISPLAY_MOUSE,
+            KeyPromptOverlayView.DISPLAY_KEY_PROMPT,
+            FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD,
+            KeyOverlayView.DISPLAY_CUSTOM,
+            GamepadOverlayView.DISPLAY_FACE,
+            GamepadOverlayView.DISPLAY_LEFT_SHOULDER,
+            GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
+    };
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private Switch displaySwitch;
     private TextView keyboardSizeLabel;
     private SeekBar keyboardSizeSeekBar;
+    private TextView keyboardSpacingLabel;
+    private SeekBar keyboardSpacingSeekBar;
     private Switch spaceDisplaySwitch;
     private Switch spaceDpsSwitch;
     private Switch mouseSwitch;
@@ -87,9 +119,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private Switch customDisplaySwitch;
     private TextView customSizeLabel;
     private SeekBar customSizeSeekBar;
+    private TextView customSpacingLabel;
+    private SeekBar customSpacingSeekBar;
     private Switch captureSwitch;
     private Switch dragSwitch;
     private Switch inputFullKeyboardSwitch;
+    private LinearLayout inputFullKeyboardDetails;
     private Switch dpsSwitch;
     private LinearLayout dpsDetails;
     private TextView dpsTargetText;
@@ -121,6 +156,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private TextView gamepadLeftStickSizeLabel;
     private TextView gamepadRightStickSizeLabel;
     private TextView gamepadFaceSizeLabel;
+    private TextView gamepadFaceSpacingLabel;
     private TextView gamepadLeftShoulderSizeLabel;
     private TextView gamepadRightShoulderSizeLabel;
     private SeekBar gamepadLeftStickSizeSeekBar;
@@ -130,6 +166,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private SeekBar gamepadLeftStickDotSizeSeekBar;
     private SeekBar gamepadRightStickDotSizeSeekBar;
     private SeekBar gamepadFaceSizeSeekBar;
+    private SeekBar gamepadFaceSpacingSeekBar;
     private SeekBar gamepadLeftShoulderSizeSeekBar;
     private SeekBar gamepadRightShoulderSizeSeekBar;
     private Spinner gamepadLeftStickShapeSpinner;
@@ -148,6 +185,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private SeekBar columnsSeekBar;
     private final Spinner[] motionSpinners = new Spinner[4];
     private final SparseArray<OpacityControl> opacityControls = new SparseArray<>();
+    private final SparseArray<Spinner> keyStyleSpinners = new SparseArray<>();
+    private final SparseArray<View> keyIdleColorDots = new SparseArray<>();
+    private final SparseArray<View> keyPressColorDots = new SparseArray<>();
+    private final SparseArray<View> keyTextColorDots = new SparseArray<>();
+    private final SparseArray<OpacityControl> keyCornerControls = new SparseArray<>();
+    private final SparseArray<OpacityControl> keyRippleControls = new SparseArray<>();
     private Switch globalHtmlSwitch;
     private Button globalHtmlImportButton;
     private TextView globalHtmlStatusText;
@@ -249,7 +292,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardDetails.addView(keyboardSizeLabel, supportingParams(0));
         keyboardSizeSeekBar = createSizeSeekBar();
         keyboardDetails.addView(keyboardSizeSeekBar, seekBarLayoutParams(dp(4)));
+        keyboardSpacingLabel = createLabel();
+        keyboardDetails.addView(keyboardSpacingLabel, supportingParams(dp(2)));
+        keyboardSpacingSeekBar = createKeySpacingSeekBar();
+        keyboardDetails.addView(keyboardSpacingSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD);
+        addKeyAppearanceControls(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD);
         spaceDisplaySwitch = createSwitch(R.string.space_display_switch);
         spaceDisplaySwitch.setTextSize(14f);
         keyboardDetails.addView(spaceDisplaySwitch, switchParams(dp(2)));
@@ -260,7 +308,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         root.addView(createFeatureGroup(displaySwitch, keyboardDetails), contentParams(dp(10)));
 
         inputFullKeyboardSwitch = createSwitch(R.string.input_full_keyboard_switch_label);
-        root.addView(createSwitchGroup(inputFullKeyboardSwitch), contentParams(dp(10)));
+        inputFullKeyboardDetails = createDetailsContainer();
+        addKeyAppearanceControls(inputFullKeyboardDetails, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD);
+        root.addView(createFeatureGroup(inputFullKeyboardSwitch, inputFullKeyboardDetails), contentParams(dp(10)));
 
         mouseSwitch = createSwitch(R.string.mouse_switch_label);
         mouseDetails = createDetailsContainer();
@@ -269,6 +319,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         mouseSizeSeekBar = createSizeSeekBar();
         mouseDetails.addView(mouseSizeSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(mouseDetails, KeyOverlayView.DISPLAY_MOUSE);
+        addKeyAppearanceControls(mouseDetails, KeyOverlayView.DISPLAY_MOUSE);
         addMotionControls(mouseDetails, KeyOverlayView.DISPLAY_MOUSE, R.string.mouse_motion_label);
         root.addView(createFeatureGroup(mouseSwitch, mouseDetails), contentParams(dp(10)));
 
@@ -279,6 +330,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyPromptSizeSeekBar = createSizeSeekBar();
         keyPromptDetails.addView(keyPromptSizeSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(keyPromptDetails, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
+        addKeyAppearanceControls(keyPromptDetails, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
         TextView keyPromptHint = createSupportingText();
         keyPromptHint.setText(R.string.key_prompt_hint);
         keyPromptDetails.addView(keyPromptHint, supportingParams(dp(2)));
@@ -315,7 +367,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         customDetails.addView(customSizeLabel, supportingParams(0));
         customSizeSeekBar = createSizeSeekBar();
         customDetails.addView(customSizeSeekBar, seekBarLayoutParams(dp(4)));
+        customSpacingLabel = createLabel();
+        customDetails.addView(customSpacingLabel, supportingParams(dp(2)));
+        customSpacingSeekBar = createKeySpacingSeekBar();
+        customDetails.addView(customSpacingSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(customDetails, KeyOverlayView.DISPLAY_CUSTOM);
+        addKeyAppearanceControls(customDetails, KeyOverlayView.DISPLAY_CUSTOM);
         addMotionControls(customDetails, KeyOverlayView.DISPLAY_CUSTOM, R.string.custom_motion_label);
 
         captureSwitch = createSwitch(R.string.custom_capture_label);
@@ -375,7 +432,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadFaceDetails.addView(gamepadFaceSizeLabel, supportingParams(0));
         gamepadFaceSizeSeekBar = createSizeSeekBar();
         gamepadFaceDetails.addView(gamepadFaceSizeSeekBar, seekBarLayoutParams(dp(4)));
+        gamepadFaceSpacingLabel = createLabel();
+        gamepadFaceDetails.addView(gamepadFaceSpacingLabel, supportingParams(dp(2)));
+        gamepadFaceSpacingSeekBar = createKeySpacingSeekBar();
+        gamepadFaceDetails.addView(gamepadFaceSpacingSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(gamepadFaceDetails, GamepadOverlayView.DISPLAY_FACE);
+        addKeyAppearanceControls(gamepadFaceDetails, GamepadOverlayView.DISPLAY_FACE);
         gamepadFaceReverseSwitch = createSwitch(R.string.gamepad_face_reverse);
         gamepadFaceReverseSwitch.setTextSize(14f);
         gamepadFaceDetails.addView(gamepadFaceReverseSwitch, switchParams(dp(2)));
@@ -403,6 +465,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadLeftShoulderSizeSeekBar = createSizeSeekBar();
         gamepadLeftShoulderDetails.addView(gamepadLeftShoulderSizeSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(gamepadLeftShoulderDetails, GamepadOverlayView.DISPLAY_LEFT_SHOULDER);
+        addKeyAppearanceControls(gamepadLeftShoulderDetails, GamepadOverlayView.DISPLAY_LEFT_SHOULDER);
         gamepadL2ProgressSwitch = createSwitch(R.string.gamepad_l2_progress);
         gamepadL2ProgressSwitch.setTextSize(14f);
         gamepadLeftShoulderDetails.addView(gamepadL2ProgressSwitch, switchParams(dp(2)));
@@ -418,6 +481,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadRightShoulderSizeSeekBar = createSizeSeekBar();
         gamepadRightShoulderDetails.addView(gamepadRightShoulderSizeSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(gamepadRightShoulderDetails, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
+        addKeyAppearanceControls(gamepadRightShoulderDetails, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
         gamepadR2ProgressSwitch = createSwitch(R.string.gamepad_r2_progress);
         gamepadR2ProgressSwitch.setTextSize(14f);
         gamepadRightShoulderDetails.addView(gamepadR2ProgressSwitch, switchParams(dp(2)));
@@ -622,104 +686,48 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
 
-        displaySwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(keyboardDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
+        bindFeatureSwitch(displaySwitch, keyboardDetails,
+                enabled -> OverlayState.setEnabled(this, enabled));
 
         spaceDisplaySwitch.setOnCheckedChangeListener((button, enabled) -> {
             spaceDpsSwitch.setEnabled(enabled);
             if (!internalChange) OverlayState.setKeyboardSpaceEnabled(this, enabled);
         });
+        bindSimpleSwitch(spaceDpsSwitch,
+                enabled -> OverlayState.setKeyboardSpaceDpsEnabled(this, enabled));
 
-        spaceDpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setKeyboardSpaceDpsEnabled(this, enabled);
-        });
-
-        inputFullKeyboardSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (internalChange) return;
-            OverlayState.setInputFullKeyboardEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        mouseSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(mouseDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setMouseEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        keyPromptSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(keyPromptDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setKeyPromptEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        mouseTrajectorySwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(mouseTrajectoryDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setMouseTrajectoryEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        mouseTrajectoryLeftColorSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (internalChange) return;
-            OverlayState.setMouseTrajectoryLeftColorEnabled(this, enabled);
-        });
-
-        mouseTrajectoryRightColorSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (internalChange) return;
-            OverlayState.setMouseTrajectoryRightColorEnabled(this, enabled);
-        });
-
-        customDisplaySwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(customDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setCustomEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        gamepadLeftStickSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(gamepadLeftStickDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setGamepadLeftStickEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        gamepadRightStickSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(gamepadRightStickDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setGamepadRightStickEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        gamepadFaceSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(gamepadFaceDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setGamepadFaceEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        gamepadLeftShoulderSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(gamepadLeftShoulderDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setGamepadLeftShoulderEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
-
-        gamepadRightShoulderSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(gamepadRightShoulderDetails, enabled);
-            if (internalChange) return;
-            OverlayState.setGamepadRightShoulderEnabled(this, enabled);
-            handleDisplayModeChanged();
-        });
+        bindFeatureSwitch(inputFullKeyboardSwitch, inputFullKeyboardDetails,
+                enabled -> OverlayState.setInputFullKeyboardEnabled(this, enabled));
+        bindFeatureSwitch(mouseSwitch, mouseDetails,
+                enabled -> OverlayState.setMouseEnabled(this, enabled));
+        bindFeatureSwitch(keyPromptSwitch, keyPromptDetails,
+                enabled -> OverlayState.setKeyPromptEnabled(this, enabled));
+        bindFeatureSwitch(mouseTrajectorySwitch, mouseTrajectoryDetails,
+                enabled -> OverlayState.setMouseTrajectoryEnabled(this, enabled));
+        bindSimpleSwitch(mouseTrajectoryLeftColorSwitch,
+                enabled -> OverlayState.setMouseTrajectoryLeftColorEnabled(this, enabled));
+        bindSimpleSwitch(mouseTrajectoryRightColorSwitch,
+                enabled -> OverlayState.setMouseTrajectoryRightColorEnabled(this, enabled));
+        bindFeatureSwitch(customDisplaySwitch, customDetails,
+                enabled -> OverlayState.setCustomEnabled(this, enabled));
+        bindFeatureSwitch(gamepadLeftStickSwitch, gamepadLeftStickDetails,
+                enabled -> OverlayState.setGamepadLeftStickEnabled(this, enabled));
+        bindFeatureSwitch(gamepadRightStickSwitch, gamepadRightStickDetails,
+                enabled -> OverlayState.setGamepadRightStickEnabled(this, enabled));
+        bindFeatureSwitch(gamepadFaceSwitch, gamepadFaceDetails,
+                enabled -> OverlayState.setGamepadFaceEnabled(this, enabled));
+        bindFeatureSwitch(gamepadLeftShoulderSwitch, gamepadLeftShoulderDetails,
+                enabled -> OverlayState.setGamepadLeftShoulderEnabled(this, enabled));
+        bindFeatureSwitch(gamepadRightShoulderSwitch, gamepadRightShoulderDetails,
+                enabled -> OverlayState.setGamepadRightShoulderEnabled(this, enabled));
 
         keyboardSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 keyboardSizeLabel, R.string.keyboard_size_format,
                 value -> OverlayState.setKeyboardSize(MainActivity.this, value)));
+
+        keyboardSpacingSeekBar.setOnSeekBarChangeListener(spacingListener(
+                keyboardSpacingLabel, R.string.keyboard_spacing_format,
+                value -> OverlayState.setKeyboardSpacing(MainActivity.this, value)));
 
         mouseSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 mouseSizeLabel, R.string.mouse_size_format,
@@ -741,6 +749,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 customSizeLabel, R.string.custom_size_format,
                 value -> OverlayState.setCustomSize(MainActivity.this, value)));
 
+        customSpacingSeekBar.setOnSeekBarChangeListener(spacingListener(
+                customSpacingLabel, R.string.custom_spacing_format,
+                value -> OverlayState.setCustomSpacing(MainActivity.this, value)));
+
         gamepadLeftStickSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 gamepadLeftStickSizeLabel, R.string.gamepad_left_stick_size_format,
                 value -> OverlayState.setGamepadDisplaySize(MainActivity.this, GamepadOverlayView.DISPLAY_LEFT_STICK, value)));
@@ -760,6 +772,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadFaceSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 gamepadFaceSizeLabel, R.string.gamepad_face_size_format,
                 value -> OverlayState.setGamepadDisplaySize(MainActivity.this, GamepadOverlayView.DISPLAY_FACE, value)));
+
+        gamepadFaceSpacingSeekBar.setOnSeekBarChangeListener(spacingListener(
+                gamepadFaceSpacingLabel, R.string.gamepad_face_spacing_format,
+                value -> OverlayState.setGamepadFaceSpacing(MainActivity.this, value)));
 
         gamepadLeftShoulderSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 gamepadLeftShoulderSizeLabel, R.string.gamepad_left_shoulder_size_format,
@@ -785,34 +801,24 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
 
-        gamepadFaceReverseSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadFaceReversed(MainActivity.this, enabled);
-        });
-
-        gamepadFaceYDpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadFaceYDpsEnabled(MainActivity.this, enabled);
-        });
-        gamepadFaceXDpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadFaceXDpsEnabled(MainActivity.this, enabled);
-        });
-        gamepadFaceBDpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadFaceBDpsEnabled(MainActivity.this, enabled);
-        });
-        gamepadFaceADpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadFaceADpsEnabled(MainActivity.this, enabled);
-        });
-        gamepadL2ProgressSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadL2ProgressEnabled(MainActivity.this, enabled);
-        });
-        gamepadR2ProgressSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadR2ProgressEnabled(MainActivity.this, enabled);
-        });
-        gamepadL1DpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadL1DpsEnabled(MainActivity.this, enabled);
-        });
-        gamepadR1DpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadR1DpsEnabled(MainActivity.this, enabled);
-        });
+        bindSimpleSwitch(gamepadFaceReverseSwitch,
+                enabled -> OverlayState.setGamepadFaceReversed(this, enabled));
+        bindSimpleSwitch(gamepadFaceYDpsSwitch,
+                enabled -> OverlayState.setGamepadFaceYDpsEnabled(this, enabled));
+        bindSimpleSwitch(gamepadFaceXDpsSwitch,
+                enabled -> OverlayState.setGamepadFaceXDpsEnabled(this, enabled));
+        bindSimpleSwitch(gamepadFaceBDpsSwitch,
+                enabled -> OverlayState.setGamepadFaceBDpsEnabled(this, enabled));
+        bindSimpleSwitch(gamepadFaceADpsSwitch,
+                enabled -> OverlayState.setGamepadFaceADpsEnabled(this, enabled));
+        bindSimpleSwitch(gamepadL2ProgressSwitch,
+                enabled -> OverlayState.setGamepadL2ProgressEnabled(this, enabled));
+        bindSimpleSwitch(gamepadR2ProgressSwitch,
+                enabled -> OverlayState.setGamepadR2ProgressEnabled(this, enabled));
+        bindSimpleSwitch(gamepadL1DpsSwitch,
+                enabled -> OverlayState.setGamepadL1DpsEnabled(this, enabled));
+        bindSimpleSwitch(gamepadR1DpsSwitch,
+                enabled -> OverlayState.setGamepadR1DpsEnabled(this, enabled));
 
         captureSwitch.setOnCheckedChangeListener((button, enabled) -> {
             if (internalChange) return;
@@ -892,9 +898,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             handleDisplayModeChanged();
         });
 
-        dragSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setDragEnabled(this, enabled);
-        });
+        bindSimpleSwitch(dragSwitch,
+                enabled -> OverlayState.setDragEnabled(this, enabled));
 
         globalHtmlSwitch.setOnCheckedChangeListener((button, enabled) -> {
             setDetailsVisible(globalHtmlDetails, enabled);
@@ -917,18 +922,14 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
-        gamepadSwapXYSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadSwapXY(MainActivity.this, enabled);
-        });
-        gamepadSwapABSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadSwapAB(MainActivity.this, enabled);
-        });
-        gamepadSwapSticksSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadSwapSticks(MainActivity.this, enabled);
-        });
-        gamepadSwapTriggersSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            if (!internalChange) OverlayState.setGamepadSwapTriggers(MainActivity.this, enabled);
-        });
+        bindSimpleSwitch(gamepadSwapXYSwitch,
+                enabled -> OverlayState.setGamepadSwapXY(this, enabled));
+        bindSimpleSwitch(gamepadSwapABSwitch,
+                enabled -> OverlayState.setGamepadSwapAB(this, enabled));
+        bindSimpleSwitch(gamepadSwapSticksSwitch,
+                enabled -> OverlayState.setGamepadSwapSticks(this, enabled));
+        bindSimpleSwitch(gamepadSwapTriggersSwitch,
+                enabled -> OverlayState.setGamepadSwapTriggers(this, enabled));
         compatibilityResetButton.setOnClickListener(v -> {
             OverlayState.resetGamepadCompatibility(MainActivity.this);
             internalChange = true;
@@ -1040,8 +1041,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     protected void onDestroy() {
-        // 这里不清理运行配置。
-        // Back、进程重建和隐藏任务都可能销毁 Activity。
+        mainHandler.removeCallbacksAndMessages(null);
+        // Activity 销毁不清理运行配置，任务移除时由服务统一处理。
         super.onDestroy();
     }
 
@@ -1107,65 +1108,52 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         sensitivityModeSpinner.setSelection(
                 OverlayState.getSensitivityMode(this) == OverlayState.SENSITIVITY_MODE_ROOT ? 1 : 0, false);
 
-        int keyboardSize = OverlayState.getKeyboardSize(this);
-        keyboardSizeSeekBar.setProgress(keyboardSize - SIZE_MIN);
-        keyboardSizeLabel.setText(getString(R.string.keyboard_size_format, keyboardSize));
-
-        int mouseSize = OverlayState.getMouseSize(this);
-        mouseSizeSeekBar.setProgress(mouseSize - SIZE_MIN);
-        mouseSizeLabel.setText(getString(R.string.mouse_size_format, mouseSize));
-
-        int keyPromptSize = OverlayState.getKeyPromptSize(this);
-        keyPromptSizeSeekBar.setProgress(keyPromptSize - SIZE_MIN);
-        keyPromptSizeLabel.setText(getString(R.string.key_prompt_size_format, keyPromptSize));
-
-        int mouseTrajectorySize = OverlayState.getMouseTrajectorySize(this);
-        mouseTrajectorySizeSeekBar.setProgress(mouseTrajectorySize - SIZE_MIN);
-        mouseTrajectorySizeLabel.setText(getString(R.string.mouse_trajectory_size_format, mouseTrajectorySize));
-
-        int mouseTrajectoryDotSize = OverlayState.getMouseTrajectoryDotSize(this);
-        mouseTrajectoryDotSizeSeekBar.setProgress(mouseTrajectoryDotSize - SIZE_MIN);
-        mouseTrajectoryDotSizeLabel.setText(getString(R.string.mouse_trajectory_dot_size_format, mouseTrajectoryDotSize));
-
-        int customSize = OverlayState.getCustomSize(this);
-        customSizeSeekBar.setProgress(customSize - SIZE_MIN);
-        customSizeLabel.setText(getString(R.string.custom_size_format, customSize));
-
-        int gamepadLeftStickSize = OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_LEFT_STICK);
-        gamepadLeftStickSizeSeekBar.setProgress(gamepadLeftStickSize - SIZE_MIN);
-        gamepadLeftStickSizeLabel.setText(getString(R.string.gamepad_left_stick_size_format, gamepadLeftStickSize));
-
-        int gamepadRightStickSize = OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_RIGHT_STICK);
-        gamepadRightStickSizeSeekBar.setProgress(gamepadRightStickSize - SIZE_MIN);
-        gamepadRightStickSizeLabel.setText(getString(R.string.gamepad_right_stick_size_format, gamepadRightStickSize));
-
-        int gamepadLeftStickDotSize = OverlayState.getGamepadStickDotSize(this, GamepadOverlayView.DISPLAY_LEFT_STICK);
-        gamepadLeftStickDotSizeSeekBar.setProgress(gamepadLeftStickDotSize - SIZE_MIN);
-        gamepadLeftStickDotSizeLabel.setText(getString(R.string.gamepad_left_stick_dot_size_format, gamepadLeftStickDotSize));
-
-        int gamepadRightStickDotSize = OverlayState.getGamepadStickDotSize(this, GamepadOverlayView.DISPLAY_RIGHT_STICK);
-        gamepadRightStickDotSizeSeekBar.setProgress(gamepadRightStickDotSize - SIZE_MIN);
-        gamepadRightStickDotSizeLabel.setText(getString(R.string.gamepad_right_stick_dot_size_format, gamepadRightStickDotSize));
-
-        int gamepadFaceSize = OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_FACE);
-        gamepadFaceSizeSeekBar.setProgress(gamepadFaceSize - SIZE_MIN);
-        gamepadFaceSizeLabel.setText(getString(R.string.gamepad_face_size_format, gamepadFaceSize));
-
-        int gamepadLeftShoulderSize = OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_LEFT_SHOULDER);
-        gamepadLeftShoulderSizeSeekBar.setProgress(gamepadLeftShoulderSize - SIZE_MIN);
-        gamepadLeftShoulderSizeLabel.setText(getString(R.string.gamepad_left_shoulder_size_format, gamepadLeftShoulderSize));
-
-        int gamepadRightShoulderSize = OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
-        gamepadRightShoulderSizeSeekBar.setProgress(gamepadRightShoulderSize - SIZE_MIN);
-        gamepadRightShoulderSizeLabel.setText(getString(R.string.gamepad_right_shoulder_size_format, gamepadRightShoulderSize));
+        syncSizeControl(keyboardSizeSeekBar, keyboardSizeLabel,
+                OverlayState.getKeyboardSize(this), R.string.keyboard_size_format);
+        syncSpacingControl(keyboardSpacingSeekBar, keyboardSpacingLabel,
+                OverlayState.getKeyboardSpacing(this), R.string.keyboard_spacing_format);
+        syncSizeControl(mouseSizeSeekBar, mouseSizeLabel,
+                OverlayState.getMouseSize(this), R.string.mouse_size_format);
+        syncSizeControl(keyPromptSizeSeekBar, keyPromptSizeLabel,
+                OverlayState.getKeyPromptSize(this), R.string.key_prompt_size_format);
+        syncSizeControl(mouseTrajectorySizeSeekBar, mouseTrajectorySizeLabel,
+                OverlayState.getMouseTrajectorySize(this), R.string.mouse_trajectory_size_format);
+        syncSizeControl(mouseTrajectoryDotSizeSeekBar, mouseTrajectoryDotSizeLabel,
+                OverlayState.getMouseTrajectoryDotSize(this), R.string.mouse_trajectory_dot_size_format);
+        syncSizeControl(customSizeSeekBar, customSizeLabel,
+                OverlayState.getCustomSize(this), R.string.custom_size_format);
+        syncSpacingControl(customSpacingSeekBar, customSpacingLabel,
+                OverlayState.getCustomSpacing(this), R.string.custom_spacing_format);
+        syncSizeControl(gamepadLeftStickSizeSeekBar, gamepadLeftStickSizeLabel,
+                OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_LEFT_STICK),
+                R.string.gamepad_left_stick_size_format);
+        syncSizeControl(gamepadRightStickSizeSeekBar, gamepadRightStickSizeLabel,
+                OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_RIGHT_STICK),
+                R.string.gamepad_right_stick_size_format);
+        syncSizeControl(gamepadLeftStickDotSizeSeekBar, gamepadLeftStickDotSizeLabel,
+                OverlayState.getGamepadStickDotSize(this, GamepadOverlayView.DISPLAY_LEFT_STICK),
+                R.string.gamepad_left_stick_dot_size_format);
+        syncSizeControl(gamepadRightStickDotSizeSeekBar, gamepadRightStickDotSizeLabel,
+                OverlayState.getGamepadStickDotSize(this, GamepadOverlayView.DISPLAY_RIGHT_STICK),
+                R.string.gamepad_right_stick_dot_size_format);
+        syncSizeControl(gamepadFaceSizeSeekBar, gamepadFaceSizeLabel,
+                OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_FACE),
+                R.string.gamepad_face_size_format);
+        syncSpacingControl(gamepadFaceSpacingSeekBar, gamepadFaceSpacingLabel,
+                OverlayState.getGamepadFaceSpacing(this), R.string.gamepad_face_spacing_format);
+        syncSizeControl(gamepadLeftShoulderSizeSeekBar, gamepadLeftShoulderSizeLabel,
+                OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_LEFT_SHOULDER),
+                R.string.gamepad_left_shoulder_size_format);
+        syncSizeControl(gamepadRightShoulderSizeSeekBar, gamepadRightShoulderSizeLabel,
+                OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER),
+                R.string.gamepad_right_shoulder_size_format);
 
         int mouseSensitivity = OverlayState.getMouseSensitivity(this);
-        mouseSensitivitySeekBar.setProgress(sensitivityToProgress(mouseSensitivity));
-        mouseSensitivityLabel.setText(getString(R.string.mouse_sensitivity_format, mouseSensitivity));
-
+        syncValueControl(mouseSensitivitySeekBar, mouseSensitivityLabel,
+                sensitivityToProgress(mouseSensitivity), mouseSensitivity, R.string.mouse_sensitivity_format);
         int gamepadSensitivity = OverlayState.getGamepadSensitivity(this);
-        gamepadSensitivitySeekBar.setProgress(sensitivityToProgress(gamepadSensitivity));
-        gamepadSensitivityLabel.setText(getString(R.string.gamepad_sensitivity_format, gamepadSensitivity));
+        syncValueControl(gamepadSensitivitySeekBar, gamepadSensitivityLabel,
+                sensitivityToProgress(gamepadSensitivity), gamepadSensitivity, R.string.gamepad_sensitivity_format);
         sensitivityStatusText.setText(getString(
                 R.string.sensitivity_status_format, OverlayState.getSensitivityStatus(this)));
 
@@ -1173,20 +1161,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         columnsSeekBar.setProgress(columns - 1);
         columnsLabel.setText(getString(R.string.columns_format, columns));
         updateRecordedKeys(OverlayState.isCustomCaptureEnabled(this));
-        syncMotionUi(KeyOverlayView.DISPLAY_KEYBOARD);
-        syncMotionUi(KeyOverlayView.DISPLAY_MOUSE);
-        syncMotionUi(KeyOverlayView.DISPLAY_CUSTOM);
-        syncOpacityUi(KeyOverlayView.DISPLAY_KEYBOARD);
-        syncOpacityUi(KeyOverlayView.DISPLAY_MOUSE);
-        syncOpacityUi(KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
-        syncOpacityUi(MouseTrajectoryView.DISPLAY_TRAJECTORY);
-        syncOpacityUi(KeyOverlayView.DISPLAY_CUSTOM);
-        syncOpacityUi(GamepadOverlayView.DISPLAY_LEFT_STICK);
-        syncOpacityUi(GamepadOverlayView.DISPLAY_RIGHT_STICK);
-        syncOpacityUi(GamepadOverlayView.DISPLAY_FACE);
-        syncOpacityUi(GamepadOverlayView.DISPLAY_LEFT_SHOULDER);
-        syncOpacityUi(GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
+        for (int type : MOTION_DISPLAY_TYPES) syncMotionUi(type);
+        for (int type : OPACITY_DISPLAY_TYPES) syncOpacityUi(type);
+        for (int type : KEY_APPEARANCE_DISPLAY_TYPES) syncKeyAppearanceUi(type);
         setDetailsVisible(keyboardDetails, displaySwitch.isChecked());
+        setDetailsVisible(inputFullKeyboardDetails, inputFullKeyboardSwitch.isChecked());
         setDetailsVisible(mouseDetails, mouseSwitch.isChecked());
         setDetailsVisible(keyPromptDetails, keyPromptSwitch.isChecked());
         setDetailsVisible(mouseTrajectoryDetails, mouseTrajectorySwitch.isChecked());
@@ -1226,7 +1205,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         if (requestCode == HTML_REQUEST_GLOBAL) {
             try {
-                String html = readText(uri, MAX_HTML_BYTES);
+                String html = readText(uri, OverlayState.MAX_GLOBAL_HTML_BYTES);
                 String name = queryDisplayName(uri, "display.html");
                 OverlayState.saveGlobalHtml(this, name, html);
                 internalChange = true;
@@ -1256,7 +1235,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         if (requestCode == CONFIG_IMPORT_REQUEST) {
             try {
-                ConfigManager.importInto(this, readText(uri, MAX_CONFIG_BYTES));
+                ConfigManager.importInto(this, readText(uri, ConfigManager.MAX_CONFIG_BYTES));
                 Toast.makeText(this, R.string.config_import_success, Toast.LENGTH_SHORT).show();
                 recreate();
             } catch (Throwable error) {
@@ -1301,7 +1280,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             return;
         }
 
-        // Root 超频模式不依赖 Shizuku。
+        // Root 倍率模式不依赖 Shizuku。
         // Root 模式可直接启用无障碍服务。
         if (rootMode) {
             grantAccessibilityWithRoot();
@@ -1667,7 +1646,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
                 this,
                 android.R.layout.simple_spinner_item,
-                new String[]{getString(R.string.motion_size), getString(R.string.motion_alpha), getString(R.string.motion_none)});
+                new String[]{getString(R.string.motion_size), getString(R.string.motion_alpha),
+                        getString(R.string.motion_ripple), getString(R.string.motion_none)});
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(adapter);
         motionSpinners[displayType] = spinner;
@@ -1679,7 +1659,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                int mode = OverlayState.clampMotionMode(position);
+                int mode;
+                if (position == 1) mode = OverlayState.MOTION_ALPHA;
+                else if (position == 2) mode = OverlayState.MOTION_RIPPLE;
+                else if (position == 3) mode = OverlayState.MOTION_NONE;
+                else mode = OverlayState.MOTION_SIZE;
                 if (!internalChange) OverlayState.setMotionMode(MainActivity.this, displayType, mode);
             }
 
@@ -1708,28 +1692,33 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private String gamepadCpsLabel(int bit) {
-        return switch (bit) {
-            case GamepadOverlayView.BTN_SOUTH -> "手柄 A";
-            case GamepadOverlayView.BTN_EAST -> "手柄 B";
-            case GamepadOverlayView.BTN_WEST -> "手柄 X";
-            case GamepadOverlayView.BTN_NORTH -> "手柄 Y";
-            case GamepadOverlayView.BTN_L1 -> "手柄 L1";
-            case GamepadOverlayView.BTN_R1 -> "手柄 R1";
-            case GamepadOverlayView.BTN_L2 -> "手柄 L2";
-            case GamepadOverlayView.BTN_R2 -> "手柄 R2";
-            case GamepadOverlayView.BTN_L3 -> "手柄 L3";
-            case GamepadOverlayView.BTN_R3 -> "手柄 R3";
-            case 1 << 10 -> "手柄 Select";
-            case 1 << 11 -> "手柄 Start";
-            case 1 << 12 -> "手柄 Mode";
-            default -> "手柄按键";
+        int resId = switch (bit) {
+            case GamepadOverlayView.BTN_SOUTH -> R.string.cps_target_gamepad_a;
+            case GamepadOverlayView.BTN_EAST -> R.string.cps_target_gamepad_b;
+            case GamepadOverlayView.BTN_WEST -> R.string.cps_target_gamepad_x;
+            case GamepadOverlayView.BTN_NORTH -> R.string.cps_target_gamepad_y;
+            case GamepadOverlayView.BTN_L1 -> R.string.cps_target_gamepad_l1;
+            case GamepadOverlayView.BTN_R1 -> R.string.cps_target_gamepad_r1;
+            case GamepadOverlayView.BTN_L2 -> R.string.cps_target_gamepad_l2;
+            case GamepadOverlayView.BTN_R2 -> R.string.cps_target_gamepad_r2;
+            case GamepadOverlayView.BTN_L3 -> R.string.cps_target_gamepad_l3;
+            case GamepadOverlayView.BTN_R3 -> R.string.cps_target_gamepad_r3;
+            case 1 << 10 -> R.string.cps_target_gamepad_select;
+            case 1 << 11 -> R.string.cps_target_gamepad_start;
+            case 1 << 12 -> R.string.cps_target_gamepad_mode;
+            default -> R.string.cps_target_gamepad_button;
         };
+        return getString(resId);
     }
 
     private void syncMotionUi(int displayType) {
         Spinner spinner = motionSpinners[displayType];
         if (spinner == null) return;
-        spinner.setSelection(OverlayState.getMotionMode(this, displayType), false);
+        int mode = OverlayState.getMotionMode(this, displayType);
+        int position = mode == OverlayState.MOTION_ALPHA ? 1
+                : mode == OverlayState.MOTION_RIPPLE ? 2
+                : mode == OverlayState.MOTION_NONE ? 3 : 0;
+        spinner.setSelection(position, false);
     }
 
     private void openFontPicker() {
@@ -1749,7 +1738,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             return;
         }
         String name = FontManager.getImportedFontName(this);
-        if (name == null || name.isEmpty()) name = "自定义字体";
+        if (name == null || name.isEmpty()) name = getString(R.string.font_custom_name);
         fontStatusText.setText(getString(R.string.font_imported_format, name));
     }
 
@@ -1893,6 +1882,192 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             int color = Color.rgb(rgb[0], rgb[1], rgb[2]);
             if (left) OverlayState.setMouseTrajectoryLeftColor(this, color);
             else OverlayState.setMouseTrajectoryRightColor(this, color);
+            updateColorDot(sourceDot, color);
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
+    private void addKeyAppearanceControls(LinearLayout parent, int displayType) {
+        Spinner styleSpinner = createChoiceSpinner(new String[]{
+                getString(R.string.key_style_rounded),
+                getString(R.string.key_style_square),
+                getString(R.string.key_style_circle)});
+        keyStyleSpinners.put(displayType, styleSpinner);
+        parent.addView(createInlineChoiceRow(R.string.key_style_label, styleSpinner), supportingParams(dp(4)));
+        styleSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parentView, View view, int position, long id) {
+                if (!internalChange) OverlayState.setKeyStyle(MainActivity.this, displayType, position);
+            }
+
+            @Override public void onNothingSelected(AdapterView<?> parentView) {}
+        });
+
+        addKeyColorControl(parent, displayType, KEY_COLOR_IDLE,
+                R.string.key_idle_color, R.string.key_idle_color_title, keyIdleColorDots);
+        addKeyColorControl(parent, displayType, KEY_COLOR_PRESSED,
+                R.string.key_press_color, R.string.key_press_color_title, keyPressColorDots);
+        addKeyColorControl(parent, displayType, KEY_COLOR_TEXT,
+                R.string.key_text_color, R.string.key_text_color_title, keyTextColorDots);
+        addKeyEffectControl(parent, displayType, true);
+        addKeyEffectControl(parent, displayType, false);
+        TextView hint = createSupportingText();
+        hint.setText(R.string.key_appearance_hint);
+        parent.addView(hint, supportingParams(dp(2)));
+        Button reset = createConfigButton(R.string.key_appearance_reset, v -> {
+            OverlayState.resetKeyAppearance(MainActivity.this, displayType);
+            boolean oldInternal = internalChange;
+            internalChange = true;
+            syncKeyAppearanceUi(displayType);
+            internalChange = oldInternal;
+        });
+        parent.addView(reset, supportingParams(dp(4)));
+    }
+
+    private void addKeyColorControl(LinearLayout parent, int displayType, int colorKind,
+                                    int labelRes, int titleRes, SparseArray<View> dots) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(44));
+        TextView label = createLabel();
+        label.setText(labelRes);
+        row.addView(label, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        View dot = createColorDot(getKeyAppearanceColor(displayType, colorKind));
+        dots.put(displayType, dot);
+        LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(22), dp(22));
+        dotParams.leftMargin = dp(12);
+        row.addView(dot, dotParams);
+        View.OnClickListener openColor = v -> showKeyColorDialog(displayType, colorKind, titleRes, dot);
+        row.setOnClickListener(openColor);
+        dot.setOnClickListener(openColor);
+        parent.addView(row, supportingParams(dp(2)));
+    }
+
+    private void addKeyEffectControl(LinearLayout parent, int displayType, boolean corner) {
+        TextView label = createLabel();
+        SeekBar seekBar = new SeekBar(this);
+        seekBar.setMax(APPEARANCE_EFFECT_MAX);
+        seekBar.setPadding(0, 0, 0, 0);
+        SparseArray<OpacityControl> controls = corner ? keyCornerControls : keyRippleControls;
+        controls.put(displayType, new OpacityControl(label, seekBar));
+        parent.addView(label, supportingParams(dp(2)));
+        parent.addView(seekBar, seekBarLayoutParams(dp(4)));
+        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                label.setText(getString(corner
+                        ? R.string.key_corner_scale_format
+                        : R.string.key_ripple_strength_format, progress));
+                if (fromUser && !internalChange) {
+                    if (corner) OverlayState.setKeyCornerScale(MainActivity.this, displayType, progress);
+                    else OverlayState.setKeyRippleStrength(MainActivity.this, displayType, progress);
+                }
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+    }
+
+    private void syncKeyAppearanceUi(int displayType) {
+        Spinner spinner = keyStyleSpinners.get(displayType);
+        if (spinner != null) spinner.setSelection(OverlayState.getKeyStyle(this, displayType), false);
+        syncKeyColorDot(keyIdleColorDots, displayType, OverlayState.getKeyIdleColor(this, displayType));
+        syncKeyColorDot(keyPressColorDots, displayType, OverlayState.getKeyPressColor(this, displayType));
+        syncKeyColorDot(keyTextColorDots, displayType, OverlayState.getKeyTextColor(this, displayType));
+        syncKeyEffectControl(keyCornerControls.get(displayType),
+                OverlayState.getKeyCornerScale(this, displayType), R.string.key_corner_scale_format);
+        syncKeyEffectControl(keyRippleControls.get(displayType),
+                OverlayState.getKeyRippleStrength(this, displayType), R.string.key_ripple_strength_format);
+    }
+
+    private void syncKeyColorDot(SparseArray<View> dots, int displayType, int color) {
+        View dot = dots.get(displayType);
+        if (dot != null) updateColorDot(dot, color);
+    }
+
+    private void syncKeyEffectControl(OpacityControl control, int value, int formatRes) {
+        if (control == null) return;
+        control.seekBar.setProgress(value);
+        control.label.setText(getString(formatRes, value));
+    }
+
+    private int getKeyAppearanceColor(int displayType, int colorKind) {
+        switch (colorKind) {
+            case KEY_COLOR_IDLE: return OverlayState.getKeyIdleColor(this, displayType);
+            case KEY_COLOR_TEXT: return OverlayState.getKeyTextColor(this, displayType);
+            default: return OverlayState.getKeyPressColor(this, displayType);
+        }
+    }
+
+    private void setKeyAppearanceColor(int displayType, int colorKind, int color) {
+        switch (colorKind) {
+            case KEY_COLOR_IDLE -> OverlayState.setKeyIdleColor(this, displayType, color);
+            case KEY_COLOR_TEXT -> OverlayState.setKeyTextColor(this, displayType, color);
+            default -> OverlayState.setKeyPressColor(this, displayType, color);
+        }
+    }
+
+    private void showKeyColorDialog(int displayType, int colorKind, int titleRes, View sourceDot) {
+        int current = getKeyAppearanceColor(displayType, colorKind);
+        final int[] rgb = new int[]{Color.red(current), Color.green(current), Color.blue(current)};
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(8), dp(20), dp(4));
+
+        LinearLayout previewRow = new LinearLayout(this);
+        previewRow.setGravity(Gravity.CENTER_VERTICAL);
+        View preview = createColorDot(current);
+        previewRow.addView(preview, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        TextView hex = createLabel();
+        hex.setTextSize(14f);
+        hex.setPadding(dp(12), 0, 0, 0);
+        hex.setText(String.format(java.util.Locale.US, "#%06X", current & 0x00ffffff));
+        previewRow.addView(hex, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        content.addView(previewRow, supportingParams(dp(10)));
+
+        String[] names = new String[]{"R", "G", "B"};
+        for (int i = 0; i < 3; i++) {
+            final int channel = i;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView label = createLabel();
+            label.setText(names[i] + " " + rgb[i]);
+            row.addView(label, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT));
+            SeekBar bar = new SeekBar(this);
+            bar.setMax(255);
+            bar.setProgress(rgb[i]);
+            row.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                    rgb[channel] = progress;
+                    label.setText(names[channel] + " " + progress);
+                    int color = Color.rgb(rgb[0], rgb[1], rgb[2]);
+                    updateColorDot(preview, color);
+                    hex.setText(String.format(java.util.Locale.US, "#%06X", color & 0x00ffffff));
+                }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+                @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+            });
+            content.addView(row, supportingParams(dp(3)));
+        }
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(titleRes)
+                .setView(content)
+                .setPositiveButton(android.R.string.ok, null)
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            int color = Color.rgb(rgb[0], rgb[1], rgb[2]);
+            setKeyAppearanceColor(displayType, colorKind, color);
             updateColorDot(sourceDot, color);
             dialog.dismiss();
         }));
@@ -2062,6 +2237,35 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         getWindow().getDecorView().setSystemUiVisibility(flags);
     }
 
+    private void bindFeatureSwitch(Switch toggle, View details, BooleanSetter setter) {
+        toggle.setOnCheckedChangeListener((button, enabled) -> {
+            setDetailsVisible(details, enabled);
+            if (internalChange) return;
+            setter.set(enabled);
+            handleDisplayModeChanged();
+        });
+    }
+
+    private void bindSimpleSwitch(Switch toggle, BooleanSetter setter) {
+        toggle.setOnCheckedChangeListener((button, enabled) -> {
+            if (!internalChange) setter.set(enabled);
+        });
+    }
+
+    private void syncSizeControl(SeekBar seekBar, TextView label, int value, int formatRes) {
+        syncValueControl(seekBar, label, value - SIZE_MIN, value, formatRes);
+    }
+
+    private void syncSpacingControl(SeekBar seekBar, TextView label, int value, int formatRes) {
+        syncValueControl(seekBar, label, value, value, formatRes);
+    }
+
+    private void syncValueControl(
+            SeekBar seekBar, TextView label, int progress, int value, int formatRes) {
+        seekBar.setProgress(progress);
+        label.setText(getString(formatRes, value));
+    }
+
     private void setDetailsVisible(View details, boolean visible) {
         if (details == null) return;
         int target = visible ? View.VISIBLE : View.GONE;
@@ -2081,6 +2285,13 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private SeekBar createSizeSeekBar() {
         SeekBar seekBar = new SeekBar(this);
         seekBar.setMax(SIZE_MAX - SIZE_MIN);
+        seekBar.setPadding(0, 0, 0, 0);
+        return seekBar;
+    }
+
+    private SeekBar createKeySpacingSeekBar() {
+        SeekBar seekBar = new SeekBar(this);
+        seekBar.setMax(KEY_SPACING_MAX);
         seekBar.setPadding(0, 0, 0, 0);
         return seekBar;
     }
@@ -2106,15 +2317,28 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 + Math.round((v - SENSITIVITY_FINE_MAX) / (float) SENSITIVITY_HIGH_STEP);
     }
 
-    private interface SizeSetter {
+    private interface IntSetter {
         void set(int value);
     }
 
-    private SeekBar.OnSeekBarChangeListener sizeListener(TextView label, int formatRes, SizeSetter setter) {
+    private interface BooleanSetter {
+        void set(boolean value);
+    }
+
+    private SeekBar.OnSeekBarChangeListener sizeListener(TextView label, int formatRes, IntSetter setter) {
+        return boundedListener(label, formatRes, SIZE_MIN, SIZE_MAX, setter);
+    }
+
+    private SeekBar.OnSeekBarChangeListener spacingListener(TextView label, int formatRes, IntSetter setter) {
+        return boundedListener(label, formatRes, 0, KEY_SPACING_MAX, setter);
+    }
+
+    private SeekBar.OnSeekBarChangeListener boundedListener(
+            TextView label, int formatRes, int min, int max, IntSetter setter) {
         return new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                int value = SIZE_MIN + progress;
+                int value = Math.max(min, Math.min(max, min + progress));
                 label.setText(getString(formatRes, value));
                 if (fromUser && !internalChange) setter.set(value);
             }
@@ -2124,7 +2348,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         };
     }
 
-    private SeekBar.OnSeekBarChangeListener sensitivityListener(TextView label, int formatRes, SizeSetter setter) {
+    private SeekBar.OnSeekBarChangeListener sensitivityListener(TextView label, int formatRes, IntSetter setter) {
         return new SeekBar.OnSeekBarChangeListener() {
             private static final long APPLY_INTERVAL_MS = 40L;
             private int pendingValue = 100;
@@ -2162,34 +2386,25 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private LinearLayout.LayoutParams switchParams(int bottomMargin) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.bottomMargin = bottomMargin;
-        return params;
+        return fullWidthParams(bottomMargin);
     }
 
     private LinearLayout.LayoutParams contentParams(int bottomMargin) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.bottomMargin = bottomMargin;
-        return params;
+        return fullWidthParams(bottomMargin);
     }
 
     private LinearLayout.LayoutParams supportingParams(int bottomMargin) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.bottomMargin = bottomMargin;
-        return params;
+        return fullWidthParams(bottomMargin);
     }
 
     private LinearLayout.LayoutParams seekBarLayoutParams(int bottomMargin) {
+        return fullWidthParams(bottomMargin);
+    }
+
+    private LinearLayout.LayoutParams fullWidthParams(int bottomMargin) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.topMargin = 0;
         params.bottomMargin = bottomMargin;
         return params;
     }

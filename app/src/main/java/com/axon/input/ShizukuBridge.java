@@ -10,7 +10,6 @@ import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 
 import java.io.Closeable;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 

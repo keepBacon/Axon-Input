@@ -8,26 +8,19 @@ import android.widget.Button;
 
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** 登录后读取云端公告。每个公告 ID 只显示一次。 */
+/** 登录后读取云端公告。同一公告 ID 只显示一次。 */
 final class CloudNoticeChecker {
     private static final String NOTICE_URL =
             "https://raw.githubusercontent.com/keepBacon/Axon-Input/main/notice.json";
-    private static final int CONNECT_TIMEOUT_MS = 3000;
-    private static final int READ_TIMEOUT_MS = 3000;
-    private static final int MAX_RESPONSE_BYTES = 64 * 1024;
+    private static final String DEFAULT_JOIN_URL = "https://kook.vip/GYYrsE";
     private static final AtomicBoolean CHECKING = new AtomicBoolean(false);
 
     private CloudNoticeChecker() {}
 
     static void check(Activity activity, Runnable onComplete) {
-        if (activity == null || activity.isFinishing()) {
+        if (!canUse(activity)) {
             run(onComplete);
             return;
         }
@@ -37,15 +30,14 @@ final class CloudNoticeChecker {
         }
 
         Thread worker = new Thread(() -> {
-            NoticeInfo info = fetch();
+            NoticeInfo info = fetch(activity);
             activity.runOnUiThread(() -> {
                 CHECKING.set(false);
-                if (!canUseActivity(activity) || info == null || !info.enabled) {
+                if (!canUse(activity) || info == null || !info.enabled) {
                     run(onComplete);
                     return;
                 }
-                String lastId = OverlayState.getLastCloudNoticeId(activity);
-                if (info.id.equals(lastId)) {
+                if (info.id.equals(OverlayState.getLastCloudNoticeId(activity))) {
                     run(onComplete);
                     return;
                 }
@@ -56,53 +48,32 @@ final class CloudNoticeChecker {
         worker.start();
     }
 
-    private static NoticeInfo fetch() {
-        HttpURLConnection connection = null;
-        try {
-            connection = (HttpURLConnection) new URL(NOTICE_URL + "?t=" + System.currentTimeMillis()).openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
-            connection.setUseCaches(false);
-            connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "Axon-Input/1.2");
-            connection.connect();
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) return null;
+    private static NoticeInfo fetch(Activity activity) {
+        JSONObject json = RemoteJson.get(activity, NOTICE_URL, true);
+        if (json == null) return null;
 
-            byte[] data;
-            try (InputStream input = connection.getInputStream()) {
-                data = readLimited(input, MAX_RESPONSE_BYTES);
-            }
-            if (data == null || data.length == 0) return null;
+        String id = json.optString("id", "").trim();
+        String message = json.optString("message", "").trim();
+        if (id.isEmpty() || message.isEmpty()) return null;
 
-            JSONObject json = new JSONObject(new String(data, StandardCharsets.UTF_8));
-            String id = json.optString("id", "").trim();
-            if (id.isEmpty()) return null;
-
-            boolean enabled = json.optBoolean("enabled", true);
-            String title = json.optString("title", "公告").trim();
-            String message = json.optString("message", "").trim();
-            String joinUrl = json.optString("joinUrl", "https://kook.vip/GYYrsE").trim();
-            String joinText = json.optString("joinText", "立即加入").trim();
-            String confirmText = json.optString("confirmText", "确定").trim();
-            int waitSeconds = Math.max(0, Math.min(30, json.optInt("waitSeconds", 3)));
-
-            if (title.isEmpty()) title = "公告";
-            if (message.isEmpty()) return null;
-            if (joinText.isEmpty()) joinText = "立即加入";
-            if (confirmText.isEmpty()) confirmText = "确定";
-            return new NoticeInfo(id, enabled, title, message, joinUrl, joinText, confirmText, waitSeconds);
-        } catch (Exception ignored) {
-            // 公告获取失败不影响进入应用。
-            return null;
-        } finally {
-            if (connection != null) connection.disconnect();
-        }
+        String title = nonEmpty(json.optString("title", ""), activity.getString(R.string.notice_default_title));
+        String joinText = nonEmpty(json.optString("joinText", ""), activity.getString(R.string.notice_join_default));
+        String confirmText = nonEmpty(json.optString("confirmText", ""), activity.getString(R.string.notice_confirm_default));
+        String joinUrl = nonEmpty(json.optString("joinUrl", ""), DEFAULT_JOIN_URL);
+        int waitSeconds = Math.max(0, Math.min(30, json.optInt("waitSeconds", 3)));
+        return new NoticeInfo(
+                id,
+                json.optBoolean("enabled", true),
+                title,
+                message,
+                joinUrl,
+                joinText,
+                confirmText,
+                waitSeconds);
     }
 
     private static void show(Activity activity, NoticeInfo info, Runnable onComplete) {
-        if (!canUseActivity(activity)) {
+        if (!canUse(activity)) {
             run(onComplete);
             return;
         }
@@ -116,61 +87,57 @@ final class CloudNoticeChecker {
         dialog.setCancelable(false);
         dialog.setCanceledOnTouchOutside(false);
         dialog.setOnShowListener(ignored -> {
-            // 弹出即记录，保证同一公告只出现一次。
             OverlayState.setLastCloudNoticeId(activity, info.id);
-
             Button join = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
             Button confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            join.setOnClickListener(v -> {
-                if (!info.joinUrl.isEmpty()) MainActivity.openKookUrl(activity, info.joinUrl);
-            });
-
-            if (info.waitSeconds <= 0) {
-                confirm.setText(info.confirmText);
-                confirm.setEnabled(true);
-            } else {
-                confirm.setEnabled(false);
-                long readyAt = SystemClock.uptimeMillis() + info.waitSeconds * 1000L;
-                Runnable countdown = new Runnable() {
-                    @Override public void run() {
-                        if (!dialog.isShowing()) return;
-                        long remaining = readyAt - SystemClock.uptimeMillis();
-                        if (remaining <= 0L) {
-                            confirm.setText(info.confirmText);
-                            confirm.setEnabled(true);
-                            return;
-                        }
-                        int seconds = (int) ((remaining + 999L) / 1000L);
-                        confirm.setText(info.confirmText + " (" + seconds + ")");
-                        activity.getWindow().getDecorView().postDelayed(this, Math.min(1000L, remaining));
-                    }
-                };
-                activity.getWindow().getDecorView().post(countdown);
-            }
+            join.setOnClickListener(v -> MainActivity.openKookUrl(activity, info.joinUrl));
+            startConfirmDelay(activity, dialog, confirm, info.confirmText, info.waitSeconds);
             confirm.setOnClickListener(v -> dialog.dismiss());
         });
         dialog.setOnDismissListener(ignored -> run(onComplete));
         dialog.show();
     }
 
-    private static boolean canUseActivity(Activity activity) {
+    private static void startConfirmDelay(
+            Activity activity,
+            AlertDialog dialog,
+            Button confirm,
+            String text,
+            int waitSeconds) {
+        if (waitSeconds <= 0) {
+            confirm.setText(text);
+            confirm.setEnabled(true);
+            return;
+        }
+
+        confirm.setEnabled(false);
+        long readyAt = SystemClock.uptimeMillis() + waitSeconds * 1000L;
+        Runnable countdown = new Runnable() {
+            @Override
+            public void run() {
+                if (!dialog.isShowing()) return;
+                long remaining = readyAt - SystemClock.uptimeMillis();
+                if (remaining <= 0L) {
+                    confirm.setText(text);
+                    confirm.setEnabled(true);
+                    return;
+                }
+                confirm.setText(text + " (" + ((remaining + 999L) / 1000L) + ")");
+                activity.getWindow().getDecorView().postDelayed(this, Math.min(1000L, remaining));
+            }
+        };
+        activity.getWindow().getDecorView().post(countdown);
+    }
+
+    private static boolean canUse(Activity activity) {
         return activity != null
                 && !activity.isFinishing()
                 && (Build.VERSION.SDK_INT < 17 || !activity.isDestroyed());
     }
 
-    private static byte[] readLimited(InputStream input, int limit) throws Exception {
-        ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(limit, 4096));
-        byte[] buffer = new byte[4096];
-        int total = 0;
-        while (true) {
-            int read = input.read(buffer);
-            if (read < 0) break;
-            total += read;
-            if (total > limit) return null;
-            output.write(buffer, 0, read);
-        }
-        return output.toByteArray();
+    private static String nonEmpty(String value, String fallback) {
+        String text = value == null ? "" : value.trim();
+        return text.isEmpty() ? fallback : text;
     }
 
     private static void run(Runnable runnable) {

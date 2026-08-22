@@ -40,6 +40,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
         long releaseAt;
         long lastActivityAt;
         long flashUntil;
+        long rippleStartedAt;
         int pressCount;
         float reveal;
         float centerX = Float.NaN;
@@ -97,6 +98,12 @@ public final class KeyPromptOverlayView extends FrameLayout {
     private Runnable exitCallback;
     private GlobalHtmlWebView htmlView;
     private boolean globalHtmlEnabled;
+    private int keyStyle = KeyAppearance.STYLE_ROUNDED;
+    private int pressColor;
+    private int idleColor;
+    private int textColor;
+    private int cornerScalePercent = 100;
+    private int rippleStrengthPercent = 100;
 
     private final Runnable frameRunnable = new Runnable() {
         @Override public void run() {
@@ -110,6 +117,9 @@ public final class KeyPromptOverlayView extends FrameLayout {
         density = getResources().getDisplayMetrics().density;
         typefaceNormal = FontManager.normal(context);
         typefaceBold = FontManager.bold(context);
+        pressColor = UiPalette.overlayKeyPressed(context);
+        idleColor = UiPalette.overlayKeyIdle(context);
+        textColor = UiPalette.overlayTextIdle(context);
         setWillNotDraw(false);
         setLayerType(View.LAYER_TYPE_HARDWARE, null);
         textPaint.setTextAlign(Paint.Align.CENTER);
@@ -123,6 +133,24 @@ public final class KeyPromptOverlayView extends FrameLayout {
     public void setDisplaySize(int percent) {
         displaySizePercent = Math.max(50, Math.min(150, percent));
         if (htmlView != null) htmlView.setDisplaySize(displaySizePercent);
+        invalidate();
+    }
+
+    public void setKeyAppearance(int style, int color) {
+        keyStyle = KeyAppearance.clampStyle(style);
+        pressColor = 0xff000000 | (color & 0x00ffffff);
+        invalidate();
+    }
+
+    public void setKeyColors(int idleColor, int textColor) {
+        this.idleColor = 0xff000000 | (idleColor & 0x00ffffff);
+        this.textColor = 0xff000000 | (textColor & 0x00ffffff);
+        invalidate();
+    }
+
+    public void setKeyEffects(int cornerScalePercent, int rippleStrengthPercent) {
+        this.cornerScalePercent = Math.max(0, Math.min(200, cornerScalePercent));
+        this.rippleStrengthPercent = Math.max(0, Math.min(200, rippleStrengthPercent));
         invalidate();
     }
 
@@ -209,6 +237,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
                 entry.addPress(now);
                 entry.prune(now - 1_000L);
                 entry.flashUntil = now + FLASH_MS;
+                entry.rippleStartedAt = now;
             }
         } else if (entry != null && entry.pressed) {
             entry.pressed = false;
@@ -273,10 +302,8 @@ public final class KeyPromptOverlayView extends FrameLayout {
         float groupCenter = getWidth() * 0.5f;
 
         boolean dark = OverlayState.getUiTheme(getContext()) == OverlayState.UI_THEME_BLACK;
-        int idleColor = dark ? Color.rgb(8, 8, 10) : Color.rgb(250, 250, 251);
-        int flashColor = dark ? Color.WHITE : Color.rgb(23, 23, 25);
-        int idleText = dark ? Color.WHITE : Color.rgb(23, 23, 25);
-        int flashText = dark ? Color.rgb(18, 18, 20) : Color.WHITE;
+        int idleText = textColor;
+        int pressedText = KeyAppearance.pressedTextColor(pressColor);
         int strokeRgb = dark ? Color.WHITE : Color.BLACK;
 
         textPaint.setTypeface(typefaceBold);
@@ -295,24 +322,28 @@ public final class KeyPromptOverlayView extends FrameLayout {
             rect.set(entry.centerX - half, centerY - half, entry.centerX + half, centerY + half);
             int alpha = Math.round(255f * eased);
             float flash = clamp01((entry.flashUntil - now) / (float) FLASH_MS);
+            float pressedAmount = entry.pressed ? 1f : flash;
+            float cornerRadius = KeyAppearance.scaleRadius(dp(10f) * uiScale, cornerScalePercent);
 
             int save = canvas.save();
             canvas.scale(itemScale, itemScale, entry.centerX, centerY);
 
             fillPaint.setStyle(Paint.Style.FILL);
             fillPaint.setColor(withAlpha(idleColor, alpha));
-            canvas.drawRect(rect, fillPaint);
-            if (flash > 0f) {
-                fillPaint.setColor(withAlpha(flashColor, Math.round(alpha * flash)));
-                canvas.drawRect(rect, fillPaint);
+            KeyAppearance.drawShape(canvas, rect, keyStyle, cornerRadius, fillPaint);
+            if (pressedAmount > 0f) {
+                fillPaint.setColor(withAlpha(pressColor, Math.round(alpha * pressedAmount)));
+                KeyAppearance.drawShape(canvas, rect, keyStyle, cornerRadius, fillPaint);
             }
+            KeyAppearance.drawRipple(canvas, rect, pressColor,
+                    entry.rippleStartedAt, now, rippleStrengthPercent, fillPaint);
 
             strokePaint.setStyle(Paint.Style.STROKE);
             strokePaint.setStrokeWidth(Math.max(1f, dp(0.8f) * uiScale));
             strokePaint.setColor(withAlpha(strokeRgb, Math.round(alpha * 0.16f)));
-            canvas.drawRect(rect, strokePaint);
+            KeyAppearance.drawShape(canvas, rect, keyStyle, cornerRadius, strokePaint);
 
-            textPaint.setColor(withAlpha(flash > 0.52f ? flashText : idleText, alpha));
+            textPaint.setColor(withAlpha(pressedAmount > 0.52f ? pressedText : idleText, alpha));
             float baseline = centerY - (textPaint.ascent() + textPaint.descent()) * 0.5f;
             canvas.drawText(entry.label, entry.centerX, baseline, textPaint);
             canvas.restoreToCount(save);
@@ -320,7 +351,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
             if (entry.pressCount >= 5) {
                 textPaint.setTypeface(typefaceNormal);
                 textPaint.setTextSize(dp(8.5f) * uiScale);
-                textPaint.setColor(withAlpha(UiPalette.overlaySecondary(getContext()), Math.round(alpha * 0.78f)));
+                textPaint.setColor(withAlpha(textColor, Math.round(alpha * 0.72f)));
                 canvas.drawText(entry.pressSize + " CPS", entry.centerX,
                         top + keySize + dp(11.5f) * uiScale, textPaint);
                 textPaint.setTypeface(typefaceBold);
@@ -391,7 +422,9 @@ public final class KeyPromptOverlayView extends FrameLayout {
                 float oldX = entry.centerX;
                 entry.centerX += (targetX - entry.centerX) * position;
                 if (Math.abs(entry.centerX - oldX) > 0.05f) moving = true;
-                if (entry.flashUntil > now || (entry.releaseAt > 0 && now - entry.releaseAt < RELEASE_HOLD_MS)) {
+                if (entry.flashUntil > now
+                        || (entry.rippleStartedAt > 0L && now - entry.rippleStartedAt < KeyAppearance.RIPPLE_MS)
+                        || (entry.releaseAt > 0 && now - entry.releaseAt < RELEASE_HOLD_MS)) {
                     moving = true;
                 }
             }

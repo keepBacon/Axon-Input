@@ -1,5 +1,5 @@
 {
-  "versionCode": 5,
-  "versionName": "1.3 Fix",
-  "changelog": "新增手柄兼容调试；兼容模式与按键交换分离；支持独立交换 X/Y、A/B、左右摇杆、L2/R2；进一步优化手柄映射兼容性。如果打不开网站，请加入qq群1080086855，或kook频道https://kook.vip/GYYrsE"
+  "versionCode": 6,
+  "versionName": "1.4",
+  "changelog": "我求你了，加下QQ群吧,1080086855,加群可以获得最新版本。1.4：增强按键显示自定义，可独立设置按键底色、按下颜色、文字颜色、圆角强度和扩散强度；保留 HTML API v10 与手柄输入优化。"
 }

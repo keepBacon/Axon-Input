@@ -1,0 +1,22 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:system-ui}
+#root{width:100%;height:100%;display:grid;place-items:center;opacity:var(--kd-opacity)}
+.key{min-width:52px;min-height:52px;padding:0 12px;display:grid;place-items:center;background:var(--kd-idle-color,var(--kd-key-idle));color:var(--kd-text-color,var(--kd-key-text-idle));border-radius:14px;transition:transform 90ms,background 90ms,color 90ms}
+.key.down{background:var(--kd-press-color);color:var(--kd-key-text-pressed);transform:scale(.95)}
+small{opacity:.6;font-size:11px}
+</style>
+<div id="root"></div>
+<script>
+const root=document.querySelector('#root');
+function render(s){
+  if(!s.keys?.length){root.textContent=s.type;return;}
+  root.innerHTML=s.keys.map(k=>`<div class="key ${k.pressed?'down':''}" data-id="${k.id}"><b>${k.label}</b>${k.cps?`<small>${k.cps} CPS</small>`:''}</div>`).join('');
+}
+KeyDisplay.onState(render);
+KeyDisplay.on('key',e=>{
+  const el=root.querySelector(`[data-id="${e.detail.id}"]`);
+  if(el)el.classList.toggle('down',e.detail.pressed);
+});
+</script>

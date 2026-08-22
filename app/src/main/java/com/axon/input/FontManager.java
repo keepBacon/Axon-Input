@@ -96,7 +96,9 @@ public final class FontManager {
         }
 
         prefs(app).edit().putString(KEY_NAME,
-                displayName == null || displayName.trim().isEmpty() ? "自定义字体" : displayName.trim()).apply();
+                displayName == null || displayName.trim().isEmpty()
+                        ? app.getString(R.string.font_custom_name)
+                        : displayName.trim()).apply();
         loadedPath = target.getAbsolutePath();
         normal = test;
         bold = Typeface.create(test, Typeface.BOLD);

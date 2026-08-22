@@ -2,6 +2,7 @@ package com.axon.input;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.AtomicFile;
 
 import java.io.File;
 import java.io.ByteArrayOutputStream;
@@ -17,9 +18,12 @@ import java.util.Set;
 
 /** 运行配置入口。普通设置保留到任务退出，长期数据单独保存。 */
 public final class OverlayState {
+    static final int MAX_GLOBAL_HTML_BYTES = 4 * 1024 * 1024;
+    private static final String GLOBAL_HTML_FILE = "global_display.html";
     public static final int MOTION_SIZE = 0;
     public static final int MOTION_ALPHA = 1;
     public static final int MOTION_NONE = 2;
+    public static final int MOTION_RIPPLE = 3;
     public static final int UI_THEME_LIGHT = 0;
     public static final int UI_THEME_BLACK = 1;
     public static final int SENSITIVITY_MODE_SHIZUKU = 0;
@@ -47,9 +51,11 @@ public final class OverlayState {
     private static final String KEY_CUSTOM_DRAFT = "custom_draft";
     private static final String KEY_CUSTOM_COLUMNS = "custom_columns";
     private static final String KEY_KEYBOARD_SIZE = "keyboard_size";
+    private static final String KEY_KEYBOARD_SPACING = "keyboard_spacing";
     private static final String KEY_KEYBOARD_SPACE_ENABLED = "keyboard_space_enabled";
     private static final String KEY_KEYBOARD_SPACE_DPS_ENABLED = "keyboard_space_dps_enabled";
     private static final String KEY_CUSTOM_SIZE = "custom_size";
+    private static final String KEY_CUSTOM_SPACING = "custom_spacing";
     private static final String KEY_MOUSE_SIZE = "mouse_size";
     private static final String KEY_KEY_PROMPT_SIZE = "key_prompt_size";
     private static final String KEY_MOUSE_TRAJECTORY_SIZE = "mouse_trajectory_size";
@@ -59,6 +65,22 @@ public final class OverlayState {
     private static final String KEY_KEY_PROMPT_OPACITY = "key_prompt_opacity";
     private static final String KEY_MOUSE_TRAJECTORY_OPACITY = "mouse_trajectory_opacity";
     private static final String KEY_CUSTOM_OPACITY = "custom_opacity";
+    private static final String KEY_KEYBOARD_KEY_STYLE = "keyboard_key_style";
+    private static final String KEY_MOUSE_KEY_STYLE = "mouse_key_style";
+    private static final String KEY_KEY_PROMPT_KEY_STYLE = "key_prompt_key_style";
+    private static final String KEY_FULL_KEYBOARD_KEY_STYLE = "full_keyboard_key_style";
+    private static final String KEY_CUSTOM_KEY_STYLE = "custom_key_style";
+    private static final String KEY_GAMEPAD_FACE_KEY_STYLE = "gamepad_face_key_style";
+    private static final String KEY_GAMEPAD_LEFT_SHOULDER_KEY_STYLE = "gamepad_left_shoulder_key_style";
+    private static final String KEY_GAMEPAD_RIGHT_SHOULDER_KEY_STYLE = "gamepad_right_shoulder_key_style";
+    private static final String KEY_KEYBOARD_PRESS_COLOR = "keyboard_press_color";
+    private static final String KEY_MOUSE_PRESS_COLOR = "mouse_press_color";
+    private static final String KEY_KEY_PROMPT_PRESS_COLOR = "key_prompt_press_color";
+    private static final String KEY_FULL_KEYBOARD_PRESS_COLOR = "full_keyboard_press_color";
+    private static final String KEY_CUSTOM_PRESS_COLOR = "custom_press_color";
+    private static final String KEY_GAMEPAD_FACE_PRESS_COLOR = "gamepad_face_press_color";
+    private static final String KEY_GAMEPAD_LEFT_SHOULDER_PRESS_COLOR = "gamepad_left_shoulder_press_color";
+    private static final String KEY_GAMEPAD_RIGHT_SHOULDER_PRESS_COLOR = "gamepad_right_shoulder_press_color";
     private static final String KEY_MOUSE_TRAJECTORY_LEFT_COLOR_ENABLED = "mouse_trajectory_left_color_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_RIGHT_COLOR_ENABLED = "mouse_trajectory_right_color_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_LEFT_COLOR = "mouse_trajectory_left_color";
@@ -113,6 +135,7 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_LEFT_STICK_DOT_SIZE = "gamepad_left_stick_dot_size";
     private static final String KEY_GAMEPAD_RIGHT_STICK_DOT_SIZE = "gamepad_right_stick_dot_size";
     private static final String KEY_GAMEPAD_FACE_SIZE = "gamepad_face_size";
+    private static final String KEY_GAMEPAD_FACE_SPACING = "gamepad_face_spacing";
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_SIZE = "gamepad_left_shoulder_size";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_SIZE = "gamepad_right_shoulder_size";
     private static final String KEY_GAMEPAD_LEFT_STICK_OPACITY = "gamepad_left_stick_opacity";
@@ -158,6 +181,11 @@ public final class OverlayState {
     private static final int MAX_COLUMNS = 8;
     private static final int MAX_CUSTOM_KEYS = 64;
     private static final int DEFAULT_SIZE = 100;
+    private static final int DEFAULT_KEYBOARD_SPACING = 8;
+    private static final int DEFAULT_CUSTOM_SPACING = 6;
+    private static final int DEFAULT_GAMEPAD_FACE_SPACING = 8;
+    private static final int MIN_KEY_SPACING = 0;
+    private static final int MAX_KEY_SPACING = 16;
     private static final int DEFAULT_OPACITY = 100;
     private static final int DEFAULT_MOUSE_TRAJECTORY_LEFT_COLOR = 0xffff3b30;
     private static final int DEFAULT_MOUSE_TRAJECTORY_RIGHT_COLOR = 0xff34c759;
@@ -182,8 +210,7 @@ public final class OverlayState {
     }
 
     public static void setEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_ENABLED, enabled);
     }
 
     public static boolean isInputFullKeyboardEnabled(Context context) {
@@ -191,8 +218,7 @@ public final class OverlayState {
     }
 
     public static void setInputFullKeyboardEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_INPUT_FULL_KEYBOARD_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_INPUT_FULL_KEYBOARD_ENABLED, enabled);
     }
 
     public static boolean isMouseEnabled(Context context) {
@@ -200,8 +226,7 @@ public final class OverlayState {
     }
 
     public static void setMouseEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_MOUSE_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_MOUSE_ENABLED, enabled);
     }
 
     public static boolean isKeyPromptEnabled(Context context) {
@@ -209,8 +234,7 @@ public final class OverlayState {
     }
 
     public static void setKeyPromptEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_KEY_PROMPT_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_KEY_PROMPT_ENABLED, enabled);
     }
 
     public static boolean isMouseTrajectoryEnabled(Context context) {
@@ -218,8 +242,7 @@ public final class OverlayState {
     }
 
     public static void setMouseTrajectoryEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_MOUSE_TRAJECTORY_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_MOUSE_TRAJECTORY_ENABLED, enabled);
     }
 
     public static boolean isCustomEnabled(Context context) {
@@ -227,8 +250,7 @@ public final class OverlayState {
     }
 
     public static void setCustomEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_CUSTOM_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_CUSTOM_ENABLED, enabled);
     }
 
     public static boolean isDragEnabled(Context context) {
@@ -236,8 +258,7 @@ public final class OverlayState {
     }
 
     public static void setDragEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_DRAG_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_DRAG_ENABLED, enabled);
     }
 
     public static boolean isDpsEnabled(Context context) {
@@ -245,8 +266,7 @@ public final class OverlayState {
     }
 
     public static void setDpsEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_DPS_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_DPS_ENABLED, enabled);
     }
 
     public static int getDpsTargetKeyCode(Context context) {
@@ -255,8 +275,7 @@ public final class OverlayState {
 
     public static void setDpsTargetKeyCode(Context context, int keyCode) {
         int resolved = keyCode < 0 ? DPS_TARGET_NONE : keyCode;
-        prefs(context).edit().putInt(KEY_DPS_TARGET_KEY_CODE, resolved).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_DPS_TARGET_KEY_CODE, resolved);
     }
 
     public static int gamepadDpsTarget(int buttonBit) {
@@ -276,8 +295,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadLeftStickEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_LEFT_STICK_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_LEFT_STICK_ENABLED, enabled);
     }
 
     public static boolean isGamepadRightStickEnabled(Context context) {
@@ -285,8 +303,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadRightStickEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_RIGHT_STICK_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_RIGHT_STICK_ENABLED, enabled);
     }
 
     public static boolean isGamepadFaceEnabled(Context context) {
@@ -294,8 +311,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadFaceEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_FACE_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_ENABLED, enabled);
     }
 
     public static boolean isGamepadLeftShoulderEnabled(Context context) {
@@ -303,8 +319,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadLeftShoulderEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_LEFT_SHOULDER_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_LEFT_SHOULDER_ENABLED, enabled);
     }
 
     public static boolean isGamepadRightShoulderEnabled(Context context) {
@@ -312,8 +327,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadRightShoulderEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_RIGHT_SHOULDER_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_RIGHT_SHOULDER_ENABLED, enabled);
     }
 
     public static boolean isAnyGamepadDisplayEnabled(Context context) {
@@ -359,12 +373,6 @@ public final class OverlayState {
     public static void setLastCloudNoticeId(Context context, String noticeId) {
         String value = noticeId == null ? "" : noticeId.trim();
         durablePrefs(context).edit().putString(KEY_LAST_CLOUD_NOTICE_ID, value).apply();
-    }
-
-    /** 显式重置入口。普通 Activity 创建和重开不会调用。 */
-    public static void beginAppSession(Context context) {
-        prefs(context).edit().clear().commit();
-        AxonInputAccessibilityService.refreshActiveService();
     }
 
     /** 根任务退出时清理运行配置。手动保存配置和密码授权不删除。 */
@@ -425,8 +433,9 @@ public final class OverlayState {
     }
 
     public static String getSensitivityStatus(Context context) {
-        String value = prefs(context).getString(KEY_SENSITIVITY_STATUS, "未启用");
-        return value == null ? "未启用" : value;
+        String fallback = context.getString(R.string.status_disabled);
+        String value = prefs(context).getString(KEY_SENSITIVITY_STATUS, fallback);
+        return value == null ? fallback : value;
     }
 
     static void setSensitivityStatus(Context context, String status) {
@@ -490,8 +499,7 @@ public final class OverlayState {
     }
 
     public static void setCustomColumns(Context context, int columns) {
-        prefs(context).edit().putInt(KEY_CUSTOM_COLUMNS, clampColumns(columns)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_CUSTOM_COLUMNS, clampColumns(columns));
     }
 
 
@@ -500,8 +508,15 @@ public final class OverlayState {
     }
 
     public static void setKeyboardSize(Context context, int percent) {
-        prefs(context).edit().putInt(KEY_KEYBOARD_SIZE, clampSize(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_KEYBOARD_SIZE, clampSize(percent));
+    }
+
+    public static int getKeyboardSpacing(Context context) {
+        return clampKeySpacing(prefs(context).getInt(KEY_KEYBOARD_SPACING, DEFAULT_KEYBOARD_SPACING));
+    }
+
+    public static void setKeyboardSpacing(Context context, int spacingDp) {
+        setIntAndRefresh(context, KEY_KEYBOARD_SPACING, clampKeySpacing(spacingDp));
     }
 
     public static boolean isKeyboardSpaceEnabled(Context context) {
@@ -509,8 +524,7 @@ public final class OverlayState {
     }
 
     public static void setKeyboardSpaceEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_KEYBOARD_SPACE_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_KEYBOARD_SPACE_ENABLED, enabled);
     }
 
     public static boolean isKeyboardSpaceDpsEnabled(Context context) {
@@ -518,8 +532,7 @@ public final class OverlayState {
     }
 
     public static void setKeyboardSpaceDpsEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_KEYBOARD_SPACE_DPS_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_KEYBOARD_SPACE_DPS_ENABLED, enabled);
     }
 
     public static int getCustomSize(Context context) {
@@ -527,8 +540,15 @@ public final class OverlayState {
     }
 
     public static void setCustomSize(Context context, int percent) {
-        prefs(context).edit().putInt(KEY_CUSTOM_SIZE, clampSize(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_CUSTOM_SIZE, clampSize(percent));
+    }
+
+    public static int getCustomSpacing(Context context) {
+        return clampKeySpacing(prefs(context).getInt(KEY_CUSTOM_SPACING, DEFAULT_CUSTOM_SPACING));
+    }
+
+    public static void setCustomSpacing(Context context, int spacingDp) {
+        setIntAndRefresh(context, KEY_CUSTOM_SPACING, clampKeySpacing(spacingDp));
     }
 
     public static int getMouseSize(Context context) {
@@ -536,8 +556,7 @@ public final class OverlayState {
     }
 
     public static void setMouseSize(Context context, int percent) {
-        prefs(context).edit().putInt(KEY_MOUSE_SIZE, clampSize(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_MOUSE_SIZE, clampSize(percent));
     }
 
     public static int getKeyPromptSize(Context context) {
@@ -545,8 +564,7 @@ public final class OverlayState {
     }
 
     public static void setKeyPromptSize(Context context, int percent) {
-        prefs(context).edit().putInt(KEY_KEY_PROMPT_SIZE, clampSize(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_KEY_PROMPT_SIZE, clampSize(percent));
     }
 
     public static int getMouseTrajectorySize(Context context) {
@@ -554,8 +572,7 @@ public final class OverlayState {
     }
 
     public static void setMouseTrajectorySize(Context context, int percent) {
-        prefs(context).edit().putInt(KEY_MOUSE_TRAJECTORY_SIZE, clampSize(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_MOUSE_TRAJECTORY_SIZE, clampSize(percent));
     }
 
     public static int getMouseTrajectoryDotSize(Context context) {
@@ -563,8 +580,7 @@ public final class OverlayState {
     }
 
     public static void setMouseTrajectoryDotSize(Context context, int percent) {
-        prefs(context).edit().putInt(KEY_MOUSE_TRAJECTORY_DOT_SIZE, clampSize(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_MOUSE_TRAJECTORY_DOT_SIZE, clampSize(percent));
     }
 
     public static boolean isMouseTrajectoryLeftColorEnabled(Context context) {
@@ -572,8 +588,7 @@ public final class OverlayState {
     }
 
     public static void setMouseTrajectoryLeftColorEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_MOUSE_TRAJECTORY_LEFT_COLOR_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_MOUSE_TRAJECTORY_LEFT_COLOR_ENABLED, enabled);
     }
 
     public static boolean isMouseTrajectoryRightColorEnabled(Context context) {
@@ -581,8 +596,7 @@ public final class OverlayState {
     }
 
     public static void setMouseTrajectoryRightColorEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_MOUSE_TRAJECTORY_RIGHT_COLOR_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_MOUSE_TRAJECTORY_RIGHT_COLOR_ENABLED, enabled);
     }
 
     public static int getMouseTrajectoryLeftColor(Context context) {
@@ -590,8 +604,7 @@ public final class OverlayState {
     }
 
     public static void setMouseTrajectoryLeftColor(Context context, int color) {
-        prefs(context).edit().putInt(KEY_MOUSE_TRAJECTORY_LEFT_COLOR, 0xff000000 | (color & 0x00ffffff)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_MOUSE_TRAJECTORY_LEFT_COLOR, 0xff000000 | (color & 0x00ffffff));
     }
 
     public static int getMouseTrajectoryRightColor(Context context) {
@@ -599,8 +612,7 @@ public final class OverlayState {
     }
 
     public static void setMouseTrajectoryRightColor(Context context, int color) {
-        prefs(context).edit().putInt(KEY_MOUSE_TRAJECTORY_RIGHT_COLOR, 0xff000000 | (color & 0x00ffffff)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_MOUSE_TRAJECTORY_RIGHT_COLOR, 0xff000000 | (color & 0x00ffffff));
     }
 
     public static int getGamepadLeftStickShape(Context context) {
@@ -610,8 +622,7 @@ public final class OverlayState {
 
     public static void setGamepadLeftStickShape(Context context, int shape) {
         int value = shape == GamepadOverlayView.SHAPE_SQUARE ? GamepadOverlayView.SHAPE_SQUARE : GamepadOverlayView.SHAPE_CIRCLE;
-        prefs(context).edit().putInt(KEY_GAMEPAD_LEFT_STICK_SHAPE, value).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_GAMEPAD_LEFT_STICK_SHAPE, value);
     }
 
     public static int getGamepadRightStickShape(Context context) {
@@ -621,8 +632,7 @@ public final class OverlayState {
 
     public static void setGamepadRightStickShape(Context context, int shape) {
         int value = shape == GamepadOverlayView.SHAPE_SQUARE ? GamepadOverlayView.SHAPE_SQUARE : GamepadOverlayView.SHAPE_CIRCLE;
-        prefs(context).edit().putInt(KEY_GAMEPAD_RIGHT_STICK_SHAPE, value).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_GAMEPAD_RIGHT_STICK_SHAPE, value);
     }
 
     public static int getGamepadStickDotSize(Context context, int displayType) {
@@ -636,8 +646,7 @@ public final class OverlayState {
                 && displayType != GamepadOverlayView.DISPLAY_RIGHT_STICK) return;
         String key = displayType == GamepadOverlayView.DISPLAY_RIGHT_STICK
                 ? KEY_GAMEPAD_RIGHT_STICK_DOT_SIZE : KEY_GAMEPAD_LEFT_STICK_DOT_SIZE;
-        prefs(context).edit().putInt(key, clampSize(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, key, clampSize(percent));
     }
 
     public static boolean isGamepadFaceReversed(Context context) {
@@ -645,8 +654,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadFaceReversed(Context context, boolean reversed) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_FACE_REVERSED, reversed).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_REVERSED, reversed);
     }
 
     public static int getGamepadCompatibilityMode(Context context) {
@@ -673,8 +681,7 @@ public final class OverlayState {
     public static void setGamepadCompatibilityMode(Context context, int mode) {
         int value = mode >= GAMEPAD_COMPAT_AUTO && mode <= GAMEPAD_COMPAT_EVDEV
                 ? mode : GAMEPAD_COMPAT_AUTO;
-        prefs(context).edit().putInt(KEY_GAMEPAD_COMPATIBILITY_MODE, value).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, KEY_GAMEPAD_COMPATIBILITY_MODE, value);
     }
 
     public static boolean isGamepadSwapXY(Context context) {
@@ -683,8 +690,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadSwapXY(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_SWAP_XY, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_SWAP_XY, enabled);
     }
 
     public static boolean isGamepadSwapAB(Context context) {
@@ -693,8 +699,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadSwapAB(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_SWAP_AB, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_SWAP_AB, enabled);
     }
 
     public static boolean isGamepadSwapSticks(Context context) {
@@ -703,8 +708,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadSwapSticks(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_SWAP_STICKS, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_SWAP_STICKS, enabled);
     }
 
     public static boolean isGamepadSwapTriggers(Context context) {
@@ -713,8 +717,7 @@ public final class OverlayState {
     }
 
     public static void setGamepadSwapTriggers(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GAMEPAD_SWAP_TRIGGERS, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GAMEPAD_SWAP_TRIGGERS, enabled);
     }
 
     public static void resetGamepadCompatibility(Context context) {
@@ -776,8 +779,15 @@ public final class OverlayState {
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: key = KEY_GAMEPAD_RIGHT_SHOULDER_SIZE; break;
             default: return;
         }
-        prefs(context).edit().putInt(key, clampSize(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, key, clampSize(percent));
+    }
+
+    public static int getGamepadFaceSpacing(Context context) {
+        return clampKeySpacing(prefs(context).getInt(KEY_GAMEPAD_FACE_SPACING, DEFAULT_GAMEPAD_FACE_SPACING));
+    }
+
+    public static void setGamepadFaceSpacing(Context context, int spacingDp) {
+        setIntAndRefresh(context, KEY_GAMEPAD_FACE_SPACING, clampKeySpacing(spacingDp));
     }
 
     public static int getDisplayOpacity(Context context, int displayType) {
@@ -789,8 +799,147 @@ public final class OverlayState {
     public static void setDisplayOpacity(Context context, int displayType, int percent) {
         String key = opacityKey(displayType);
         if (key == null) return;
-        prefs(context).edit().putInt(key, clampOpacity(percent)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, key, clampOpacity(percent));
+    }
+
+    public static int getKeyStyle(Context context, int displayType) {
+        String key = keyStyleKey(displayType);
+        if (key == null) return KeyAppearance.STYLE_ROUNDED;
+        return KeyAppearance.clampStyle(prefs(context).getInt(key, KeyAppearance.STYLE_ROUNDED));
+    }
+
+    public static void setKeyStyle(Context context, int displayType, int style) {
+        String key = keyStyleKey(displayType);
+        if (key == null) return;
+        setIntAndRefresh(context, key, KeyAppearance.clampStyle(style));
+    }
+
+    public static int getKeyPressColor(Context context, int displayType) {
+        String key = keyPressColorKey(displayType);
+        if (key == null) return UiPalette.overlayKeyPressed(context);
+        return 0xff000000 | (prefs(context).getInt(key, UiPalette.overlayKeyPressed(context)) & 0x00ffffff);
+    }
+
+    public static void setKeyPressColor(Context context, int displayType, int color) {
+        String key = keyPressColorKey(displayType);
+        if (key == null) return;
+        setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
+    }
+
+    public static int getKeyIdleColor(Context context, int displayType) {
+        String key = appearanceExtraKey(displayType, "idle_color");
+        int defaultColor = defaultKeyIdleColor(context, displayType);
+        if (key == null) return defaultColor;
+        return 0xff000000 | (prefs(context).getInt(key, defaultColor) & 0x00ffffff);
+    }
+
+    public static void setKeyIdleColor(Context context, int displayType, int color) {
+        String key = appearanceExtraKey(displayType, "idle_color");
+        if (key != null) setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
+    }
+
+    public static int getKeyTextColor(Context context, int displayType) {
+        String key = appearanceExtraKey(displayType, "text_color");
+        if (key == null) return UiPalette.overlayTextIdle(context);
+        return 0xff000000 | (prefs(context).getInt(key, UiPalette.overlayTextIdle(context)) & 0x00ffffff);
+    }
+
+    public static void setKeyTextColor(Context context, int displayType, int color) {
+        String key = appearanceExtraKey(displayType, "text_color");
+        if (key != null) setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
+    }
+
+    public static int getKeyCornerScale(Context context, int displayType) {
+        String key = appearanceExtraKey(displayType, "corner_scale");
+        return key == null ? 100 : clampAppearancePercent(prefs(context).getInt(key, 100));
+    }
+
+    public static void setKeyCornerScale(Context context, int displayType, int percent) {
+        String key = appearanceExtraKey(displayType, "corner_scale");
+        if (key != null) setIntAndRefresh(context, key, clampAppearancePercent(percent));
+    }
+
+    public static int getKeyRippleStrength(Context context, int displayType) {
+        String key = appearanceExtraKey(displayType, "ripple_strength");
+        return key == null ? 100 : clampAppearancePercent(prefs(context).getInt(key, 100));
+    }
+
+    public static void setKeyRippleStrength(Context context, int displayType, int percent) {
+        String key = appearanceExtraKey(displayType, "ripple_strength");
+        if (key != null) setIntAndRefresh(context, key, clampAppearancePercent(percent));
+    }
+
+    public static void resetKeyAppearance(Context context, int displayType) {
+        String style = keyStyleKey(displayType);
+        String pressed = keyPressColorKey(displayType);
+        String prefix = appearanceExtraKey(displayType, "");
+        if (style == null || pressed == null || prefix == null) return;
+        SharedPreferences.Editor editor = prefs(context).edit()
+                .remove(style)
+                .remove(pressed)
+                .remove(prefix + "idle_color")
+                .remove(prefix + "text_color")
+                .remove(prefix + "corner_scale")
+                .remove(prefix + "ripple_strength");
+        editor.apply();
+        refreshAfterConfigChange(context);
+    }
+
+    private static int clampAppearancePercent(int value) {
+        return Math.max(0, Math.min(200, value));
+    }
+
+    private static int defaultKeyIdleColor(Context context, int displayType) {
+        if (displayType == GamepadOverlayView.DISPLAY_FACE
+                || displayType == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
+                || displayType == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER) {
+            return UiPalette.overlayShell(context);
+        }
+        return UiPalette.overlayKeyIdle(context);
+    }
+
+    private static String appearanceExtraKey(int displayType, String suffix) {
+        String prefix;
+        switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD: prefix = "keyboard_key"; break;
+            case KeyOverlayView.DISPLAY_MOUSE: prefix = "mouse_key"; break;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: prefix = "key_prompt_key"; break;
+            case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: prefix = "full_keyboard_key"; break;
+            case KeyOverlayView.DISPLAY_CUSTOM: prefix = "custom_key"; break;
+            case GamepadOverlayView.DISPLAY_FACE: prefix = "gamepad_face_key"; break;
+            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: prefix = "gamepad_left_shoulder_key"; break;
+            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: prefix = "gamepad_right_shoulder_key"; break;
+            default: return null;
+        }
+        return prefix + "_" + suffix;
+    }
+
+    private static String keyStyleKey(int displayType) {
+        switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD: return KEY_KEYBOARD_KEY_STYLE;
+            case KeyOverlayView.DISPLAY_MOUSE: return KEY_MOUSE_KEY_STYLE;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: return KEY_KEY_PROMPT_KEY_STYLE;
+            case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: return KEY_FULL_KEYBOARD_KEY_STYLE;
+            case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_KEY_STYLE;
+            case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_KEY_STYLE;
+            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_KEY_STYLE;
+            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_KEY_STYLE;
+            default: return null;
+        }
+    }
+
+    private static String keyPressColorKey(int displayType) {
+        switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD: return KEY_KEYBOARD_PRESS_COLOR;
+            case KeyOverlayView.DISPLAY_MOUSE: return KEY_MOUSE_PRESS_COLOR;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: return KEY_KEY_PROMPT_PRESS_COLOR;
+            case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: return KEY_FULL_KEYBOARD_PRESS_COLOR;
+            case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_PRESS_COLOR;
+            case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_PRESS_COLOR;
+            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_PRESS_COLOR;
+            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_PRESS_COLOR;
+            default: return null;
+        }
     }
 
     private static String opacityKey(int displayType) {
@@ -815,8 +964,7 @@ public final class OverlayState {
     }
 
     public static void setMotionMode(Context context, int displayType, int mode) {
-        prefs(context).edit().putInt(motionModeKey(displayType), clampMotionMode(mode)).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setIntAndRefresh(context, motionModeKey(displayType), clampMotionMode(mode));
     }
 
     public static boolean isGlobalHtmlEnabled(Context context) {
@@ -824,8 +972,7 @@ public final class OverlayState {
     }
 
     public static void setGlobalHtmlEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_GLOBAL_HTML_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        setBooleanAndRefresh(context, KEY_GLOBAL_HTML_ENABLED, enabled);
     }
 
     public static String getGlobalHtmlName(Context context) {
@@ -840,13 +987,20 @@ public final class OverlayState {
     public static void saveGlobalHtml(Context context, String displayName, String html) throws IOException {
         if (html == null) throw new IOException("HTML is null");
         byte[] data = html.getBytes(StandardCharsets.UTF_8);
-        if (data.length == 0 || data.length > 2 * 1024 * 1024) {
-            throw new IOException("HTML size must be 1 byte - 2 MB");
+        if (data.length == 0 || data.length > MAX_GLOBAL_HTML_BYTES) {
+            throw new IOException("HTML size out of range");
         }
-        File file = globalHtmlFile(context);
-        try (FileOutputStream out = new FileOutputStream(file, false)) {
+        AtomicFile file = new AtomicFile(globalHtmlFile(context));
+        FileOutputStream out = null;
+        try {
+            out = file.startWrite();
             out.write(data);
             out.flush();
+            out.getFD().sync();
+            file.finishWrite(out);
+        } catch (IOException error) {
+            if (out != null) file.failWrite(out);
+            throw error;
         }
         prefs(context).edit()
                 .putString(KEY_GLOBAL_HTML_NAME, displayName == null ? "display.html" : displayName)
@@ -865,7 +1019,7 @@ public final class OverlayState {
             int read;
             while ((read = in.read(buffer)) != -1) {
                 total += read;
-                if (total > 2 * 1024 * 1024) return "";
+                if (total > MAX_GLOBAL_HTML_BYTES) return "";
                 out.write(buffer, 0, read);
             }
             if (total == 0) return "";
@@ -876,7 +1030,7 @@ public final class OverlayState {
     }
 
     public static int clampMotionMode(int mode) {
-        if (mode == MOTION_ALPHA || mode == MOTION_NONE) return mode;
+        if (mode == MOTION_ALPHA || mode == MOTION_NONE || mode == MOTION_RIPPLE) return mode;
         return MOTION_SIZE;
     }
 
@@ -887,125 +1041,67 @@ public final class OverlayState {
     }
 
     private static File globalHtmlFile(Context context) {
-        return new File(context.getFilesDir(), "global_display.html");
+        return new File(context.getApplicationContext().getFilesDir(), GLOBAL_HTML_FILE);
     }
 
     public static int getPositionX(Context context, int displayType) {
-        SharedPreferences p = prefs(context);
-        switch (displayType) {
-            case KeyOverlayView.DISPLAY_KEYBOARD:
-                return clampFreePositionPercent(p.getInt(KEY_KEYBOARD_POSITION_X, DEFAULT_KEYBOARD_X));
-            case KeyOverlayView.DISPLAY_CUSTOM:
-                return clampFreePositionPercent(p.getInt(KEY_CUSTOM_POSITION_X, DEFAULT_CUSTOM_X));
-            case KeyOverlayView.DISPLAY_MOUSE:
-                return clampFreePositionPercent(p.getInt(KEY_MOUSE_POSITION_X, DEFAULT_MOUSE_X));
-            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT:
-                return clampFreePositionPercent(p.getInt(KEY_KEY_PROMPT_POSITION_X, DEFAULT_KEY_PROMPT_X));
-            case MouseTrajectoryView.DISPLAY_TRAJECTORY:
-                return clampFreePositionPercent(p.getInt(KEY_MOUSE_TRAJECTORY_POSITION_X, DEFAULT_MOUSE_TRAJECTORY_X));
-            case DpsOverlayView.DISPLAY_DPS:
-                return clampFreePositionPercent(p.getInt(KEY_DPS_POSITION_X, DEFAULT_DPS_X));
-            case GamepadOverlayView.DISPLAY_LEFT_STICK:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_STICK_POSITION_X, DEFAULT_GAMEPAD_LEFT_STICK_X));
-            case GamepadOverlayView.DISPLAY_RIGHT_STICK:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_RIGHT_STICK_POSITION_X, DEFAULT_GAMEPAD_RIGHT_STICK_X));
-            case GamepadOverlayView.DISPLAY_FACE:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_FACE_POSITION_X, DEFAULT_GAMEPAD_FACE_X));
-            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_SHOULDER_POSITION_X, DEFAULT_GAMEPAD_LEFT_SHOULDER_X));
-            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_X, DEFAULT_GAMEPAD_RIGHT_SHOULDER_X));
-            default:
-                return 50;
-        }
+        return getPosition(context, displayType, true);
     }
 
     public static int getPositionY(Context context, int displayType) {
-        SharedPreferences p = prefs(context);
-        switch (displayType) {
-            case KeyOverlayView.DISPLAY_KEYBOARD:
-                return clampFreePositionPercent(p.getInt(KEY_KEYBOARD_POSITION_Y, DEFAULT_KEYBOARD_Y));
-            case KeyOverlayView.DISPLAY_CUSTOM:
-                return clampFreePositionPercent(p.getInt(KEY_CUSTOM_POSITION_Y, DEFAULT_CUSTOM_Y));
-            case KeyOverlayView.DISPLAY_MOUSE:
-                return clampFreePositionPercent(p.getInt(KEY_MOUSE_POSITION_Y, DEFAULT_MOUSE_Y));
-            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT:
-                return clampFreePositionPercent(p.getInt(KEY_KEY_PROMPT_POSITION_Y, DEFAULT_KEY_PROMPT_Y));
-            case MouseTrajectoryView.DISPLAY_TRAJECTORY:
-                return clampFreePositionPercent(p.getInt(KEY_MOUSE_TRAJECTORY_POSITION_Y, DEFAULT_MOUSE_TRAJECTORY_Y));
-            case DpsOverlayView.DISPLAY_DPS:
-                return clampFreePositionPercent(p.getInt(KEY_DPS_POSITION_Y, DEFAULT_DPS_Y));
-            case GamepadOverlayView.DISPLAY_LEFT_STICK:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_STICK_POSITION_Y, DEFAULT_GAMEPAD_LEFT_STICK_Y));
-            case GamepadOverlayView.DISPLAY_RIGHT_STICK:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_RIGHT_STICK_POSITION_Y, DEFAULT_GAMEPAD_RIGHT_STICK_Y));
-            case GamepadOverlayView.DISPLAY_FACE:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_FACE_POSITION_Y, DEFAULT_GAMEPAD_FACE_Y));
-            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_LEFT_SHOULDER_POSITION_Y, DEFAULT_GAMEPAD_LEFT_SHOULDER_Y));
-            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER:
-                return clampFreePositionPercent(p.getInt(KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_Y, DEFAULT_GAMEPAD_RIGHT_SHOULDER_Y));
-            default:
-                return 50;
-        }
+        return getPosition(context, displayType, false);
     }
 
     /** 保存独立悬浮窗口的拖动位置。 */
     public static void savePosition(Context context, int displayType, int xPercent, int yPercent) {
-        String xKey;
-        String yKey;
-        switch (displayType) {
-            case KeyOverlayView.DISPLAY_KEYBOARD:
-                xKey = KEY_KEYBOARD_POSITION_X;
-                yKey = KEY_KEYBOARD_POSITION_Y;
-                break;
-            case KeyOverlayView.DISPLAY_CUSTOM:
-                xKey = KEY_CUSTOM_POSITION_X;
-                yKey = KEY_CUSTOM_POSITION_Y;
-                break;
-            case KeyOverlayView.DISPLAY_MOUSE:
-                xKey = KEY_MOUSE_POSITION_X;
-                yKey = KEY_MOUSE_POSITION_Y;
-                break;
-            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT:
-                xKey = KEY_KEY_PROMPT_POSITION_X;
-                yKey = KEY_KEY_PROMPT_POSITION_Y;
-                break;
-            case MouseTrajectoryView.DISPLAY_TRAJECTORY:
-                xKey = KEY_MOUSE_TRAJECTORY_POSITION_X;
-                yKey = KEY_MOUSE_TRAJECTORY_POSITION_Y;
-                break;
-            case DpsOverlayView.DISPLAY_DPS:
-                xKey = KEY_DPS_POSITION_X;
-                yKey = KEY_DPS_POSITION_Y;
-                break;
-            case GamepadOverlayView.DISPLAY_LEFT_STICK:
-                xKey = KEY_GAMEPAD_LEFT_STICK_POSITION_X;
-                yKey = KEY_GAMEPAD_LEFT_STICK_POSITION_Y;
-                break;
-            case GamepadOverlayView.DISPLAY_RIGHT_STICK:
-                xKey = KEY_GAMEPAD_RIGHT_STICK_POSITION_X;
-                yKey = KEY_GAMEPAD_RIGHT_STICK_POSITION_Y;
-                break;
-            case GamepadOverlayView.DISPLAY_FACE:
-                xKey = KEY_GAMEPAD_FACE_POSITION_X;
-                yKey = KEY_GAMEPAD_FACE_POSITION_Y;
-                break;
-            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER:
-                xKey = KEY_GAMEPAD_LEFT_SHOULDER_POSITION_X;
-                yKey = KEY_GAMEPAD_LEFT_SHOULDER_POSITION_Y;
-                break;
-            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER:
-                xKey = KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_X;
-                yKey = KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_Y;
-                break;
-            default:
-                return;
-        }
+        String xKey = positionKey(displayType, true);
+        String yKey = positionKey(displayType, false);
+        if (xKey == null || yKey == null) return;
         prefs(context).edit()
                 .putInt(xKey, clampFreePositionPercent(xPercent))
                 .putInt(yKey, clampFreePositionPercent(yPercent))
                 .apply();
+    }
+
+    private static int getPosition(Context context, int displayType, boolean xAxis) {
+        String key = positionKey(displayType, xAxis);
+        if (key == null) return 50;
+        return clampFreePositionPercent(
+                prefs(context).getInt(key, defaultPosition(displayType, xAxis)));
+    }
+
+    private static String positionKey(int displayType, boolean xAxis) {
+        return switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD -> xAxis ? KEY_KEYBOARD_POSITION_X : KEY_KEYBOARD_POSITION_Y;
+            case KeyOverlayView.DISPLAY_CUSTOM -> xAxis ? KEY_CUSTOM_POSITION_X : KEY_CUSTOM_POSITION_Y;
+            case KeyOverlayView.DISPLAY_MOUSE -> xAxis ? KEY_MOUSE_POSITION_X : KEY_MOUSE_POSITION_Y;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT -> xAxis ? KEY_KEY_PROMPT_POSITION_X : KEY_KEY_PROMPT_POSITION_Y;
+            case MouseTrajectoryView.DISPLAY_TRAJECTORY -> xAxis ? KEY_MOUSE_TRAJECTORY_POSITION_X : KEY_MOUSE_TRAJECTORY_POSITION_Y;
+            case DpsOverlayView.DISPLAY_DPS -> xAxis ? KEY_DPS_POSITION_X : KEY_DPS_POSITION_Y;
+            case GamepadOverlayView.DISPLAY_LEFT_STICK -> xAxis ? KEY_GAMEPAD_LEFT_STICK_POSITION_X : KEY_GAMEPAD_LEFT_STICK_POSITION_Y;
+            case GamepadOverlayView.DISPLAY_RIGHT_STICK -> xAxis ? KEY_GAMEPAD_RIGHT_STICK_POSITION_X : KEY_GAMEPAD_RIGHT_STICK_POSITION_Y;
+            case GamepadOverlayView.DISPLAY_FACE -> xAxis ? KEY_GAMEPAD_FACE_POSITION_X : KEY_GAMEPAD_FACE_POSITION_Y;
+            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER -> xAxis ? KEY_GAMEPAD_LEFT_SHOULDER_POSITION_X : KEY_GAMEPAD_LEFT_SHOULDER_POSITION_Y;
+            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER -> xAxis ? KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_X : KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_Y;
+            default -> null;
+        };
+    }
+
+    private static int defaultPosition(int displayType, boolean xAxis) {
+        return switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD -> xAxis ? DEFAULT_KEYBOARD_X : DEFAULT_KEYBOARD_Y;
+            case KeyOverlayView.DISPLAY_CUSTOM -> xAxis ? DEFAULT_CUSTOM_X : DEFAULT_CUSTOM_Y;
+            case KeyOverlayView.DISPLAY_MOUSE -> xAxis ? DEFAULT_MOUSE_X : DEFAULT_MOUSE_Y;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT -> xAxis ? DEFAULT_KEY_PROMPT_X : DEFAULT_KEY_PROMPT_Y;
+            case MouseTrajectoryView.DISPLAY_TRAJECTORY -> xAxis ? DEFAULT_MOUSE_TRAJECTORY_X : DEFAULT_MOUSE_TRAJECTORY_Y;
+            case DpsOverlayView.DISPLAY_DPS -> xAxis ? DEFAULT_DPS_X : DEFAULT_DPS_Y;
+            case GamepadOverlayView.DISPLAY_LEFT_STICK -> xAxis ? DEFAULT_GAMEPAD_LEFT_STICK_X : DEFAULT_GAMEPAD_LEFT_STICK_Y;
+            case GamepadOverlayView.DISPLAY_RIGHT_STICK -> xAxis ? DEFAULT_GAMEPAD_RIGHT_STICK_X : DEFAULT_GAMEPAD_RIGHT_STICK_Y;
+            case GamepadOverlayView.DISPLAY_FACE -> xAxis ? DEFAULT_GAMEPAD_FACE_X : DEFAULT_GAMEPAD_FACE_Y;
+            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER -> xAxis ? DEFAULT_GAMEPAD_LEFT_SHOULDER_X : DEFAULT_GAMEPAD_LEFT_SHOULDER_Y;
+            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER -> xAxis ? DEFAULT_GAMEPAD_RIGHT_SHOULDER_X : DEFAULT_GAMEPAD_RIGHT_SHOULDER_Y;
+            default -> 50;
+        };
     }
 
     private static int clampSensitivity(int value) {
@@ -1018,6 +1114,10 @@ public final class OverlayState {
 
     private static int clampSize(int value) {
         return Math.max(MIN_SIZE, Math.min(MAX_SIZE, value));
+    }
+
+    private static int clampKeySpacing(int value) {
+        return Math.max(MIN_KEY_SPACING, Math.min(MAX_KEY_SPACING, value));
     }
 
     private static int clampPercent(int value) {
@@ -1065,6 +1165,11 @@ public final class OverlayState {
 
     private static void setBooleanAndRefresh(Context context, String key, boolean enabled) {
         prefs(context).edit().putBoolean(key, enabled).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    private static void setIntAndRefresh(Context context, String key, int value) {
+        prefs(context).edit().putInt(key, value).apply();
         AxonInputAccessibilityService.refreshActiveService();
     }
 

@@ -15,7 +15,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** 灵敏度超频进程控制器。Shizuku 和 Root 模式共用 native evdev 到 UHID 代理。 */
+/** 输入倍率代理。Shizuku 和 Root 共用 native evdev 接管与虚拟设备转发。 */
 public final class SensitivityProxyController {
     public interface Listener {
         void onSensitivityStatus(String status);
@@ -49,9 +49,13 @@ public final class SensitivityProxyController {
     private volatile Thread readerThread;
     private volatile int fatalMode = -1;
     private volatile int lastButtons;
+    private final int[] parsedMotion = new int[2];
+    private final int[] parsedButtons = new int[1];
+    private final int[] parsedGamepad = new int[7];
 
     private final String tempBinaryBase;
     private final String gainFileBase;
+    private final String pidFileBase;
 
     private final Runnable gainFlush = () -> {
         if (!desiredEnabled) return;
@@ -68,10 +72,12 @@ public final class SensitivityProxyController {
         int uid = Process.myUid();
         tempBinaryBase = "/data/local/tmp/axon_input_sensitivity_proxy_" + uid;
         gainFileBase = "/data/local/tmp/axon_input_sensitivity_gain_" + uid;
+        pidFileBase = "/data/local/tmp/axon_input_sensitivity_pid_" + uid;
     }
 
     /** 应用已保存状态。权限模式变化时才重启代理。 */
     public synchronized void apply(boolean enabled, int mousePercent, int gamepadPercent, int mode) {
+        int previousMode = desiredMode;
         int resolvedMode = mode == OverlayState.SENSITIVITY_MODE_ROOT
                 ? OverlayState.SENSITIVITY_MODE_ROOT
                 : OverlayState.SENSITIVITY_MODE_SHIZUKU;
@@ -86,19 +92,20 @@ public final class SensitivityProxyController {
 
         if (!enabled) {
             fatalMode = -1;
-            stopInternal("未启用");
+            stopInternal(context.getString(R.string.status_disabled));
             return;
         }
 
         if (modeChanged) {
             fatalMode = -1;
             stopProcessOnly();
+            controlExecutor.execute(() -> cleanupMode(previousMode));
         }
 
         if (!modeReady(resolvedMode)) {
-            postStatus(resolvedMode == OverlayState.SENSITIVITY_MODE_ROOT
-                    ? "等待 Root 授权"
-                    : "等待 Shizuku 授权");
+            postStatus(context.getString(resolvedMode == OverlayState.SENSITIVITY_MODE_ROOT
+                    ? R.string.sensitivity_status_wait_root
+                    : R.string.sensitivity_status_wait_shizuku));
             return;
         }
 
@@ -123,13 +130,13 @@ public final class SensitivityProxyController {
 
     public synchronized void onShizukuDead() {
         if (desiredMode == OverlayState.SENSITIVITY_MODE_SHIZUKU) {
-            stopInternal("免 Root 模式 · Shizuku 已断开");
+            stopInternal(context.getString(R.string.sensitivity_status_shizuku_lost));
         }
     }
 
     public synchronized void destroy() {
         desiredEnabled = false;
-        stopInternal("已停止");
+        stopInternal(context.getString(R.string.sensitivity_status_stopped));
         controlExecutor.shutdownNow();
     }
 
@@ -149,32 +156,35 @@ public final class SensitivityProxyController {
             try {
                 String source = sensitivityBinaryPath();
                 if (source == null) {
-                    postStatus("灵敏度超频代理文件缺失");
+                    postStatus(context.getString(R.string.sensitivity_status_proxy_missing));
                     fatal = true;
                     break;
                 }
                 String tempBinary = tempBinary(mode);
                 String gainFile = gainFile(mode);
-                String command = "rm -f " + q(tempBinary)
+                String pidFile = pidFile(mode);
+                String command = staleProcessStopCommand(pidFile)
+                        + "; rm -f " + q(tempBinary)
                         + "; cat " + q(source) + " > " + q(tempBinary)
                         + " && chmod 700 " + q(tempBinary)
                         + " && printf 'mouse=%d\\ngamepad=%d\\n' " + desiredMouse + " " + desiredGamepad
                         + " > " + q(gainFile)
+                        + " && printf '%s\\n' $$ > " + q(pidFile)
                         + " && exec " + q(tempBinary) + " --gain-file " + q(gainFile);
                 shell = startPrivileged(mode, command);
                 process = shell;
                 activeMode = mode;
-                postStatus(modeName(mode) + " · 正在接管外设输入");
+                postStatus(context.getString(R.string.sensitivity_status_running_format, modeName(mode)));
 
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(shell.getInputStream()))) {
                     String line;
                     while (desiredEnabled && token == generation.get() && desiredMode == mode
                             && (line = reader.readLine()) != null) {
-                        if (line.startsWith("ERROR uhid-open")) {
+                        if (line.startsWith("ERROR uhid-open") || line.startsWith("ERROR input-backend-open")) {
                             fatal = true;
-                            postStatus(mode == OverlayState.SENSITIVITY_MODE_ROOT
-                                    ? "Root 模式无法访问 UHID"
-                                    : "免 Root 权限不足，可切换 Root 模式");
+                            postStatus(context.getString(mode == OverlayState.SENSITIVITY_MODE_ROOT
+                                    ? R.string.sensitivity_status_root_uhid_failed
+                                    : R.string.sensitivity_status_shizuku_permission_failed));
                         } else if (line.startsWith("ERROR ")) {
                             postStatus(modeName(mode) + " · " + line.substring(6));
                         } else if (line.startsWith("STATUS ")) {
@@ -190,9 +200,9 @@ public final class SensitivityProxyController {
                 }
             } catch (Throwable error) {
                 if (desiredEnabled && token == generation.get() && desiredMode == mode) {
-                    postStatus(mode == OverlayState.SENSITIVITY_MODE_ROOT
-                            ? "Root 启动失败或未授权"
-                            : "免 Root 代理启动失败");
+                    postStatus(context.getString(mode == OverlayState.SENSITIVITY_MODE_ROOT
+                            ? R.string.sensitivity_status_root_start_failed
+                            : R.string.sensitivity_status_shizuku_start_failed));
                     if (mode == OverlayState.SENSITIVITY_MODE_ROOT) fatal = true;
                 }
             } finally {
@@ -215,57 +225,53 @@ public final class SensitivityProxyController {
     private void parseStatus(int mode, String status) {
         String prefix = modeName(mode) + " · ";
         if (status.startsWith("mouse-ready")) {
-            postStatus(prefix + "鼠标已接管");
+            postStatus(prefix + context.getString(R.string.sensitivity_status_mouse_ready));
         } else if (status.startsWith("gamepad-ready")) {
-            postStatus(prefix + "手柄已接管");
+            postStatus(prefix + context.getString(R.string.sensitivity_status_gamepad_ready));
+        } else if (status.startsWith("view-ready")) {
+            postStatus(prefix + context.getString(R.string.sensitivity_status_view_ready));
+        } else if (status.startsWith("gamepad-grab-failed")) {
+            postStatus(prefix + context.getString(R.string.sensitivity_status_gamepad_grab_failed));
+        } else if (status.startsWith("gamepad-uhid-failed") || status.startsWith("gamepad-virtual-failed")) {
+            postStatus(prefix + context.getString(R.string.sensitivity_status_gamepad_uhid_failed));
         } else if (status.startsWith("gain ")) {
             postStatus(prefix + desiredMouse + "% / " + desiredGamepad + "%");
         } else if (status.startsWith("waiting-device")) {
-            postStatus(prefix + "等待鼠标或手柄");
+            postStatus(prefix + context.getString(R.string.sensitivity_status_wait_device));
+        } else if (status.startsWith("view-disconnected")) {
+            postStatus(prefix + context.getString(R.string.sensitivity_status_view_restart));
         } else if (status.startsWith("mouse-disconnected") || status.startsWith("gamepad-disconnected")) {
-            postStatus(prefix + "设备断开，等待重连");
+            postStatus(prefix + context.getString(R.string.sensitivity_status_device_lost));
         } else if (status.startsWith("starting")) {
-            postStatus(prefix + "初始化中");
+            postStatus(prefix + context.getString(R.string.sensitivity_status_starting));
         }
     }
 
     private void parseMotion(String line) {
-        String[] parts = line.split(" ");
-        if (parts.length != 3) return;
-        try {
-            int dx = Integer.parseInt(parts[1]);
-            int dy = Integer.parseInt(parts[2]);
-            mainHandler.post(() -> listener.onSensitivityMouseMotion(dx, dy));
-        } catch (NumberFormatException ignored) {
-        }
+        if (!LineInts.parse(line, 7, parsedMotion)) return;
+        int dx = parsedMotion[0];
+        int dy = parsedMotion[1];
+        mainHandler.post(() -> listener.onSensitivityMouseMotion(dx, dy));
     }
 
     private void parseButtons(String line) {
-        String[] parts = line.split(" ");
-        if (parts.length != 2) return;
-        try {
-            int mask = Integer.parseInt(parts[1]);
-            if (mask == lastButtons) return;
-            lastButtons = mask;
-            mainHandler.post(() -> listener.onSensitivityMouseButtons(mask));
-        } catch (NumberFormatException ignored) {
-        }
+        if (!LineInts.parse(line, 8, parsedButtons)) return;
+        int mask = parsedButtons[0];
+        if (mask == lastButtons) return;
+        lastButtons = mask;
+        mainHandler.post(() -> listener.onSensitivityMouseButtons(mask));
     }
 
     private void parseGamepad(String line) {
-        String[] parts = line.split(" ");
-        if (parts.length != 8) return;
-        try {
-            int lx = Integer.parseInt(parts[1]);
-            int ly = Integer.parseInt(parts[2]);
-            int rx = Integer.parseInt(parts[3]);
-            int ry = Integer.parseInt(parts[4]);
-            int lt = Integer.parseInt(parts[5]);
-            int rt = Integer.parseInt(parts[6]);
-            int buttons = Integer.parseInt(parts[7]);
-            mainHandler.post(() -> listener.onSensitivityGamepadState(lx, ly, rx, ry, lt, rt, buttons));
-        } catch (NumberFormatException ignored) {
-        }
+        if (!LineInts.parse(line, 8, parsedGamepad)) return;
+        int lx = parsedGamepad[0];
+        int ly = parsedGamepad[1];
+        int rx = parsedGamepad[2];
+        int ry = parsedGamepad[3];
+        int lt = parsedGamepad[4];
+        int rt = parsedGamepad[5];
+        int buttons = parsedGamepad[6];
+        mainHandler.post(() -> listener.onSensitivityGamepadState(lx, ly, rx, ry, lt, rt, buttons));
     }
 
     private void writeGains(int mode, int mouse, int gamepad) {
@@ -310,8 +316,9 @@ public final class SensitivityProxyController {
         if (mode != OverlayState.SENSITIVITY_MODE_SHIZUKU && mode != OverlayState.SENSITIVITY_MODE_ROOT) return;
         try {
             if (!modeReady(mode)) return;
-            String command = "rm -f " + q(gainFile(mode)) + " " + q(gainFile(mode) + ".new")
-                    + " " + q(tempBinary(mode));
+            String command = staleProcessStopCommand(pidFile(mode))
+                    + "; rm -f " + q(gainFile(mode)) + " " + q(gainFile(mode) + ".new")
+                    + " " + q(tempBinary(mode)) + " " + q(pidFile(mode));
             runPrivileged(mode, command);
         } catch (Throwable ignored) {
         }
@@ -343,7 +350,7 @@ public final class SensitivityProxyController {
     }
 
     private String modeName(int mode) {
-        return mode == OverlayState.SENSITIVITY_MODE_ROOT ? "Root" : "免 Root";
+        return mode == OverlayState.SENSITIVITY_MODE_ROOT ? "Root" : "Shizuku";
     }
 
     private String tempBinary(int mode) {
@@ -352,6 +359,18 @@ public final class SensitivityProxyController {
 
     private String gainFile(int mode) {
         return gainFileBase + (mode == OverlayState.SENSITIVITY_MODE_ROOT ? "_root.cfg" : "_shizuku.cfg");
+    }
+
+    private String pidFile(int mode) {
+        return pidFileBase + (mode == OverlayState.SENSITIVITY_MODE_ROOT ? "_root.pid" : "_shizuku.pid");
+    }
+
+    private String staleProcessStopCommand(String pidFile) {
+        String file = q(pidFile);
+        return "if [ -f " + file + " ]; then "
+                + "old=$(cat " + file + " 2>/dev/null); "
+                + "case \"$old\" in ''|*[!0-9]*) ;; *) kill \"$old\" 2>/dev/null || true; sleep 0.08 ;; esac; "
+                + "fi";
     }
 
     private String sensitivityBinaryPath() {

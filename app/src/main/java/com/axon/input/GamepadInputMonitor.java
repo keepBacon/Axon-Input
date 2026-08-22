@@ -9,7 +9,7 @@ import java.io.Closeable;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 
-/** 手柄只读监听。普通模式不独占 evdev。启用灵敏度超频后改用代理数据。 */
+/** 手柄只读监听。普通模式不独占 evdev。启用灵敏度倍率后改用代理数据。 */
 public final class GamepadInputMonitor {
     public interface Listener {
         void onGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons);
@@ -25,6 +25,7 @@ public final class GamepadInputMonitor {
     private volatile boolean running;
     private volatile Thread worker;
     private volatile PrivilegedProcess process;
+    private final int[] parsedGamepad = new int[7];
 
     public GamepadInputMonitor(Context context, Listener listener) {
         this.context = context.getApplicationContext();
@@ -91,20 +92,11 @@ public final class GamepadInputMonitor {
     }
 
     private void parseLine(String line) {
-        if (line == null || !line.startsWith("GAMEPAD ")) return;
-        String[] parts = line.split(" ");
-        if (parts.length != 8) return;
-        try {
-            int lx = Integer.parseInt(parts[1]);
-            int ly = Integer.parseInt(parts[2]);
-            int rx = Integer.parseInt(parts[3]);
-            int ry = Integer.parseInt(parts[4]);
-            int lt = Integer.parseInt(parts[5]);
-            int rt = Integer.parseInt(parts[6]);
-            int buttons = Integer.parseInt(parts[7]);
-            listener.onGamepadState(lx, ly, rx, ry, lt, rt, buttons);
-        } catch (NumberFormatException ignored) {
-        }
+        if (line == null || !line.startsWith("GAMEPAD ")
+                || !LineInts.parse(line, 8, parsedGamepad)) return;
+        listener.onGamepadState(
+                parsedGamepad[0], parsedGamepad[1], parsedGamepad[2], parsedGamepad[3],
+                parsedGamepad[4], parsedGamepad[5], parsedGamepad[6]);
     }
 
     private PrivilegedProcess startPrivileged(int mode, String command) throws Exception {

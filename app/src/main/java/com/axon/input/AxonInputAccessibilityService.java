@@ -663,7 +663,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         // 部分手柄会错误标记为键盘来源。明确的手柄 KeyCode/ScanCode 仍按手柄处理。
         boolean mappedGamepadKey = GamepadButtons.fromAndroidEvent(event) != 0;
         if (!gamepadSource && !mappedGamepadKey) return false;
-        // 灵敏度超频使用虚拟 UHID。按键语义仍来自 Android KeyEvent。
+        // 灵敏度倍率使用虚拟 UHID。按键语义仍来自 Android KeyEvent。
         return !device.isVirtual() || OverlayState.isSensitivityEnabled(this);
     }
 
@@ -729,6 +729,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             return;
         }
         ensureInputFullKeyboardWindow();
+        if (inputFullKeyboardView != null) {
+            applyKeyAppearance(inputFullKeyboardView, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD);
+        }
         updateInputFullKeyboardLayout();
     }
 
@@ -747,6 +750,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private void ensureInputFullKeyboardWindow() {
         if (inputFullKeyboardAttached || windowManager == null) return;
         inputFullKeyboardView = new FullKeyboardOverlayView(this);
+        applyKeyAppearance(inputFullKeyboardView, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD);
         inputFullKeyboardParams = new WindowManager.LayoutParams(
                 fullKeyboardWidthPx(), fullKeyboardHeightPx(),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -870,6 +874,58 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         updateWindowLayout(window);
     }
 
+    private void applyKeyAppearance(KeyOverlayView view, int displayType) {
+        if (view == null) return;
+        view.setKeyAppearance(
+                OverlayState.getKeyStyle(this, displayType),
+                OverlayState.getKeyPressColor(this, displayType));
+        view.setKeyColors(
+                OverlayState.getKeyIdleColor(this, displayType),
+                OverlayState.getKeyTextColor(this, displayType));
+        view.setKeyEffects(
+                OverlayState.getKeyCornerScale(this, displayType),
+                OverlayState.getKeyRippleStrength(this, displayType));
+    }
+
+    private void applyKeyAppearance(GamepadOverlayView view, int displayType) {
+        if (view == null) return;
+        view.setKeyAppearance(
+                OverlayState.getKeyStyle(this, displayType),
+                OverlayState.getKeyPressColor(this, displayType));
+        view.setKeyColors(
+                OverlayState.getKeyIdleColor(this, displayType),
+                OverlayState.getKeyTextColor(this, displayType));
+        view.setKeyEffects(
+                OverlayState.getKeyCornerScale(this, displayType),
+                OverlayState.getKeyRippleStrength(this, displayType));
+    }
+
+    private void applyKeyAppearance(KeyPromptOverlayView view, int displayType) {
+        if (view == null) return;
+        view.setKeyAppearance(
+                OverlayState.getKeyStyle(this, displayType),
+                OverlayState.getKeyPressColor(this, displayType));
+        view.setKeyColors(
+                OverlayState.getKeyIdleColor(this, displayType),
+                OverlayState.getKeyTextColor(this, displayType));
+        view.setKeyEffects(
+                OverlayState.getKeyCornerScale(this, displayType),
+                OverlayState.getKeyRippleStrength(this, displayType));
+    }
+
+    private void applyKeyAppearance(FullKeyboardOverlayView view, int displayType) {
+        if (view == null) return;
+        view.setKeyAppearance(
+                OverlayState.getKeyStyle(this, displayType),
+                OverlayState.getKeyPressColor(this, displayType));
+        view.setKeyColors(
+                OverlayState.getKeyIdleColor(this, displayType),
+                OverlayState.getKeyTextColor(this, displayType));
+        view.setKeyEffects(
+                OverlayState.getKeyCornerScale(this, displayType),
+                OverlayState.getKeyRippleStrength(this, displayType));
+    }
+
     private void ensureWindow(DisplayWindow window) {
         if (window.attached || windowManager == null) return;
 
@@ -899,6 +955,12 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         window.view.setDisplaySize(displaySizePercent(window.type));
         window.view.setAlpha(OverlayState.getDisplayOpacity(this, window.type) / 100f);
         window.view.setAnimationMode(OverlayState.getMotionMode(this, window.type));
+        applyKeyAppearance(window.view, window.type);
+        if (window.type == KeyOverlayView.DISPLAY_KEYBOARD) {
+            window.view.setKeySpacing(OverlayState.getKeyboardSpacing(this));
+        } else if (window.type == KeyOverlayView.DISPLAY_CUSTOM) {
+            window.view.setKeySpacing(OverlayState.getCustomSpacing(this));
+        }
         if (window.type == KeyOverlayView.DISPLAY_KEYBOARD) {
             window.view.setKeyboardOptions(
                     OverlayState.isKeyboardSpaceEnabled(this),
@@ -943,7 +1005,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         int base;
         if (type == KeyOverlayView.DISPLAY_MOUSE) base = MOUSE_HEIGHT_DP;
         else if (type == KeyOverlayView.DISPLAY_CUSTOM) base = customBaseHeightDp();
-        else base = OverlayState.isKeyboardSpaceEnabled(this) ? KEYBOARD_HEIGHT_DP : 128;
+        else if (OverlayState.isKeyboardSpaceEnabled(this)) {
+            base = KEYBOARD_HEIGHT_DP + Math.max(0, OverlayState.getKeyboardSpacing(this) - 8) * 2;
+        } else {
+            base = 128 + Math.max(0, OverlayState.getKeyboardSpacing(this) - 8);
+        }
         return Math.max(1, dp(base * displaySizePercent(type) / 100f));
     }
 
@@ -957,7 +1023,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         int count = OverlayState.getCustomKeyCodes(this).length;
         int columns = Math.max(1, OverlayState.getCustomColumns(this));
         int rows = Math.max(1, (count + columns - 1) / columns);
-        return Math.max(CUSTOM_MIN_HEIGHT_DP, rows * CUSTOM_ROW_HEIGHT_DP + 4);
+        return Math.max(CUSTOM_MIN_HEIGHT_DP, rows * (44 + OverlayState.getCustomSpacing(this)) + 4);
     }
 
     private void applyPositionToParams(DisplayWindow window) {
@@ -1054,6 +1120,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         window.view.setDragEnabled(OverlayState.isDragEnabled(this));
         window.view.setDisplaySize(OverlayState.getGamepadDisplaySize(this, window.type));
         window.view.setAlpha(OverlayState.getDisplayOpacity(this, window.type) / 100f);
+        if (window.type == GamepadOverlayView.DISPLAY_FACE
+                || window.type == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
+                || window.type == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER) {
+            applyKeyAppearance(window.view, window.type);
+        }
         window.view.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
         if (window.type == GamepadOverlayView.DISPLAY_LEFT_STICK) {
             window.view.setStickShape(OverlayState.getGamepadLeftStickShape(this));
@@ -1062,6 +1133,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             window.view.setStickShape(OverlayState.getGamepadRightStickShape(this));
             window.view.setStickDotSize(OverlayState.getGamepadStickDotSize(this, window.type));
         } else if (window.type == GamepadOverlayView.DISPLAY_FACE) {
+            window.view.setFaceSpacing(OverlayState.getGamepadFaceSpacing(this));
             window.view.setFaceReversed(OverlayState.isGamepadFaceReversed(this));
             window.view.setFaceDpsVisibility(
                     OverlayState.isGamepadFaceYDpsEnabled(this),
@@ -1290,6 +1362,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             keyPromptView.setDragEnabled(OverlayState.isDragEnabled(this));
             keyPromptView.setDisplaySize(OverlayState.getKeyPromptSize(this));
             keyPromptView.setUserOpacity(OverlayState.getDisplayOpacity(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+            applyKeyAppearance(keyPromptView, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
             keyPromptView.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
             keyPromptView.animateIn();
         }
@@ -1303,6 +1376,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyPromptView.setDragEnabled(OverlayState.isDragEnabled(this));
         keyPromptView.setDisplaySize(OverlayState.getKeyPromptSize(this));
         keyPromptView.setUserOpacity(OverlayState.getDisplayOpacity(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+        applyKeyAppearance(keyPromptView, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
         keyPromptParams = new WindowManager.LayoutParams(
                 keyPromptWidthPx(), keyPromptHeightPx(),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -1323,6 +1397,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyPromptView.setDragEnabled(OverlayState.isDragEnabled(this));
         keyPromptView.setDisplaySize(OverlayState.getKeyPromptSize(this));
         keyPromptView.setUserOpacity(OverlayState.getDisplayOpacity(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+        applyKeyAppearance(keyPromptView, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
         keyPromptView.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
         applyKeyPromptPosition();
         windowManager.updateViewLayout(keyPromptView, keyPromptParams);

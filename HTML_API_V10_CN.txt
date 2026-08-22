@@ -1,0 +1,201 @@
+Axon Input HTML API v10
+
+一、作用
+- 导入一份 HTML 后，支持 HTML 的每个悬浮窗口会独立运行一份页面。
+- 用 KeyDisplay.type 判断当前窗口类型，只创建当前窗口需要的 DOM。
+- 支持 HTML、CSS、JavaScript、SVG、Canvas、Web Animations API。
+- 支持 localStorage / sessionStorage，用于保存模板自己的低频视觉设置。
+- 网络访问关闭，不提供系统高权限接口，不允许 HTML 直接修改 Android 配置。
+- 单个 HTML 文件上限 4 MB。
+
+二、window.KeyDisplay
+apiVersion = 10
+version = v30
+type = 当前窗口类型
+types = 全部支持的窗口类型
+
+基础：
+KeyDisplay.getState()                 读取当前完整状态
+KeyDisplay.on(name, fn)               订阅事件，返回取消函数
+KeyDisplay.once(name, fn)             只订阅一次
+KeyDisplay.onState(fn, immediate)     立即读取一次状态，并继续监听 update
+KeyDisplay.onInput(handlers)          一次订阅 key/mouse/pointer/gamepad/update
+KeyDisplay.has(capability)            判断当前窗口是否支持某能力
+
+状态辅助：
+KeyDisplay.findKey(idOrCode)          按 id / keyCode / rawId 查找键位
+KeyDisplay.button(name)               读取手柄语义按键状态，如 a / l1 / r2
+KeyDisplay.axis(name)                 读取手柄轴，如 lx / ly / rx / ry / lt / rt
+KeyDisplay.cps(idOrName)              读取键位或手柄按键 CPS
+
+数值辅助：
+KeyDisplay.clamp(value,min,max)       限制范围
+KeyDisplay.lerp(a,b,t)                线性插值
+KeyDisplay.map(v,a,b,c,d,limit=true)  区间映射
+KeyDisplay.deadzone(value,zone=.08)   摇杆死区处理
+
+动画与 CSS：
+KeyDisplay.raf(fn) / KeyDisplay.cancelFrame(id)  requestAnimationFrame 包装
+KeyDisplay.css(name,value)            设置一个 CSS 变量
+KeyDisplay.cssAll(object)             批量设置 CSS 变量
+KeyDisplay.reducedMotion()            读取系统减少动态效果偏好
+
+三、显示类型
+keyboard
+mouse
+custom
+mouse-trajectory
+key-prompt
+gamepad-left-stick
+gamepad-right-stick
+gamepad-face
+gamepad-left-shoulder
+gamepad-right-shoulder
+
+四、事件
+keydisplay:init      页面初始化
+keydisplay:update    完整状态变化
+keydisplay:key       单个键位变化
+keydisplay:mouse     鼠标按键与 CPS
+keydisplay:pointer   鼠标相对移动，高频，按显示帧合并
+keydisplay:gamepad   手柄状态，高频，按显示帧合并
+
+pointer / gamepad 只更新对应局部状态。
+API v10 中 key / mouse 事件也会先修补 window.__KEYDISPLAY_STATE__，因此事件回调中调用 KeyDisplay.getState() 可读取最新值。
+
+五、state 主要字段
+apiVersion / rendererVersion / type / theme / sizePercent / timestamp
+
+viewport:
+  width, height, dpWidth, dpHeight, density, densityDpi, aspectRatio, orientation
+
+keys[]:
+  id, rawId/keyCode, label, index, pressed, cps, pressCount, source, displayType
+  dps 保留为 v9 兼容别名，新代码使用 cps。
+
+mouse:
+  left, right, leftCps, rightCps, timestamp
+  leftDps / rightDps 为 v9 兼容别名。
+
+pointer:
+  dx, dy, sequence
+
+gamepad:
+  lx, ly, rx, ry, lt, rt, buttonMask
+  buttons.a/b/x/y/l1/r1/l2/r2/l3/r3
+  cps.y/x/b/a/l1/r1
+  dps 为 v9 兼容别名。
+
+config:
+  当前窗口直接相关的设置：
+  motionMode, opacityPercent, keyStyle, idleColor, pressColor, textColor,
+  cornerScalePercent, rippleStrengthPercent, spacingDp,
+  dotSizePercent, showSpaceCps, showTriggerProgress 等。
+
+palette:
+  原生调色板，可直接用于 HTML。
+
+runtime:
+  dragEnabled, htmlEnabled, sensitivityEnabled,
+  mouseSensitivity, gamepadSensitivity, sensitivityMode,
+  positionXPercent, positionYPercent, displayType, displayEnabled。
+
+settings:
+  全应用只读设置快照，包含：
+  keyboard / mouse / keyPrompt / customKeys / mouseTrajectory /
+  gamepad / interaction / sensitivity / html / appearance。
+
+settings.gamepad.compatibility:
+  mode = auto / loose / android / evdev
+  swapXY / swapAB / swapSticks / swapTriggers
+
+settings.html:
+  apiVersion, maxBytes, domStorage, networkAccess
+
+settings.appearance:
+  customFont, fontName
+
+capabilities:
+  当前窗口支持的能力列表。
+
+六、自动 CSS 变量
+--kd-size
+--kd-width --kd-height --kd-density
+--kd-dot-size
+--kd-opacity --kd-opacity-percent
+--kd-key-spacing
+--kd-idle-color
+--kd-press-color
+--kd-text-color
+--kd-corner-scale
+--kd-ripple-strength
+--kd-key-style
+--kd-position-x --kd-position-y
+--kd-mouse-sensitivity --kd-gamepad-sensitivity
+--kd-background --kd-surface --kd-debug-surface
+--kd-text-primary --kd-text-secondary --kd-divider --kd-accent
+--kd-key-idle --kd-key-pressed --kd-key-text-idle --kd-key-text-pressed
+--kd-overlay-stroke --kd-overlay-shell --kd-overlay-secondary
+--kd-trajectory-panel --kd-trajectory-stroke --kd-trajectory-dot
+
+HTML 根元素 data-*：
+data-kd-type
+data-kd-theme
+data-kd-motion
+data-kd-key-style
+data-kd-drag
+data-kd-overclock
+data-kd-reduced-motion
+
+七、API v10 新增说明
+1. CPS 字段统一
+- 新代码使用 cps / leftCps / rightCps / gamepad.cps。
+- dps 字段继续保留，旧模板不需要立刻修改。
+
+2. 外观状态
+- config.opacityPercent：当前窗口透明度。
+- config.keyStyle：rounded / square / circle。
+- config.idleColor：当前按键底色。
+- config.pressColor：当前按下颜色。
+- config.textColor：当前文字颜色。
+- config.cornerScalePercent：圆角强度，0–200，100 为原效果。
+- config.rippleStrengthPercent：扩散强度，0–200，0 可关闭。
+- config.spacingDp：键盘、自定义按键或 ABXY 的间距。
+
+3. 状态辅助
+示例：
+const w = KeyDisplay.findKey('w');
+const aDown = KeyDisplay.button('a');
+const lx = KeyDisplay.axis('lx');
+const l1Cps = KeyDisplay.cps('l1');
+
+4. 批量监听
+const stop = KeyDisplay.onInput({
+  key: key => {},
+  pointer: pointer => {},
+  gamepad: pad => {}
+});
+// 不需要时：stop();
+
+5. 本地存储
+const key = 'layout-' + KeyDisplay.type;
+localStorage.setItem(key, JSON.stringify({compact:true}));
+const saved = JSON.parse(localStorage.getItem(key) || 'null');
+不要在 pointer / gamepad 高频回调中连续写 localStorage。
+
+八、手柄语义
+- 推荐读取 gamepad.buttons.a / b / x / y。
+- 不要用 north / west 判断显示文字。
+- 当前兼容模式和独立交换状态可从 settings.gamepad.compatibility 读取。
+
+九、性能建议
+1. pointer / gamepad 使用对应细粒度事件，不在每帧重建整棵 DOM。
+2. 静止后停止 requestAnimationFrame。
+3. 动画优先 transform、opacity、Web Animations API。
+4. Canvas 只重绘当前变化，不保留无意义空转循环。
+5. 相同文本、颜色、class 未变化时不要重复写 DOM。
+6. 根据 KeyDisplay.type 只初始化当前窗口需要的元素。
+7. localStorage 用于低频设置，不用于高频输入数据。
+8. HTML 关闭后 WebView 会销毁；不使用 HTML 时原生 Canvas 开销更低。
+
+examples 目录包含可直接修改的示例。

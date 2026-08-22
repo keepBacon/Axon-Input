@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
-import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
@@ -29,12 +28,11 @@ public final class HtmlGuideActivity extends Activity {
         root.setPadding(dp(20), dp(18), dp(20), dp(36));
         root.setBackgroundColor(UiPalette.background(this));
 
-        addTitle(root, "Axon Input HTML 渲染文档 · API v9");
+        addTitle(root, "Axon Input HTML API · v10");
         addBody(root,
-                "HTML 是悬浮显示的完整渲染层。每个显示窗口单独运行一份页面。"
-                + "可使用 HTML、CSS、JavaScript、SVG、Canvas、Web Animations API。\n\n"
-                + "Android 只发送输入状态和配置，不向 HTML 暴露高权限系统接口。"
-                + "因此可以自由设计显示样子和动效，同时保持权限边界清晰。");
+                "HTML 可以完全接管支持组件的视觉层。每个悬浮窗口独立运行一份页面。"
+                + "支持 HTML、CSS、JavaScript、SVG、Canvas、Web Animations 与本地存储。\n\n"
+                + "Android 只提供输入和只读配置，不暴露系统高权限接口；网络访问保持关闭。");
 
         addSection(root, "1. 最小模板");
         addCode(root, """
@@ -65,16 +63,16 @@ function render(state){
                 + "state.pointer：鼠标移动增量。\n"
                 + "state.mouseButtons：鼠标左右键状态。\n"
                 + "state.gamepad：摇杆、扳机、按键、CPS。\n"
-                + "state.config：当前显示的细节开关。\n"
+                + "state.config：当前显示的外观、间距、透明度和功能开关。\n"
                 + "state.palette：完整原生调色板。\n"
-                + "state.runtime：拖动、灵敏度超频、窗口位置、会话持久化策略等运行信息。\n"
-                + "state.settings：当前应用所有显示和调试选项的只读快照。\n"
+                + "state.runtime：拖动、灵敏度倍率、窗口位置、会话持久化策略等运行信息。\n"
+                + "state.settings：应用显示、外观、手柄兼容和 HTML 设置的只读快照。\n"
                 + "state.capabilities：当前窗口可用能力列表。");
 
         addSection(root, "3. Axon Input 辅助 API");
         addCode(root, """
-console.log(KeyDisplay.apiVersion); // 9
-console.log(KeyDisplay.version);    // v26
+console.log(KeyDisplay.apiVersion); // 10
+console.log(KeyDisplay.version);    // v30
 console.log(KeyDisplay.type);       // keyboard / mouse / ...
 
 const state = KeyDisplay.getState();
@@ -86,10 +84,32 @@ console.log(KeyDisplay.types);
 console.log(KeyDisplay.has('gamepad'));
 console.log(KeyDisplay.clamp(1.6,0,1));
 console.log(KeyDisplay.lerp(0,100,.25));
+console.log(KeyDisplay.map(.5,0,1,0,100));
+console.log(KeyDisplay.deadzone(.12,.08));
 KeyDisplay.css('--my-radius', '14px');
+KeyDisplay.cssAll({'--gap':'8px','--press':'#fff'});
 """);
 
-        addSection(root, "4. 自动 CSS 变量");
+        addSection(root, "4. v10 状态辅助 API");
+        addCode(root, """
+const w = KeyDisplay.findKey('w');
+const pressed = KeyDisplay.button('a');
+const x = KeyDisplay.axis('lx');
+const cps = KeyDisplay.cps('l1');
+
+// 自动立即读取一次完整状态，之后监听 update。
+const stopState = KeyDisplay.onState(state => render(state));
+
+// 一次订阅多个输入事件。
+const stopInput = KeyDisplay.onInput({
+  key: k => updateKey(k),
+  pointer: p => movePointer(p),
+  gamepad: g => updatePad(g)
+});
+// 不需要时执行 stopState() / stopInput()。
+""");
+
+        addSection(root, "5. 自动 CSS 变量");
         addCode(root, """
 .card{
   color:var(--kd-text-primary);
@@ -105,11 +125,13 @@ KeyDisplay.css('--my-radius', '14px');
 --kd-overlay-shell --kd-overlay-secondary
 --kd-trajectory-panel --kd-trajectory-stroke --kd-trajectory-dot
 --kd-width --kd-height --kd-density
+--kd-opacity --kd-opacity-percent --kd-key-spacing --kd-idle-color --kd-press-color --kd-text-color
+--kd-corner-scale --kd-ripple-strength --kd-key-style
 --kd-mouse-sensitivity --kd-gamepad-sensitivity
 */
 """);
 
-        addSection(root, "5. 单键按压动效");
+        addSection(root, "6. 单键按压动效");
         addCode(root, """
 KeyDisplay.on('key', e => {
   const k=e.detail;
@@ -125,30 +147,30 @@ KeyDisplay.on('key', e => {
 });
 """);
 
-        addSection(root, "6. 键盘 / Space / 自定义键位");
+        addSection(root, "7. 键盘 / Space / 自定义键位");
         addCode(root, """
 function renderKeys(s){
   if(!s.keys)return;
   root.innerHTML=s.keys.map(k=>`
     <div class="key ${k.pressed?'down':''}" data-id="${k.id}">
-      <b>${k.label}</b>${k.dps?`<small>${k.dps} CPS</small>`:''}
+      <b>${k.label}</b>${k.cps?`<small>${k.cps} CPS</small>`:''}
     </div>`).join('');
 }
 KeyDisplay.on('update',e=>renderKeys(e.detail));
 """);
 
-        addSection(root, "7. 鼠标实时状态");
+        addSection(root, "8. 鼠标实时状态");
         addCode(root, """
 KeyDisplay.on('mouse', e => {
   const m=e.detail;
   left.classList.toggle('down',m.left);
   right.classList.toggle('down',m.right);
-  leftDps.textContent=m.leftDps+' CPS';
-  rightDps.textContent=m.rightDps+' CPS';
+  leftCps.textContent=m.leftCps+' CPS';
+  rightCps.textContent=m.rightCps+' CPS';
 });
 """);
 
-        addSection(root, "8. 鼠标轨迹：按移动力度推动，停止后回中");
+        addSection(root, "9. 鼠标轨迹：按移动力度推动，停止后回中");
         addCode(root, """
 let x=0,y=0,vx=0,vy=0,raf=0;
 KeyDisplay.on('pointer',e=>{
@@ -168,7 +190,7 @@ function tick(){
 }
 """);
 
-        addSection(root, "9. 鼠标轨迹左右键变色");
+        addSection(root, "10. 鼠标轨迹左右键变色");
         addCode(root, """
 KeyDisplay.on('update',e=>{
   const s=e.detail;if(s.type!=='mouse-trajectory')return;
@@ -179,7 +201,7 @@ KeyDisplay.on('update',e=>{
 });
 """);
 
-        addSection(root, "10. 左右摇杆 + L3/R3");
+        addSection(root, "11. 左右摇杆 + L3/R3");
         addCode(root, """
 let lastL3=false,lastR3=false;
 KeyDisplay.on('gamepad',e=>{
@@ -197,7 +219,7 @@ KeyDisplay.on('gamepad',e=>{
 });
 """);
 
-        addSection(root, "11. ABXY：直接使用语义字段");
+        addSection(root, "12. ABXY：直接使用语义字段");
         addCode(root, """
 KeyDisplay.on('gamepad',e=>{
   const b=e.detail.buttons;
@@ -210,25 +232,25 @@ KeyDisplay.on('gamepad',e=>{
 // 推荐使用 a/b/x/y，不要依赖底层 north/west 名称。
 """);
 
-        addSection(root, "12. L1/R1 CPS 与 L2/R2 压力");
+        addSection(root, "13. L1/R1 CPS 与 L2/R2 压力");
         addCode(root, """
 KeyDisplay.on('update',e=>{
   const s=e.detail;if(!s.gamepad)return;
   const g=s.gamepad;
   if(s.type==='gamepad-left-shoulder'){
     l1.classList.toggle('down',g.buttons.l1);
-    l1Dps.textContent=s.config.showShoulderDps?g.dps.l1+' CPS':'';
+    l1Cps.textContent=s.config.showShoulderCps?g.cps.l1+' CPS':'';
     if(s.config.showTriggerProgress) l2.style.setProperty('--pressure',g.lt);
   }
   if(s.type==='gamepad-right-shoulder'){
     r1.classList.toggle('down',g.buttons.r1);
-    r1Dps.textContent=s.config.showShoulderDps?g.dps.r1+' CPS':'';
+    r1Cps.textContent=s.config.showShoulderCps?g.cps.r1+' CPS':'';
     if(s.config.showTriggerProgress) r2.style.setProperty('--pressure',g.rt);
   }
 });
 """);
 
-        addSection(root, "13. Runtime：根据灵敏度和位置改变视觉");
+        addSection(root, "14. Runtime：根据灵敏度和位置改变视觉");
         addCode(root, """
 KeyDisplay.on('update',e=>{
   const r=e.detail.runtime;
@@ -239,7 +261,7 @@ KeyDisplay.on('update',e=>{
 });
 """);
 
-        addSection(root, "14. Palette：完全跟随应用主题");
+        addSection(root, "15. Palette：完全跟随应用主题");
         addCode(root, """
 KeyDisplay.on('update',e=>{
   const p=e.detail.palette;
@@ -249,7 +271,7 @@ KeyDisplay.on('update',e=>{
 });
 """);
 
-        addSection(root, "15. SVG / Canvas 也可以直接使用");
+        addSection(root, "16. SVG / Canvas 也可以直接使用");
         addCode(root, """
 const canvas=document.querySelector('canvas');
 const ctx=canvas.getContext('2d');
@@ -261,7 +283,7 @@ function draw(s){
 KeyDisplay.on('update',e=>draw(e.detail));
 """);
 
-        addSection(root, "16. 最近按键提示也可完全重写");
+        addSection(root, "17. 最近按键也可完全重写");
         addCode(root, """
 if(KeyDisplay.type==='key-prompt'){
   KeyDisplay.on('update',e=>{
@@ -278,21 +300,21 @@ if(KeyDisplay.type==='key-prompt'){
 }
 """);
 
-        addSection(root, "17. Settings：一次读取全部功能配置");
+        addSection(root, "18. Settings：一次读取全部功能配置");
         addCode(root, """
 KeyDisplay.on('update',e=>{
   const s=e.detail.settings;
   console.log(s.keyboard.showSpace);
   console.log(s.mouseTrajectory.dotSizePercent);
   console.log(s.gamepad.leftStick.shape);
-  console.log(s.gamepad.face.yDps);
+  console.log(s.gamepad.face.yCps);
   console.log(s.gamepad.leftShoulder.triggerProgress);
   console.log(s.sensitivity.mode,s.sensitivity.mousePercent);
 });
 // settings 是只读快照。HTML 改视觉，不直接修改 Android 权限或配置。
 """);
 
-        addSection(root, "18. Viewport：根据窗口尺寸自适应布局");
+        addSection(root, "19. Viewport：根据窗口尺寸自适应布局");
         addCode(root, """
 KeyDisplay.on('update',e=>{
   const v=e.detail.viewport;
@@ -302,22 +324,55 @@ KeyDisplay.on('update',e=>{
 // viewport: width/height/dpWidth/dpHeight/density/densityDpi/aspectRatio/orientation
 """);
 
-        addSection(root, "19. 高频事件与完整状态");
+        addSection(root, "20. 按键外观与间距");
+        addCode(root, """
+KeyDisplay.onState(s => {
+  const c=s.config;
+  root.style.opacity=String((c.opacityPercent??100)/100);
+  root.style.setProperty('--gap',(c.spacingDp??0)+'px');
+  root.dataset.style=c.keyStyle||'rounded';
+  root.style.setProperty('--idle',c.idleColor||s.palette.keyIdle);
+  root.style.setProperty('--pressed',c.pressColor||s.palette.keyPressed);
+  root.style.setProperty('--text',c.textColor||s.palette.keyTextIdle);
+  root.style.setProperty('--corner-scale',String((c.cornerScalePercent??100)/100));
+  root.style.setProperty('--ripple-strength',String((c.rippleStrengthPercent??100)/100));
+});
+// 同样可以直接使用：
+// --kd-opacity --kd-key-spacing --kd-idle-color --kd-press-color --kd-text-color
+// --kd-corner-scale --kd-ripple-strength --kd-key-style
+""");
+
+        addSection(root, "21. 本地存储与手柄兼容状态");
+        addCode(root, """
+// localStorage / sessionStorage 已启用。所有显示窗口使用同一页面来源。
+const key='my-layout-'+KeyDisplay.type;
+localStorage.setItem(key,JSON.stringify({compact:true}));
+const saved=JSON.parse(localStorage.getItem(key)||'null');
+
+KeyDisplay.onState(s=>{
+  const c=s.settings.gamepad.compatibility;
+  console.log(c.mode,c.swapXY,c.swapAB,c.swapSticks,c.swapTriggers);
+});
+// HTML API 只读，不能直接修改应用设置。
+""");
+
+        addSection(root, "22. 高频事件与完整状态");
         addBody(root,
                 "pointer 和 gamepad 属于高频事件。Android 端按显示帧合并，并只修补对应局部状态。"
                 + "KeyDisplay.getState() 在事件回调中仍能读取最新 pointer/gamepad。"
                 + "设置、主题、大小等低频变化才发送完整 keydisplay:update。"
                 + "这样可以降低 JSON 构建、JavaScript 执行和 DOM 更新次数。");
 
-        addSection(root, "20. 性能规则");
+        addSection(root, "23. 性能规则");
         addBody(root,
                 "1. HTML 关闭时不会创建 WebView。\n"
-                + "2. 鼠标与手柄高频数据由 Android 端按显示帧合并。\n"
-                + "3. keydisplay:key / mouse / pointer / gamepad 用于局部更新，避免每次重建全部 DOM。\n"
-                + "4. 动画优先 transform、opacity、Web Animations API。\n"
-                + "5. 静止后停止 requestAnimationFrame，不要保留永久空转循环。\n"
-                + "6. 图片和脚本建议内联；当前 HTML 文件上限 2 MB，网络请求默认禁止。\n"
-                + "7. 同一 HTML 会在每个开启的窗口各运行一份，应根据 KeyDisplay.type 只创建需要的元素。");
+                + "2. 鼠标与手柄高频数据按显示帧合并。\n"
+                + "3. key / mouse / pointer / gamepad 用于局部更新，避免反复重建 DOM。\n"
+                + "4. 动画优先 transform、opacity 和 Web Animations API。\n"
+                + "5. 静止后停止 requestAnimationFrame，不保留空转循环。\n"
+                + "6. 图片、字体和脚本建议内联；HTML 文件上限 4 MB，网络访问关闭。\n"
+                + "7. 根据 KeyDisplay.type 只创建当前窗口需要的元素。\n"
+                + "8. localStorage 适合保存低频视觉设置，不要在高频输入事件中反复写入。");
 
         scroll.addView(root, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));

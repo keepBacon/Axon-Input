@@ -85,6 +85,24 @@ public final class KeyOverlayView extends FrameLayout {
         nativeView.setAnimationMode(OverlayState.clampMotionMode(mode));
     }
 
+    public void setKeyAppearance(int style, int color) {
+        nativeView.setKeyAppearance(style, color);
+    }
+
+    public void setKeyColors(int idleColor, int textColor) {
+        nativeView.setKeyColors(idleColor, textColor);
+    }
+
+    public void setKeyEffects(int cornerScalePercent, int rippleStrengthPercent) {
+        nativeView.setKeyEffects(cornerScalePercent, rippleStrengthPercent);
+    }
+
+    public void setKeySpacing(int spacingDp) {
+        if (displayType == DISPLAY_KEYBOARD || displayType == DISPLAY_CUSTOM) {
+            nativeView.setKeySpacing(spacingDp);
+        }
+    }
+
     public void setGlobalHtmlRenderer(boolean enabled, String html) {
         boolean usable = enabled && html != null && !html.trim().isEmpty();
         if (!usable) {

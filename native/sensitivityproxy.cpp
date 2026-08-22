@@ -1,8 +1,10 @@
-// 灵敏度超频核心。读取 evdev，按倍率处理后通过 UHID 输出。
+// 灵敏度代理。读取 evdev，并通过虚拟输入设备输出处理后的鼠标、手柄和视角输入。
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uhid.h>
+#include <linux/uinput.h>
+#include <math.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -27,9 +29,14 @@
 namespace {
 
 constexpr int kMaxEvents = 256;
+constexpr int kMaxGamepads = 8;
 constexpr int kScanIntervalMs = 900;
 constexpr int kConfigIntervalMs = 50;
 constexpr int kMotionTelemetryIntervalMs = 8; // 输出频率不超过 125 Hz。
+constexpr int kViewTickMs = 10; // 100 Hz 足够平滑，同时减少相对视角事件对按键队列的占用。
+constexpr int kMaxReadBatchesPerWake = 2; // 单节点每轮最多处理 64 个事件，避免高轮询轴节点饿死按键节点。
+constexpr double kViewCountsPerSecond = 420.0;
+constexpr double kViewDeadzone = 0.08;
 constexpr const char* kVirtualPrefix = "Axon Input Virtual";
 
 volatile sig_atomic_t gStop = 0;
@@ -61,8 +68,38 @@ bool getDeviceName(int fd, char* out, size_t size) {
     return ioctl(fd, EVIOCGNAME(static_cast<int>(size - 1)), out) >= 0;
 }
 
+bool getDevicePhys(int fd, char* out, size_t size) {
+    if (!out || size == 0) return false;
+    memset(out, 0, size);
+    return ioctl(fd, EVIOCGPHYS(static_cast<int>(size - 1)), out) >= 0;
+}
+
+bool getDeviceUniq(int fd, char* out, size_t size) {
+    if (!out || size == 0) return false;
+    memset(out, 0, size);
+    return ioctl(fd, EVIOCGUNIQ(static_cast<int>(size - 1)), out) >= 0;
+}
+
+bool getDeviceId(int fd, input_id* out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    return ioctl(fd, EVIOCGID, out) >= 0;
+}
+
 bool nameIsVirtual(const char* name) {
     return name && strstr(name, kVirtualPrefix) != nullptr;
+}
+
+bool deviceIsAxonVirtual(int fd) {
+    char name[128]{};
+    char phys[128]{};
+    char uniq[128]{};
+    getDeviceName(fd, name, sizeof(name));
+    getDevicePhys(fd, phys, sizeof(phys));
+    getDeviceUniq(fd, uniq, sizeof(uniq));
+    return nameIsVirtual(name)
+            || strstr(phys, "axon-input/virtual") != nullptr
+            || strstr(uniq, "axon-input") != nullptr;
 }
 
 bool isMouseDevice(int fd) {
@@ -92,11 +129,16 @@ bool isGamepadDevice(int fd) {
     for (int code : gamepadKeys) if (bitTest(keyBits, code)) ++buttonCount;
 
     int axisCount = 0;
+    bool dualStickAxes = false;
     if (bitTest(evBits, EV_ABS) && getBits(fd, EV_ABS, absBits)) {
         const int axes[] = {ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_BRAKE, ABS_GAS};
         for (int code : axes) if (bitTest(absBits, code)) ++axisCount;
+        bool leftPair = bitTest(absBits, ABS_X) && bitTest(absBits, ABS_Y);
+        bool rightPair = (bitTest(absBits, ABS_RX) && bitTest(absBits, ABS_RY))
+                || (bitTest(absBits, ABS_Z) && bitTest(absBits, ABS_RZ));
+        dualStickAxes = leftPair && rightPair;
     }
-    return buttonCount >= 2 || (buttonCount >= 1 && axisCount >= 2);
+    return buttonCount >= 2 || (buttonCount >= 1 && axisCount >= 2) || dualStickAxes;
 }
 
 bool axisInfo(int fd, int code, input_absinfo* out) {
@@ -143,25 +185,42 @@ bool triggerRestAtMax(const input_absinfo& info) {
     return toMax < toMin;
 }
 
-int16_t mapAxis(const input_absinfo& info, int value, int gainPercent) {
-    const double center = (static_cast<double>(info.minimum) + info.maximum) * 0.5;
+double calibratedCenter(const input_absinfo& info) {
+    const double midpoint = (static_cast<double>(info.minimum) + info.maximum) * 0.5;
+    const double half = (static_cast<double>(info.maximum) - info.minimum) * 0.5;
+    if (half <= 0.0) return midpoint;
+    const double offset = static_cast<double>(info.value) - midpoint;
+    double tolerance = half * 0.08;
+    if (info.flat > 0 && static_cast<double>(info.flat) * 2.0 > tolerance) {
+        tolerance = static_cast<double>(info.flat) * 2.0;
+    }
+    return fabs(offset) <= tolerance ? static_cast<double>(info.value) : midpoint;
+}
+
+int16_t mapAxis(const input_absinfo& info, int value, int gainPercent, double center) {
     const double positiveRange = static_cast<double>(info.maximum) - center;
     const double negativeRange = center - static_cast<double>(info.minimum);
-    double raw = static_cast<double>(value) - center;
-    double denom = raw >= 0.0 ? positiveRange : negativeRange;
+    const double raw = static_cast<double>(value) - center;
+    const double denom = raw >= 0.0 ? positiveRange : negativeRange;
     if (denom <= 0.0) return 0;
     double x = raw / denom;
     if (x > 1.0) x = 1.0;
     if (x < -1.0) x = -1.0;
 
     double dead = 0.0;
-    if (info.flat > 0) {
-        double flatDenom = positiveRange < negativeRange ? positiveRange : negativeRange;
-        if (flatDenom > 0.0) dead = static_cast<double>(info.flat) / flatDenom;
-        if (dead > 0.35) dead = 0.35;
+    const double flatDenom = positiveRange < negativeRange ? positiveRange : negativeRange;
+    if (info.flat > 0 && flatDenom > 0.0) {
+        dead = static_cast<double>(info.flat) / flatDenom;
     }
+    // 超过 100% 后保留最小中心死区，避免硬件零点噪声被倍率放大成漂移。
+    if (gainPercent > 100) {
+        const double progress = static_cast<double>(gainPercent - 100) / 400.0;
+        const double antiDrift = 0.025 + progress * 0.035; // 2.5% -> 6%
+        if (antiDrift > dead) dead = antiDrift;
+    }
+    if (dead > 0.35) dead = 0.35;
 
-    double sign = x < 0.0 ? -1.0 : 1.0;
+    const double sign = x < 0.0 ? -1.0 : 1.0;
     double mag = x < 0.0 ? -x : x;
     if (mag <= dead) return 0;
     mag = (mag - dead) / (1.0 - dead);
@@ -169,11 +228,11 @@ int16_t mapAxis(const input_absinfo& info, int value, int gainPercent) {
     double gain = gainPercent / 100.0;
     if (gain < 0.01) gain = 0.01;
     if (gain > 5.0) gain = 5.0;
-    // 灵敏度曲线保持端点不变，中心斜率等于倍率。
-    // 满摇杆仍保持满量程。
-    double curved = (gain * mag) / (1.0 + (gain - 1.0) * mag);
-    if (curved > 1.0) curved = 1.0;
-    int out = static_cast<int>(sign * curved * 32767.0);
+    // 真正放大摇杆输出幅度。200% 时约半推即可达到满量程。
+    // HID 摇杆本身最大只能输出 100%，因此高倍率通过提前饱和体现。
+    double scaled = mag * gain;
+    if (scaled > 1.0) scaled = 1.0;
+    int out = static_cast<int>(sign * scaled * 32767.0);
     if (out > 32767) out = 32767;
     if (out < -32767) out = -32767;
     return static_cast<int16_t>(out);
@@ -235,8 +294,104 @@ bool readGainsIfChanged(const char* path, Gains* gains, uint64_t* inodeStamp) {
     return changed;
 }
 
+int createUinputClone(int sourceFd, const char* name) {
+    if (sourceFd < 0) return -1;
+    int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
+
+    unsigned long evBits[8]{};
+    unsigned long keyBits[(KEY_MAX / (sizeof(unsigned long) * 8)) + 2]{};
+    unsigned long absBits[(ABS_MAX / (sizeof(unsigned long) * 8)) + 2]{};
+    if (!getBits(sourceFd, 0, evBits)) {
+        close(fd);
+        return -1;
+    }
+
+    const int eventTypes[] = {EV_KEY, EV_ABS, EV_MSC};
+    for (int type : eventTypes) {
+        if (bitTest(evBits, type) && ioctl(fd, UI_SET_EVBIT, type) < 0) {
+            int saved = errno;
+            close(fd);
+            errno = saved;
+            return -1;
+        }
+    }
+
+    if (bitTest(evBits, EV_KEY) && getBits(sourceFd, EV_KEY, keyBits)) {
+        for (int code = 0; code <= KEY_MAX; ++code) {
+            if (bitTest(keyBits, code)) (void)ioctl(fd, UI_SET_KEYBIT, code);
+        }
+    }
+    if (bitTest(evBits, EV_MSC)) {
+        unsigned long mscBits[2]{};
+        if (getBits(sourceFd, EV_MSC, mscBits)) {
+            for (int code = 0; code <= MSC_MAX; ++code) {
+                if (bitTest(mscBits, code)) (void)ioctl(fd, UI_SET_MSCBIT, code);
+            }
+        }
+    }
+    if (bitTest(evBits, EV_ABS) && getBits(sourceFd, EV_ABS, absBits)) {
+        for (int code = 0; code <= ABS_MAX; ++code) {
+            if (!bitTest(absBits, code)) continue;
+            input_absinfo info{};
+            if (!axisInfo(sourceFd, code, &info)) continue;
+            if (ioctl(fd, UI_SET_ABSBIT, code) < 0) continue;
+            uinput_abs_setup absSetup{};
+            absSetup.code = static_cast<__u16>(code);
+            absSetup.absinfo = info;
+            (void)ioctl(fd, UI_ABS_SETUP, &absSetup);
+        }
+    }
+
+    input_id id{};
+    getDeviceId(sourceFd, &id);
+    uinput_setup setup{};
+    setup.id = id;
+    snprintf(setup.name, sizeof(setup.name), "%s", (name && name[0]) ? name : "Axon Input Gamepad");
+    if (ioctl(fd, UI_SET_PHYS, "axon-input/virtual/gamepad") < 0) {
+        // 部分内核不支持设置 phys，不影响输入代理。
+    }
+    if (ioctl(fd, UI_DEV_SETUP, &setup) < 0 || ioctl(fd, UI_DEV_CREATE) < 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+}
+
+void destroyUinput(int* fd) {
+    if (!fd || *fd < 0) return;
+    (void)ioctl(*fd, UI_DEV_DESTROY);
+    close(*fd);
+    *fd = -1;
+}
+
+bool sendUinputEvent(int fd, const input_event& event) {
+    if (fd < 0) return false;
+    return write(fd, &event, sizeof(event)) == static_cast<ssize_t>(sizeof(event));
+}
+
+bool sendUinputEvents(int fd, const input_event* events, size_t count) {
+    if (fd < 0 || !events || count == 0) return false;
+    const size_t bytes = sizeof(input_event) * count;
+    return write(fd, events, bytes) == static_cast<ssize_t>(bytes);
+}
+
+int mapAxisNative(const input_absinfo& info, int value, int gainPercent, double center) {
+    int16_t normalized = mapAxis(info, value, gainPercent, center);
+    double ratio = static_cast<double>(normalized) / 32767.0;
+    double out = center;
+    if (ratio >= 0.0) out += (static_cast<double>(info.maximum) - center) * ratio;
+    else out += (center - static_cast<double>(info.minimum)) * ratio;
+    long long rounded = llround(out);
+    if (rounded < info.minimum) rounded = info.minimum;
+    if (rounded > info.maximum) rounded = info.maximum;
+    return static_cast<int>(rounded);
+}
+
 int createUhid(const char* name, const uint8_t* descriptor, size_t descriptorSize,
-               uint32_t vendor, uint32_t product) {
+               uint16_t bus, uint32_t vendor, uint32_t product, uint32_t version) {
     int fd = open("/dev/uhid", O_RDWR | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) return -1;
     if (descriptorSize > HID_MAX_DESCRIPTOR_SIZE) {
@@ -250,10 +405,10 @@ int createUhid(const char* name, const uint8_t* descriptor, size_t descriptorSiz
     snprintf(reinterpret_cast<char*>(event.u.create2.phys), sizeof(event.u.create2.phys), "axon-input/virtual");
     snprintf(reinterpret_cast<char*>(event.u.create2.uniq), sizeof(event.u.create2.uniq), "axon-input");
     event.u.create2.rd_size = static_cast<uint16_t>(descriptorSize);
-    event.u.create2.bus = BUS_VIRTUAL;
+    event.u.create2.bus = bus;
     event.u.create2.vendor = vendor;
     event.u.create2.product = product;
-    event.u.create2.version = 1;
+    event.u.create2.version = version;
     memcpy(event.u.create2.rd_data, descriptor, descriptorSize);
     ssize_t written = write(fd, &event, sizeof(event));
     if (written != static_cast<ssize_t>(sizeof(event))) {
@@ -324,6 +479,7 @@ constexpr uint8_t kMouseDescriptor[] = {
     0xC0,             // 结束集合
     0xC0              // 结束集合
 };
+
 
 constexpr uint8_t kGamepadDescriptor[] = {
     0x05, 0x01,       // 用途页：通用桌面
@@ -416,6 +572,8 @@ struct MouseProxy {
 struct GamepadProxy {
     int fd = -1;
     int uhid = -1;
+    int uinput = -1;
+    bool useUinput = false;
     char path[64]{};
     char name[128]{};
     GamepadReport report{};
@@ -423,6 +581,10 @@ struct GamepadProxy {
     input_absinfo leftY{};
     input_absinfo rightX{};
     input_absinfo rightY{};
+    double leftCenterX = 0.0;
+    double leftCenterY = 0.0;
+    double rightCenterX = 0.0;
+    double rightCenterY = 0.0;
     input_absinfo triggerR{};
     input_absinfo triggerL{};
     int rightXCode = -1;
@@ -437,14 +599,36 @@ struct GamepadProxy {
     bool digitalLt = false;
     bool hasStandardEast = false;
     bool hasStandardWest = false;
+    bool hasButtonKeys = false; // 主循环优先处理实体按键节点。
     int hatX = 0;
     int hatY = 0;
     bool dpadUp = false;
     bool dpadDown = false;
     bool dpadLeft = false;
     bool dpadRight = false;
+
+    // 常见手柄会把右摇杆放在 RX/RY 或 Z/RZ。
+    // 逐轴判断后再放大，避免倍率打到错误轴或扳机。
+    bool gainAxisEnabled[ABS_MAX + 1]{};
+    input_absinfo gainAxisInfo[ABS_MAX + 1]{};
+    double gainAxisCenter[ABS_MAX + 1]{};
+
+    // 右摇杆原始标准化值。高倍率视角加速使用它持续生成相对视角输入。
+    int16_t viewX = 0;
+    int16_t viewY = 0;
+
     GamepadReport lastTelemetry{};
     bool telemetryInitialized = false;
+    GamepadReport lastOutput{};
+    bool outputInitialized = false;
+};
+
+struct ViewPointer {
+    int uinput = -1;
+    int uhid = -1;
+    long long lastTickMs = 0;
+    double residualX = 0.0;
+    double residualY = 0.0;
 };
 
 void closeMouse(MouseProxy* p) {
@@ -468,6 +652,7 @@ void closeGamepad(GamepadProxy* p) {
         p->fd = -1;
     }
     destroyUhid(&p->uhid);
+    destroyUinput(&p->uinput);
     *p = GamepadProxy{};
 }
 
@@ -493,6 +678,96 @@ int8_t clamp8(int value) {
     if (value > 127) return 127;
     if (value < -127) return -127;
     return static_cast<int8_t>(value);
+}
+
+int createUinputViewPointer() {
+    int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
+    if (ioctl(fd, UI_SET_EVBIT, EV_REL) < 0
+            || ioctl(fd, UI_SET_RELBIT, REL_X) < 0
+            || ioctl(fd, UI_SET_RELBIT, REL_Y) < 0
+            || ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0
+            || ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0
+            || ioctl(fd, UI_SET_KEYBIT, BTN_RIGHT) < 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+
+    uinput_setup setup{};
+    setup.id.bustype = BUS_USB;
+    setup.id.vendor = 0x4B44;
+    setup.id.product = 0x1003;
+    setup.id.version = 1;
+    snprintf(setup.name, sizeof(setup.name), "%s", "Axon Input View Mouse");
+    (void)ioctl(fd, UI_SET_PHYS, "axon-input/virtual/view");
+    if (ioctl(fd, UI_DEV_SETUP, &setup) < 0 || ioctl(fd, UI_DEV_CREATE) < 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+}
+
+bool ensureViewPointer(ViewPointer* view) {
+    if (!view) return false;
+    if (view->uinput >= 0 || view->uhid >= 0) return true;
+
+    view->uinput = createUinputViewPointer();
+    if (view->uinput >= 0) {
+        printf("STATUS view-ready backend=uinput\n");
+        fflush(stdout);
+        return true;
+    }
+
+    view->uhid = createUhid("Axon Input Virtual View Mouse", kMouseDescriptor,
+                            sizeof(kMouseDescriptor), BUS_VIRTUAL, 0x4B44, 0x1003, 1);
+    if (view->uhid >= 0) {
+        printf("STATUS view-ready backend=uhid\n");
+        fflush(stdout);
+        return true;
+    }
+    return false;
+}
+
+void closeViewPointer(ViewPointer* view) {
+    if (!view) return;
+    destroyUinput(&view->uinput);
+    destroyUhid(&view->uhid);
+    *view = ViewPointer{};
+}
+
+bool sendViewDelta(ViewPointer* view, int dx, int dy) {
+    if (!view || (dx == 0 && dy == 0)) return true;
+    if (view->uinput >= 0) {
+        input_event events[3]{};
+        size_t count = 0;
+        if (dx != 0) {
+            events[count].type = EV_REL;
+            events[count].code = REL_X;
+            events[count].value = dx;
+            ++count;
+        }
+        if (dy != 0) {
+            events[count].type = EV_REL;
+            events[count].code = REL_Y;
+            events[count].value = dy;
+            ++count;
+        }
+        events[count].type = EV_SYN;
+        events[count].code = SYN_REPORT;
+        ++count;
+        return sendUinputEvents(view->uinput, events, count);
+    }
+    if (view->uhid >= 0) {
+        MouseReport report{};
+        report.x = clamp16(dx);
+        report.y = clamp16(dy);
+        return sendUhidReport(view->uhid, &report, sizeof(report));
+    }
+    return false;
 }
 
 uint8_t mouseButtonMaskForCode(int code) {
@@ -552,6 +827,26 @@ void setDpadButton(GamepadProxy* p, int code, bool pressed) {
     else if (code == BTN_DPAD_LEFT) p->dpadLeft = pressed;
     else if (code == BTN_DPAD_RIGHT) p->dpadRight = pressed;
     p->report.hat = computeHat(*p);
+}
+
+bool configureGainAxes(int fd, GamepadProxy* p) {
+    if (!p) return false;
+    bool any = false;
+    const int candidates[] = {ABS_RX, ABS_RY, ABS_Z, ABS_RZ};
+    for (int code : candidates) {
+        if (code < 0 || code > ABS_MAX) continue;
+        input_absinfo info{};
+        if (!axisInfo(fd, code, &info)) continue;
+
+        // 扳机一般静止在量程边缘，摇杆一般静止在中点附近。
+        if (!axisLooksCentered(info)) continue;
+
+        p->gainAxisEnabled[code] = true;
+        p->gainAxisInfo[code] = info;
+        p->gainAxisCenter[code] = calibratedCenter(info);
+        any = true;
+    }
+    return any;
 }
 
 bool pickGamepadAxes(int fd, GamepadProxy* p) {
@@ -634,8 +929,13 @@ bool pickGamepadAxes(int fd, GamepadProxy* p) {
         p->triggerRRestAtMax = triggerRestAtMax(p->triggerR);
         p->analogRt = mapTrigger(p->triggerR, p->triggerR.value, p->triggerRRestAtMax);
     }
+    p->leftCenterX = calibratedCenter(p->leftX);
+    p->leftCenterY = calibratedCenter(p->leftY);
+    p->rightCenterX = calibratedCenter(p->rightX);
+    p->rightCenterY = calibratedCenter(p->rightY);
     return true;
 }
+
 
 bool attachMouse(const char* path, MouseProxy* p) {
     if (!path || !p) return false;
@@ -643,12 +943,12 @@ bool attachMouse(const char* path, MouseProxy* p) {
     if (fd < 0) return false;
     char name[128]{};
     getDeviceName(fd, name, sizeof(name));
-    if (nameIsVirtual(name) || !isMouseDevice(fd)) {
+    if (deviceIsAxonVirtual(fd) || !isMouseDevice(fd)) {
         close(fd);
         return false;
     }
     int uhid = createUhid("Axon Input Virtual Mouse", kMouseDescriptor,
-                         sizeof(kMouseDescriptor), 0x4B44, 0x0001);
+                         sizeof(kMouseDescriptor), BUS_VIRTUAL, 0x4B44, 0x0001, 1);
     if (uhid < 0) {
         close(fd);
         return false;
@@ -677,14 +977,16 @@ bool attachGamepad(const char* path, GamepadProxy* p) {
     if (fd < 0) return false;
     char name[128]{};
     getDeviceName(fd, name, sizeof(name));
-    if (nameIsVirtual(name) || !isGamepadDevice(fd)) {
+    if (deviceIsAxonVirtual(fd) || !isGamepadDevice(fd)) {
         close(fd);
         return false;
     }
     GamepadProxy candidate{};
     candidate.fd = fd;
     candidate.uhid = -1;
-    if (!pickGamepadAxes(fd, &candidate)) {
+    bool hasTelemetryAxes = pickGamepadAxes(fd, &candidate);
+    bool hasGainAxes = configureGainAxes(fd, &candidate);
+    if (!hasTelemetryAxes && !hasGainAxes) {
         close(fd);
         return false;
     }
@@ -692,43 +994,119 @@ bool attachGamepad(const char* path, GamepadProxy* p) {
     if (getBits(fd, EV_KEY, keyBits)) {
         candidate.hasStandardEast = bitTest(keyBits, BTN_EAST);
         candidate.hasStandardWest = bitTest(keyBits, BTN_WEST);
+        const int fastKeys[] = {
+            BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_TL, BTN_TR, BTN_TL2, BTN_TR2,
+            BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR,
+            BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT
+        };
+        for (int code : fastKeys) {
+            if (bitTest(keyBits, code)) {
+                candidate.hasButtonKeys = true;
+                break;
+            }
+        }
     }
-    int uhid = createUhid("Axon Input Virtual Gamepad", kGamepadDescriptor,
-                         sizeof(kGamepadDescriptor), 0x4B44, 0x0002);
-    if (uhid < 0) {
-        close(fd);
-        return false;
+    input_id physicalId{};
+    getDeviceId(fd, &physicalId);
+    // uinput 直接克隆物理 evdev 设备，保留原始键码、轴码、VID/PID 和设备名。
+    // 这样游戏看到的是同类型手柄，而不是另一套通用 HID 映射。
+    int uinput = createUinputClone(fd, name);
+    int uhid = -1;
+    if (uinput < 0) {
+        uhid = createUhid("Axon Input Virtual Gamepad", kGamepadDescriptor,
+                          sizeof(kGamepadDescriptor), BUS_VIRTUAL, 0x4B44, 0x0002, 1);
+        if (uhid < 0) {
+            printf("STATUS gamepad-virtual-failed uinput_errno=%d uhid_errno=%d\n", errno, errno);
+            fflush(stdout);
+            close(fd);
+            return false;
+        }
     }
     int one = 1;
     if (ioctl(fd, EVIOCGRAB, one) < 0) {
+        printf("STATUS gamepad-grab-failed errno=%d\n", errno);
+        fflush(stdout);
+        destroyUinput(&uinput);
         destroyUhid(&uhid);
         close(fd);
         return false;
     }
     *p = candidate;
+    p->uinput = uinput;
+    p->useUinput = uinput >= 0;
     p->uhid = uhid;
     snprintf(p->path, sizeof(p->path), "%s", path);
     snprintf(p->name, sizeof(p->name), "%s", name[0] ? name : "gamepad");
     p->report.hat = 8;
     p->report.lx = 0;
     p->report.ly = 0;
-    p->report.rx = 0;
-    p->report.ry = 0;
+    p->report.rx = mapAxis(p->rightX, p->rightX.value, 100, p->rightCenterX);
+    p->report.ry = mapAxis(p->rightY, p->rightY.value, 100, p->rightCenterY);
+    p->viewX = p->report.rx;
+    p->viewY = p->report.ry;
     p->report.rt = p->analogRt;
     p->report.lt = p->analogLt;
-    sendUhidReport(p->uhid, &p->report, sizeof(p->report));
-    printf("STATUS gamepad-ready %s %s\n", p->path, p->name);
+    if (!p->useUinput) sendUhidReport(p->uhid, &p->report, sizeof(p->report));
+    int gainAxes = 0;
+    for (int code = 0; code <= ABS_MAX; ++code) {
+        if (p->gainAxisEnabled[code]) ++gainAxes;
+    }
+    printf("STATUS gamepad-ready %s %s backend=%s vid=%04x pid=%04x bus=%04x gain_axes=%d\n",
+           p->path, p->name, p->useUinput ? "uinput" : "uhid",
+           static_cast<unsigned>(physicalId.vendor),
+           static_cast<unsigned>(physicalId.product),
+           static_cast<unsigned>(physicalId.bustype),
+           gainAxes);
     fflush(stdout);
     return true;
 }
 
-void scanDevices(MouseProxy* mouse, GamepadProxy* gamepad) {
-    for (int i = 0; i < kMaxEvents && (!mouse || mouse->fd < 0 || !gamepad || gamepad->fd < 0); ++i) {
-        char path[64];
-        snprintf(path, sizeof(path), "/dev/input/event%d", i);
-        if (access(path, R_OK) != 0) continue;
-        if (mouse && mouse->fd < 0) (void)attachMouse(path, mouse);
-        if (gamepad && gamepad->fd < 0) (void)attachGamepad(path, gamepad);
+bool gamepadPathActive(const GamepadProxy* gamepads, int count, const char* path) {
+    if (!gamepads || !path) return false;
+    for (int i = 0; i < count; ++i) {
+        if (gamepads[i].fd >= 0 && strcmp(gamepads[i].path, path) == 0) return true;
+    }
+    return false;
+}
+
+int activeGamepadCount(const GamepadProxy* gamepads, int count) {
+    if (!gamepads) return 0;
+    int active = 0;
+    for (int i = 0; i < count; ++i) {
+        if (gamepads[i].fd >= 0) ++active;
+    }
+    return active;
+}
+
+int firstFreeGamepad(GamepadProxy* gamepads, int count) {
+    if (!gamepads) return -1;
+    for (int i = 0; i < count; ++i) {
+        if (gamepads[i].fd < 0) return i;
+    }
+    return -1;
+}
+
+void scanDevices(MouseProxy* mouse, GamepadProxy* gamepads, int gamepadCount) {
+    if (mouse && mouse->fd < 0) {
+        for (int i = 0; i < kMaxEvents && mouse->fd < 0; ++i) {
+            char path[64];
+            snprintf(path, sizeof(path), "/dev/input/event%d", i);
+            if (access(path, R_OK) == 0) (void)attachMouse(path, mouse);
+        }
+    }
+
+    // 一个物理手柄可能暴露多个 evdev 节点。
+    // 只接管一个节点时，未接管节点仍会把原始摇杆直接送进游戏。
+    if (gamepads && gamepadCount > 0) {
+        for (int i = 0; i < kMaxEvents; ++i) {
+            int slot = firstFreeGamepad(gamepads, gamepadCount);
+            if (slot < 0) break;
+
+            char path[64];
+            snprintf(path, sizeof(path), "/dev/input/event%d", i);
+            if (access(path, R_OK) != 0 || gamepadPathActive(gamepads, gamepadCount, path)) continue;
+            (void)attachGamepad(path, &gamepads[slot]);
+        }
     }
 }
 
@@ -789,6 +1167,84 @@ bool processMouseEvent(MouseProxy* p, const input_event& ev, const Gains& gains)
     return true;
 }
 
+
+double viewAxisValue(int16_t value) {
+    double x = static_cast<double>(value) / 32767.0;
+    if (x > 1.0) x = 1.0;
+    if (x < -1.0) x = -1.0;
+    double sign = x < 0.0 ? -1.0 : 1.0;
+    double mag = fabs(x);
+    if (mag <= kViewDeadzone) return 0.0;
+    mag = (mag - kViewDeadzone) / (1.0 - kViewDeadzone);
+    // 轻推区域保留精度，推杆越大加速越明显。
+    mag = pow(mag, 1.12);
+    return sign * mag;
+}
+
+void strongestViewStick(const GamepadProxy* gamepads, int count, double* outX, double* outY) {
+    if (!outX || !outY) return;
+    *outX = 0.0;
+    *outY = 0.0;
+    double best = 0.0;
+    for (int i = 0; gamepads && i < count; ++i) {
+        const GamepadProxy& p = gamepads[i];
+        if (p.fd < 0 || p.rightXCode < 0 || p.rightYCode < 0) continue;
+        double x = viewAxisValue(p.viewX);
+        double y = viewAxisValue(p.viewY);
+        double strength = x * x + y * y;
+        if (strength > best) {
+            best = strength;
+            *outX = x;
+            *outY = y;
+        }
+    }
+}
+
+void emitViewMotion(ViewPointer* view, const GamepadProxy* gamepads, int count,
+                    const Gains& gains, long long now) {
+    if (!view) return;
+    if (gains.gamepad <= 100) {
+        view->lastTickMs = now;
+        view->residualX = 0.0;
+        view->residualY = 0.0;
+        return;
+    }
+
+    double x = 0.0;
+    double y = 0.0;
+    strongestViewStick(gamepads, count, &x, &y);
+    if (x == 0.0 && y == 0.0) {
+        view->lastTickMs = now;
+        view->residualX = 0.0;
+        view->residualY = 0.0;
+        return;
+    }
+    if (!ensureViewPointer(view)) return;
+
+    long long dt = view->lastTickMs > 0 ? now - view->lastTickMs : kViewTickMs;
+    if (dt < 1) return;
+    if (dt > 24) dt = 24;
+    view->lastTickMs = now;
+
+    // 100% 完全使用原生手柄输入。超过 100% 的部分转成相对鼠标移动，
+    // 这样不受标准摇杆 [-1, 1] 上限限制，游戏能得到额外的视角转动量。
+    const double extraGain = static_cast<double>(gains.gamepad - 100) / 100.0;
+    const double scale = kViewCountsPerSecond * extraGain * static_cast<double>(dt) / 1000.0;
+    double sx = x * scale + view->residualX;
+    double sy = y * scale + view->residualY;
+    int dx = static_cast<int>(sx);
+    int dy = static_cast<int>(sy);
+    view->residualX = sx - dx;
+    view->residualY = sy - dy;
+    if (dx == 0 && dy == 0) return;
+
+    if (!sendViewDelta(view, dx, dy)) {
+        printf("STATUS view-disconnected\n");
+        fflush(stdout);
+        closeViewPointer(view);
+    }
+}
+
 void emitGamepadTelemetry(GamepadProxy* p) {
     if (!p) return;
     if (p->telemetryInitialized && memcmp(&p->report, &p->lastTelemetry, sizeof(GamepadReport)) == 0) return;
@@ -809,8 +1265,20 @@ void emitGamepadTelemetry(GamepadProxy* p) {
     p->telemetryInitialized = true;
 }
 
+bool sendGamepadUhidIfChanged(GamepadProxy* p) {
+    if (!p || p->uhid < 0) return false;
+    if (p->outputInitialized
+            && memcmp(&p->report, &p->lastOutput, sizeof(GamepadReport)) == 0) return true;
+    if (!sendUhidReport(p->uhid, &p->report, sizeof(p->report))) return false;
+    p->lastOutput = p->report;
+    p->outputInitialized = true;
+    return true;
+}
+
 bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& gains) {
-    if (!p || p->fd < 0 || p->uhid < 0) return false;
+    if (!p || p->fd < 0 || (p->uinput < 0 && p->uhid < 0)) return false;
+
+    input_event forwarded = ev;
     if (ev.type == EV_KEY) {
         int idx = gamepadButtonIndex(ev.code, p->hasStandardEast, p->hasStandardWest);
         if (idx >= 0 && idx < 16) {
@@ -826,14 +1294,18 @@ bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& ga
                 || ev.code == BTN_DPAD_LEFT || ev.code == BTN_DPAD_RIGHT) {
             setDpadButton(p, ev.code, ev.value != 0);
         }
-        return true;
-    }
-    if (ev.type == EV_ABS) {
-        if (ev.code == ABS_X) p->report.lx = mapAxis(p->leftX, ev.value, 100);
-        else if (ev.code == ABS_Y) p->report.ly = mapAxis(p->leftY, ev.value, 100);
-        else if (ev.code == p->rightXCode) p->report.rx = mapAxis(p->rightX, ev.value, gains.gamepad);
-        else if (ev.code == p->rightYCode) p->report.ry = mapAxis(p->rightY, ev.value, gains.gamepad);
-        else if (ev.code == ABS_HAT0X) {
+    } else if (ev.type == EV_ABS) {
+        if (ev.code == ABS_X) p->report.lx = mapAxis(p->leftX, ev.value, 100, p->leftCenterX);
+        else if (ev.code == ABS_Y) p->report.ly = mapAxis(p->leftY, ev.value, 100, p->leftCenterY);
+        else if (ev.code == p->rightXCode) {
+            p->viewX = mapAxis(p->rightX, ev.value, 100, p->rightCenterX);
+            int axisGain = gains.gamepad > 100 ? 100 : gains.gamepad;
+            p->report.rx = mapAxis(p->rightX, ev.value, axisGain, p->rightCenterX);
+        } else if (ev.code == p->rightYCode) {
+            p->viewY = mapAxis(p->rightY, ev.value, 100, p->rightCenterY);
+            int axisGain = gains.gamepad > 100 ? 100 : gains.gamepad;
+            p->report.ry = mapAxis(p->rightY, ev.value, axisGain, p->rightCenterY);
+        } else if (ev.code == ABS_HAT0X) {
             p->hatX = ev.value < 0 ? -1 : (ev.value > 0 ? 1 : 0);
             p->report.hat = computeHat(*p);
         } else if (ev.code == ABS_HAT0Y) {
@@ -846,10 +1318,31 @@ bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& ga
             p->analogLt = mapTrigger(p->triggerL, ev.value, p->triggerLRestAtMax);
             p->report.lt = p->digitalLt ? 255 : p->analogLt;
         }
+    }
+
+    if (p->useUinput) {
+        if (ev.type == EV_ABS && gains.gamepad <= 100) {
+            if (ev.code == p->rightXCode) {
+                forwarded.value = mapAxisNative(p->rightX, ev.value, gains.gamepad, p->rightCenterX);
+            } else if (ev.code == p->rightYCode) {
+                forwarded.value = mapAxisNative(p->rightY, ev.value, gains.gamepad, p->rightCenterY);
+            }
+        }
+        if (!sendUinputEvent(p->uinput, forwarded)) return false;
+        if (ev.type == EV_KEY) {
+            // 按键立即提交，不等待设备稍后的 SYN_REPORT。
+            input_event sync{};
+            sync.type = EV_SYN;
+            sync.code = SYN_REPORT;
+            if (!sendUinputEvent(p->uinput, sync)) return false;
+        }
+        if (ev.type == EV_SYN && ev.code == SYN_REPORT) emitGamepadTelemetry(p);
         return true;
     }
+
+    if (ev.type == EV_KEY && !sendGamepadUhidIfChanged(p)) return false;
     if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
-        bool ok = sendUhidReport(p->uhid, &p->report, sizeof(p->report));
+        bool ok = sendGamepadUhidIfChanged(p);
         emitGamepadTelemetry(p);
         return ok;
     }
@@ -858,7 +1351,7 @@ bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& ga
 
 bool readAndProcessMouse(MouseProxy* p, const Gains& gains) {
     input_event events[32];
-    for (;;) {
+    for (int batch = 0; batch < kMaxReadBatchesPerWake; ++batch) {
         ssize_t n = read(p->fd, events, sizeof(events));
         if (n > 0) {
             size_t count = static_cast<size_t>(n) / sizeof(input_event);
@@ -870,11 +1363,12 @@ bool readAndProcessMouse(MouseProxy* p, const Gains& gains) {
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) return true;
         return n != 0;
     }
+    return true;
 }
 
 bool readAndProcessGamepad(GamepadProxy* p, const Gains& gains) {
     input_event events[32];
-    for (;;) {
+    for (int batch = 0; batch < kMaxReadBatchesPerWake; ++batch) {
         ssize_t n = read(p->fd, events, sizeof(events));
         if (n > 0) {
             size_t count = static_cast<size_t>(n) / sizeof(input_event);
@@ -886,6 +1380,7 @@ bool readAndProcessGamepad(GamepadProxy* p, const Gains& gains) {
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) return true;
         return n != 0;
     }
+    return true;
 }
 
 void drainUhid(int fd) {
@@ -894,6 +1389,13 @@ void drainUhid(int fd) {
     while (read(fd, &event, sizeof(event)) > 0) {
         // 忽略输出和功能报告，只处理输入。
     }
+}
+
+bool probeUinput() {
+    int fd = open("/dev/uinput", O_WRONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) return false;
+    close(fd);
+    return true;
 }
 
 bool probeUhid() {
@@ -918,12 +1420,16 @@ int main(int argc, char** argv) {
     signal(SIGHUP, onSignal);
     setvbuf(stdout, nullptr, _IOLBF, 0);
 
-    if (!probeUhid()) {
-        printf("ERROR uhid-open errno=%d\n", errno);
+    bool canUinput = probeUinput();
+    int uinputError = canUinput ? 0 : errno;
+    bool canUhid = probeUhid();
+    int uhidError = canUhid ? 0 : errno;
+    if (!canUinput && !canUhid) {
+        printf("ERROR input-backend-open uinput_errno=%d uhid_errno=%d\n", uinputError, uhidError);
         return 12;
     }
     if (probeOnly) {
-        printf("OK uhid\n");
+        printf("OK input-backend uinput=%d uhid=%d\n", canUinput ? 1 : 0, canUhid ? 1 : 0);
         return 0;
     }
     if (!gainFile) {
@@ -939,9 +1445,15 @@ int main(int argc, char** argv) {
     MouseProxy mouse{};
     mouse.fd = -1;
     mouse.uhid = -1;
-    GamepadProxy gamepad{};
-    gamepad.fd = -1;
-    gamepad.uhid = -1;
+    ViewPointer view{};
+    view.uinput = -1;
+    view.uhid = -1;
+    GamepadProxy gamepads[kMaxGamepads]{};
+    for (int i = 0; i < kMaxGamepads; ++i) {
+        gamepads[i].fd = -1;
+        gamepads[i].uhid = -1;
+        gamepads[i].uinput = -1;
+    }
 
     long long lastScan = 0;
     long long lastConfig = 0;
@@ -959,38 +1471,50 @@ int main(int argc, char** argv) {
             }
             lastConfig = now;
         }
-        if ((mouse.fd < 0 || gamepad.fd < 0) && now - lastScan >= kScanIntervalMs) {
-            scanDevices(&mouse, &gamepad);
-            if (mouse.fd < 0 && gamepad.fd < 0) {
+        if (now - lastScan >= kScanIntervalMs) {
+            scanDevices(&mouse, gamepads, kMaxGamepads);
+            if (mouse.fd < 0 && activeGamepadCount(gamepads, kMaxGamepads) == 0) {
                 printf("STATUS waiting-device\n");
             }
             lastScan = now;
         }
 
-        pollfd fds[4]{};
+        pollfd fds[3 + kMaxGamepads * 2]{};
         int count = 0;
         int mouseIndex = -1;
-        int gamepadIndex = -1;
         int mouseUhidIndex = -1;
-        int gamepadUhidIndex = -1;
+        int viewUhidIndex = -1;
+        int gamepadIndex[kMaxGamepads];
+        int gamepadUhidIndex[kMaxGamepads];
+        for (int i = 0; i < kMaxGamepads; ++i) {
+            gamepadIndex[i] = -1;
+            gamepadUhidIndex[i] = -1;
+        }
         if (mouse.fd >= 0) {
             mouseIndex = count;
             fds[count++] = {mouse.fd, POLLIN | POLLERR | POLLHUP, 0};
         }
-        if (gamepad.fd >= 0) {
-            gamepadIndex = count;
-            fds[count++] = {gamepad.fd, POLLIN | POLLERR | POLLHUP, 0};
+        for (int i = 0; i < kMaxGamepads; ++i) {
+            if (gamepads[i].fd < 0) continue;
+            gamepadIndex[i] = count;
+            fds[count++] = {gamepads[i].fd, POLLIN | POLLERR | POLLHUP, 0};
         }
         if (mouse.uhid >= 0) {
             mouseUhidIndex = count;
             fds[count++] = {mouse.uhid, POLLIN | POLLERR | POLLHUP, 0};
         }
-        if (gamepad.uhid >= 0) {
-            gamepadUhidIndex = count;
-            fds[count++] = {gamepad.uhid, POLLIN | POLLERR | POLLHUP, 0};
+        if (view.uhid >= 0) {
+            viewUhidIndex = count;
+            fds[count++] = {view.uhid, POLLIN | POLLERR | POLLHUP, 0};
+        }
+        for (int i = 0; i < kMaxGamepads; ++i) {
+            if (gamepads[i].uhid < 0) continue;
+            gamepadUhidIndex[i] = count;
+            fds[count++] = {gamepads[i].uhid, POLLIN | POLLERR | POLLHUP, 0};
         }
 
-        int result = poll(fds, count, 50);
+        int pollTimeout = gains.gamepad > 100 ? kViewTickMs : 50;
+        int result = poll(fds, count, pollTimeout);
         if (result < 0) {
             if (errno == EINTR) continue;
             printf("ERROR poll errno=%d\n", errno);
@@ -1002,19 +1526,33 @@ int main(int argc, char** argv) {
                 closeMouse(&mouse);
             }
         }
-        if (gamepadIndex >= 0 && fds[gamepadIndex].revents) {
-            if ((fds[gamepadIndex].revents & (POLLERR | POLLHUP)) || !readAndProcessGamepad(&gamepad, gains)) {
-                printf("STATUS gamepad-disconnected\n");
-                closeGamepad(&gamepad);
+        // 先处理带实体按键的节点，再处理纯摇杆/轴节点。
+        for (int priority = 0; priority < 2; ++priority) {
+            for (int i = 0; i < kMaxGamepads; ++i) {
+                int index = gamepadIndex[i];
+                if (index < 0 || !fds[index].revents) continue;
+                bool buttonNode = gamepads[i].hasButtonKeys;
+                if ((priority == 0) != buttonNode) continue;
+                if ((fds[index].revents & (POLLERR | POLLHUP))
+                        || !readAndProcessGamepad(&gamepads[i], gains)) {
+                    printf("STATUS gamepad-disconnected %s\n", gamepads[i].path);
+                    closeGamepad(&gamepads[i]);
+                }
             }
         }
         if (mouseUhidIndex >= 0 && (fds[mouseUhidIndex].revents & POLLIN)) drainUhid(mouse.uhid);
-        if (gamepadUhidIndex >= 0 && (fds[gamepadUhidIndex].revents & POLLIN)) drainUhid(gamepad.uhid);
+        if (viewUhidIndex >= 0 && (fds[viewUhidIndex].revents & POLLIN)) drainUhid(view.uhid);
+        for (int i = 0; i < kMaxGamepads; ++i) {
+            int index = gamepadUhidIndex[i];
+            if (index >= 0 && (fds[index].revents & POLLIN)) drainUhid(gamepads[i].uhid);
+        }
         emitMouseTelemetry(&mouse);
+        emitViewMotion(&view, gamepads, kMaxGamepads, gains, nowMs());
     }
 
+    closeViewPointer(&view);
     closeMouse(&mouse);
-    closeGamepad(&gamepad);
+    for (int i = 0; i < kMaxGamepads; ++i) closeGamepad(&gamepads[i]);
     printf("STATUS stopped\n");
     return 0;
 }

@@ -2,6 +2,7 @@ package com.axon.input;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.AtomicFile;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -20,7 +21,7 @@ import java.util.Set;
 public final class ConfigManager {
     private static final String FORMAT = "KeyDisplayConfig";
     private static final int VERSION = 1;
-    private static final int MAX_CONFIG_BYTES = 4 * 1024 * 1024;
+    static final int MAX_CONFIG_BYTES = 12 * 1024 * 1024;
     private static final String SLOT1_FILE = "config_slot_1.json";
 
     // 导出时跳过密码授权和临时录入状态。
@@ -84,7 +85,18 @@ public final class ConfigManager {
         int version = root.optInt("version", -1);
         if (version != VERSION) throw new IOException("Unsupported config version");
 
+        JSONObject html = root.optJSONObject("globalHtml");
+        String htmlContent = null;
+        if (html != null) {
+            htmlContent = html.optString("content", "");
+            int htmlBytes = htmlContent.getBytes(StandardCharsets.UTF_8).length;
+            if (htmlBytes == 0 || htmlBytes > OverlayState.MAX_GLOBAL_HTML_BYTES) {
+                throw new IOException("HTML payload out of range");
+            }
+        }
+
         SharedPreferences prefs = OverlayState.preferencesForConfig(context);
+        boolean entryAuthorized = prefs.getBoolean(KEY_ENTRY_AUTHORIZED, false);
         SharedPreferences.Editor editor = prefs.edit().clear();
 
         JSONArray entries = root.optJSONArray("preferences");
@@ -98,21 +110,16 @@ public final class ConfigManager {
             }
         }
 
-        // 密码授权单独保存，临时录入状态不恢复。
+        // 保留访问验证；临时录入状态不恢复。
+        editor.putBoolean(KEY_ENTRY_AUTHORIZED, entryAuthorized);
         editor.putBoolean(KEY_CUSTOM_CAPTURE, false);
         editor.putString(KEY_CUSTOM_DRAFT, "");
-        editor.putString(KEY_SENSITIVITY_STATUS, "未启用");
-        editor.commit();
+        editor.putString(KEY_SENSITIVITY_STATUS, context.getString(R.string.status_disabled));
+        if (!editor.commit()) throw new IOException("Cannot save imported config");
 
         File htmlFile = OverlayState.globalHtmlFileForConfig(context);
-        JSONObject html = root.optJSONObject("globalHtml");
         if (html != null) {
-            String content = html.optString("content", "");
-            byte[] htmlBytes = content.getBytes(StandardCharsets.UTF_8);
-            if (htmlBytes.length == 0 || htmlBytes.length > 2 * 1024 * 1024) {
-                throw new IOException("HTML payload out of range");
-            }
-            writeUtf8(htmlFile, content);
+            writeUtf8(htmlFile, htmlContent);
             prefs.edit().putString(KEY_GLOBAL_HTML_NAME, html.optString("name", "display.html")).apply();
         } else {
             if (htmlFile.exists() && !htmlFile.delete()) throw new IOException("Cannot remove old HTML");
@@ -174,10 +181,18 @@ public final class ConfigManager {
                 || KEY_SENSITIVITY_STATUS.equals(key);
     }
 
-    private static void writeUtf8(File file, String text) throws IOException {
-        try (FileOutputStream out = new FileOutputStream(file, false)) {
+    private static void writeUtf8(File target, String text) throws IOException {
+        AtomicFile file = new AtomicFile(target);
+        FileOutputStream out = null;
+        try {
+            out = file.startWrite();
             out.write(text.getBytes(StandardCharsets.UTF_8));
             out.flush();
+            out.getFD().sync();
+            file.finishWrite(out);
+        } catch (IOException error) {
+            if (out != null) file.failWrite(out);
+            throw error;
         }
     }
 
