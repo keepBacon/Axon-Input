@@ -32,28 +32,18 @@ final class KeyAppearance {
 
     static void drawRipple(Canvas canvas, RectF area, int pressColor,
                            long startMs, long nowMs, Paint paint) {
-        drawRipple(canvas, area, pressColor, startMs, nowMs, 100, paint);
-    }
-
-    static void drawRipple(Canvas canvas, RectF area, int pressColor,
-                           long startMs, long nowMs, int strengthPercent, Paint paint) {
-        if (startMs <= 0L || strengthPercent <= 0) return;
+        if (startMs <= 0L) return;
         float t = (nowMs - startMs) / (float) RIPPLE_MS;
         if (t < 0f || t >= 1f) return;
         float eased = 1f - (float) Math.pow(1f - t, 3f);
         float maxRadius = (float) Math.hypot(area.width() * 0.5f, area.height() * 0.5f);
         float rippleRadius = maxRadius * eased;
         int base = isLight(pressColor) ? Color.BLACK : Color.WHITE;
-        float strength = Math.max(0f, Math.min(2f, strengthPercent / 100f));
-        int alpha = Math.min(255, Math.round(72f * strength * (1f - t)));
+        int alpha = Math.round(72f * (1f - t));
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(Color.argb(alpha, Color.red(base), Color.green(base), Color.blue(base)));
 
         canvas.drawCircle(area.centerX(), area.centerY(), rippleRadius, paint);
-    }
-
-    static float scaleRadius(float radius, int scalePercent) {
-        return radius * Math.max(0, Math.min(200, scalePercent)) / 100f;
     }
 
     static int pressedTextColor(int pressColor) {

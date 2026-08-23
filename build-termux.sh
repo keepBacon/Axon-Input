@@ -113,6 +113,7 @@ aapt2 link \
     --min-sdk-version 26 \
     --target-sdk-version 36 \
     -I "$ANDROID_JAR" \
+    -A "$ROOT/app/src/main/assets" \
     "${FLATS[@]}"
 
 # 3）生成构建签名摘要。使用同一签名密钥。

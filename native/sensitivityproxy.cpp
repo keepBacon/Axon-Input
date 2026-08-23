@@ -33,8 +33,7 @@ constexpr int kMaxGamepads = 8;
 constexpr int kScanIntervalMs = 900;
 constexpr int kConfigIntervalMs = 50;
 constexpr int kMotionTelemetryIntervalMs = 8; // 输出频率不超过 125 Hz。
-constexpr int kViewTickMs = 10; // 100 Hz 足够平滑，同时减少相对视角事件对按键队列的占用。
-constexpr int kMaxReadBatchesPerWake = 2; // 单节点每轮最多处理 64 个事件，避免高轮询轴节点饿死按键节点。
+constexpr int kViewTickMs = 8;
 constexpr double kViewCountsPerSecond = 420.0;
 constexpr double kViewDeadzone = 0.08;
 constexpr const char* kVirtualPrefix = "Axon Input Virtual";
@@ -372,12 +371,6 @@ bool sendUinputEvent(int fd, const input_event& event) {
     return write(fd, &event, sizeof(event)) == static_cast<ssize_t>(sizeof(event));
 }
 
-bool sendUinputEvents(int fd, const input_event* events, size_t count) {
-    if (fd < 0 || !events || count == 0) return false;
-    const size_t bytes = sizeof(input_event) * count;
-    return write(fd, events, bytes) == static_cast<ssize_t>(bytes);
-}
-
 int mapAxisNative(const input_absinfo& info, int value, int gainPercent, double center) {
     int16_t normalized = mapAxis(info, value, gainPercent, center);
     double ratio = static_cast<double>(normalized) / 32767.0;
@@ -599,7 +592,6 @@ struct GamepadProxy {
     bool digitalLt = false;
     bool hasStandardEast = false;
     bool hasStandardWest = false;
-    bool hasButtonKeys = false; // 主循环优先处理实体按键节点。
     int hatX = 0;
     int hatY = 0;
     bool dpadUp = false;
@@ -619,8 +611,6 @@ struct GamepadProxy {
 
     GamepadReport lastTelemetry{};
     bool telemetryInitialized = false;
-    GamepadReport lastOutput{};
-    bool outputInitialized = false;
 };
 
 struct ViewPointer {
@@ -742,24 +732,22 @@ void closeViewPointer(ViewPointer* view) {
 bool sendViewDelta(ViewPointer* view, int dx, int dy) {
     if (!view || (dx == 0 && dy == 0)) return true;
     if (view->uinput >= 0) {
-        input_event events[3]{};
-        size_t count = 0;
+        input_event event{};
+        event.type = EV_REL;
         if (dx != 0) {
-            events[count].type = EV_REL;
-            events[count].code = REL_X;
-            events[count].value = dx;
-            ++count;
+            event.code = REL_X;
+            event.value = dx;
+            if (!sendUinputEvent(view->uinput, event)) return false;
         }
         if (dy != 0) {
-            events[count].type = EV_REL;
-            events[count].code = REL_Y;
-            events[count].value = dy;
-            ++count;
+            event.code = REL_Y;
+            event.value = dy;
+            if (!sendUinputEvent(view->uinput, event)) return false;
         }
-        events[count].type = EV_SYN;
-        events[count].code = SYN_REPORT;
-        ++count;
-        return sendUinputEvents(view->uinput, events, count);
+        event = input_event{};
+        event.type = EV_SYN;
+        event.code = SYN_REPORT;
+        return sendUinputEvent(view->uinput, event);
     }
     if (view->uhid >= 0) {
         MouseReport report{};
@@ -994,17 +982,6 @@ bool attachGamepad(const char* path, GamepadProxy* p) {
     if (getBits(fd, EV_KEY, keyBits)) {
         candidate.hasStandardEast = bitTest(keyBits, BTN_EAST);
         candidate.hasStandardWest = bitTest(keyBits, BTN_WEST);
-        const int fastKeys[] = {
-            BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_TL, BTN_TR, BTN_TL2, BTN_TR2,
-            BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR,
-            BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT
-        };
-        for (int code : fastKeys) {
-            if (bitTest(keyBits, code)) {
-                candidate.hasButtonKeys = true;
-                break;
-            }
-        }
     }
     input_id physicalId{};
     getDeviceId(fd, &physicalId);
@@ -1265,16 +1242,6 @@ void emitGamepadTelemetry(GamepadProxy* p) {
     p->telemetryInitialized = true;
 }
 
-bool sendGamepadUhidIfChanged(GamepadProxy* p) {
-    if (!p || p->uhid < 0) return false;
-    if (p->outputInitialized
-            && memcmp(&p->report, &p->lastOutput, sizeof(GamepadReport)) == 0) return true;
-    if (!sendUhidReport(p->uhid, &p->report, sizeof(p->report))) return false;
-    p->lastOutput = p->report;
-    p->outputInitialized = true;
-    return true;
-}
-
 bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& gains) {
     if (!p || p->fd < 0 || (p->uinput < 0 && p->uhid < 0)) return false;
 
@@ -1329,20 +1296,12 @@ bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& ga
             }
         }
         if (!sendUinputEvent(p->uinput, forwarded)) return false;
-        if (ev.type == EV_KEY) {
-            // 按键立即提交，不等待设备稍后的 SYN_REPORT。
-            input_event sync{};
-            sync.type = EV_SYN;
-            sync.code = SYN_REPORT;
-            if (!sendUinputEvent(p->uinput, sync)) return false;
-        }
         if (ev.type == EV_SYN && ev.code == SYN_REPORT) emitGamepadTelemetry(p);
         return true;
     }
 
-    if (ev.type == EV_KEY && !sendGamepadUhidIfChanged(p)) return false;
     if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
-        bool ok = sendGamepadUhidIfChanged(p);
+        bool ok = sendUhidReport(p->uhid, &p->report, sizeof(p->report));
         emitGamepadTelemetry(p);
         return ok;
     }
@@ -1351,7 +1310,7 @@ bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& ga
 
 bool readAndProcessMouse(MouseProxy* p, const Gains& gains) {
     input_event events[32];
-    for (int batch = 0; batch < kMaxReadBatchesPerWake; ++batch) {
+    for (;;) {
         ssize_t n = read(p->fd, events, sizeof(events));
         if (n > 0) {
             size_t count = static_cast<size_t>(n) / sizeof(input_event);
@@ -1363,12 +1322,11 @@ bool readAndProcessMouse(MouseProxy* p, const Gains& gains) {
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) return true;
         return n != 0;
     }
-    return true;
 }
 
 bool readAndProcessGamepad(GamepadProxy* p, const Gains& gains) {
     input_event events[32];
-    for (int batch = 0; batch < kMaxReadBatchesPerWake; ++batch) {
+    for (;;) {
         ssize_t n = read(p->fd, events, sizeof(events));
         if (n > 0) {
             size_t count = static_cast<size_t>(n) / sizeof(input_event);
@@ -1380,7 +1338,6 @@ bool readAndProcessGamepad(GamepadProxy* p, const Gains& gains) {
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) return true;
         return n != 0;
     }
-    return true;
 }
 
 void drainUhid(int fd) {
@@ -1526,18 +1483,13 @@ int main(int argc, char** argv) {
                 closeMouse(&mouse);
             }
         }
-        // 先处理带实体按键的节点，再处理纯摇杆/轴节点。
-        for (int priority = 0; priority < 2; ++priority) {
-            for (int i = 0; i < kMaxGamepads; ++i) {
-                int index = gamepadIndex[i];
-                if (index < 0 || !fds[index].revents) continue;
-                bool buttonNode = gamepads[i].hasButtonKeys;
-                if ((priority == 0) != buttonNode) continue;
-                if ((fds[index].revents & (POLLERR | POLLHUP))
-                        || !readAndProcessGamepad(&gamepads[i], gains)) {
-                    printf("STATUS gamepad-disconnected %s\n", gamepads[i].path);
-                    closeGamepad(&gamepads[i]);
-                }
+        for (int i = 0; i < kMaxGamepads; ++i) {
+            int index = gamepadIndex[i];
+            if (index < 0 || !fds[index].revents) continue;
+            if ((fds[index].revents & (POLLERR | POLLHUP))
+                    || !readAndProcessGamepad(&gamepads[i], gains)) {
+                printf("STATUS gamepad-disconnected %s\n", gamepads[i].path);
+                closeGamepad(&gamepads[i]);
             }
         }
         if (mouseUhidIndex >= 0 && (fds[mouseUhidIndex].revents & POLLIN)) drainUhid(mouse.uhid);

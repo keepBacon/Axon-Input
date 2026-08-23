@@ -10,7 +10,9 @@
     <string name="section_gamepad">游戏手柄</string>
     <string name="section_behavior">显示行为</string>
     <string name="section_sensitivity">输入增强</string>
-    <string name="debug_label">高级设置</string>
+    <string name="details_action">设置</string>
+    <string name="details_expand">展开设置</string>
+    <string name="details_collapse">收起设置</string>
     <string name="sensitivity_switch_label">灵敏度倍率</string>
     <string name="sensitivity_mode_label">接管方式</string>
     <string name="sensitivity_mode_shizuku">Shizuku（免 Root）</string>
@@ -22,6 +24,10 @@
     <string name="sensitivity_requires_shizuku">Shizuku 未连接，免 Root 模式不可用</string>
     <string name="switch_label">键盘按显</string>
     <string name="mouse_switch_label">鼠标按显</string>
+    <string name="keyboard_cat_switch_label">键盘猫显示</string>
+    <string name="keyboard_cat_size_format">键盘猫缩放 %1$d%%</string>
+    <string name="keyboard_cat_mouse_mode_switch_label">方向键变为鼠标</string>
+    <string name="keyboard_cat_global_reverse_switch_label">全局反转</string>
     <string name="input_full_keyboard_switch_label">输入时显示全键盘</string>
     <string name="input_full_keyboard_hint">输入法打开时自动显示，关闭输入法后隐藏。仅显示输入状态，不接收触摸。</string>
     <string name="key_prompt_switch_label">最近按键</string>
@@ -55,16 +61,10 @@
     <string name="key_style_rounded">圆角</string>
     <string name="key_style_square">方形</string>
     <string name="key_style_circle">圆形</string>
-    <string name="key_idle_color">按键底色</string>
-    <string name="key_idle_color_title">选择按键底色</string>
     <string name="key_press_color">按下颜色</string>
     <string name="key_press_color_title">选择按下颜色</string>
     <string name="key_text_color">文字颜色</string>
     <string name="key_text_color_title">选择文字颜色</string>
-    <string name="key_corner_scale_format">圆角强度 %1$d%%</string>
-    <string name="key_ripple_strength_format">扩散强度 %1$d%%</string>
-    <string name="key_appearance_hint" formatted="false">圆角强度仅作用于圆角形状；100% 为原效果。扩散强度 0% 可关闭扩散。</string>
-    <string name="key_appearance_reset">恢复默认外观</string>
     <string name="global_html_switch_label">自定义 HTML 显示</string>
     <string name="global_html_hint">导入 HTML 后，可完全自定义支持组件的结构、文字、颜色和动画。支持 CSS、JavaScript、SVG、Canvas、Web Animations 和本地存储；网络访问保持关闭。</string>
     <string name="global_html_import">导入 HTML</string>
@@ -100,7 +100,7 @@
     <string name="font_import_success">字体已导入</string>
     <string name="font_import_failed">字体导入失败，请选择有效的 TTF 或 OTF 文件</string>
     <string name="font_import_hint">应用于原生按显、CPS 和手柄文字。自定义 HTML 由页面自行设置字体。</string>
-    <string name="sensitivity_reset" formatted="false">恢复 100%</string>
+    <string name="sensitivity_reset">恢复 100%</string>
     <string name="auto_hide_label">隐藏后台</string>
     <string name="section_configuration">配置</string>
     <string name="config1_title">配置 1</string>
@@ -167,7 +167,7 @@
     <string name="gamepad_left_shoulder_size_format">左肩键缩放 %1$d%%</string>
     <string name="gamepad_right_shoulder_size_format">右肩键缩放 %1$d%%</string>
     <string name="accessibility_hint">需要开启 Axon Input 无障碍服务</string>
-    <string name="accessibility_description">读取外接键盘、鼠标和手柄输入，用于显示按键、CPS、鼠标轨迹、摇杆和扳机状态，并为灵敏度倍率提供输入接管。</string>
+    <string name="accessibility_description">读取外接键盘、鼠标和手柄输入，用于显示按键、键盘猫、CPS、鼠标轨迹、摇杆和扳机状态，并为灵敏度倍率提供输入接管。</string>
     <string name="shizuku_connecting">正在连接 Shizuku</string>
     <string name="shizuku_unavailable">Shizuku 未运行，将转到无障碍设置</string>
     <string name="shizuku_denied">Shizuku 授权被拒绝</string>

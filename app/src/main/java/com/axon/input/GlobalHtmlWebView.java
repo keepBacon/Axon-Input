@@ -611,11 +611,7 @@ public final class GlobalHtmlWebView extends WebView {
         out.put("opacityPercent", OverlayState.getDisplayOpacity(c, display));
         if (supportsKeyAppearance()) {
             out.put("keyStyle", keyStyleName(OverlayState.getKeyStyle(c, display)));
-            out.put("idleColor", colorHex(OverlayState.getKeyIdleColor(c, display)));
             out.put("pressColor", colorHex(OverlayState.getKeyPressColor(c, display)));
-            out.put("textColor", colorHex(OverlayState.getKeyTextColor(c, display)));
-            out.put("cornerScalePercent", OverlayState.getKeyCornerScale(c, display));
-            out.put("rippleStrengthPercent", OverlayState.getKeyRippleStrength(c, display));
         }
         int spacing = currentSpacingDp(c);
         if (spacing >= 0) out.put("spacingDp", spacing);
@@ -625,11 +621,7 @@ public final class GlobalHtmlWebView extends WebView {
         out.put("opacityPercent", OverlayState.getDisplayOpacity(c, display));
         if (supportsKeyAppearance(display)) {
             out.put("keyStyle", keyStyleName(OverlayState.getKeyStyle(c, display)));
-            out.put("idleColor", colorHex(OverlayState.getKeyIdleColor(c, display)));
             out.put("pressColor", colorHex(OverlayState.getKeyPressColor(c, display)));
-            out.put("textColor", colorHex(OverlayState.getKeyTextColor(c, display)));
-            out.put("cornerScalePercent", OverlayState.getKeyCornerScale(c, display));
-            out.put("rippleStrengthPercent", OverlayState.getKeyRippleStrength(c, display));
         }
     }
 
@@ -938,7 +930,7 @@ public final class GlobalHtmlWebView extends WebView {
                 + "const set=(k,v)=>{if(v!==undefined&&v!==null)d.setProperty(k,String(v))};"
                 + "set('--kd-size',s.sizePercent/100);set('--kd-width',s.viewport.width+'px');set('--kd-height',s.viewport.height+'px');set('--kd-density',s.viewport.density);"
                 + "set('--kd-dot-size',(c.dotSizePercent||100)/100);const op=c.opacityPercent==null?100:c.opacityPercent;set('--kd-opacity',op/100);set('--kd-opacity-percent',op);"
-                + "set('--kd-key-spacing',(c.spacingDp==null?0:c.spacingDp)+'px');set('--kd-idle-color',c.idleColor||p.keyIdle);set('--kd-press-color',c.pressColor||p.keyPressed);set('--kd-text-color',c.textColor||p.keyTextIdle);set('--kd-corner-scale',(c.cornerScalePercent==null?100:c.cornerScalePercent)/100);set('--kd-ripple-strength',(c.rippleStrengthPercent==null?100:c.rippleStrengthPercent)/100);set('--kd-key-style',c.keyStyle||'rounded');"
+                + "set('--kd-key-spacing',(c.spacingDp==null?0:c.spacingDp)+'px');set('--kd-press-color',c.pressColor||p.keyPressed);set('--kd-key-style',c.keyStyle||'rounded');"
                 + "set('--kd-mouse-sensitivity',r.mouseSensitivity||100);set('--kd-gamepad-sensitivity',r.gamepadSensitivity||100);"
                 + "set('--kd-position-x',(r.positionXPercent||0)+'%');set('--kd-position-y',(r.positionYPercent||0)+'%');"
                 + "for(const k in p)set('--kd-'+k.replace(/[A-Z]/g,m=>'-'+m.toLowerCase()),p[k]);"

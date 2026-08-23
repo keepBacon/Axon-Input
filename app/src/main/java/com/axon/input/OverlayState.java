@@ -36,6 +36,9 @@ public final class OverlayState {
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_MOUSE_ENABLED = "mouse_enabled";
+    private static final String KEY_KEYBOARD_CAT_ENABLED = "keyboard_cat_enabled";
+    private static final String KEY_KEYBOARD_CAT_MOUSE_MODE = "keyboard_cat_mouse_mode";
+    private static final String KEY_KEYBOARD_CAT_GLOBAL_REVERSE = "keyboard_cat_global_reverse";
     private static final String KEY_INPUT_FULL_KEYBOARD_ENABLED = "input_full_keyboard_enabled";
     private static final String KEY_KEY_PROMPT_ENABLED = "key_prompt_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_ENABLED = "mouse_trajectory_enabled";
@@ -57,11 +60,13 @@ public final class OverlayState {
     private static final String KEY_CUSTOM_SIZE = "custom_size";
     private static final String KEY_CUSTOM_SPACING = "custom_spacing";
     private static final String KEY_MOUSE_SIZE = "mouse_size";
+    private static final String KEY_KEYBOARD_CAT_SIZE = "keyboard_cat_size";
     private static final String KEY_KEY_PROMPT_SIZE = "key_prompt_size";
     private static final String KEY_MOUSE_TRAJECTORY_SIZE = "mouse_trajectory_size";
     private static final String KEY_MOUSE_TRAJECTORY_DOT_SIZE = "mouse_trajectory_dot_size";
     private static final String KEY_KEYBOARD_OPACITY = "keyboard_opacity";
     private static final String KEY_MOUSE_OPACITY = "mouse_opacity";
+    private static final String KEY_KEYBOARD_CAT_OPACITY = "keyboard_cat_opacity";
     private static final String KEY_KEY_PROMPT_OPACITY = "key_prompt_opacity";
     private static final String KEY_MOUSE_TRAJECTORY_OPACITY = "mouse_trajectory_opacity";
     private static final String KEY_CUSTOM_OPACITY = "custom_opacity";
@@ -74,6 +79,7 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_KEY_STYLE = "gamepad_left_shoulder_key_style";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_KEY_STYLE = "gamepad_right_shoulder_key_style";
     private static final String KEY_KEYBOARD_PRESS_COLOR = "keyboard_press_color";
+    private static final String KEY_KEYBOARD_TEXT_COLOR = "keyboard_text_color";
     private static final String KEY_MOUSE_PRESS_COLOR = "mouse_press_color";
     private static final String KEY_KEY_PROMPT_PRESS_COLOR = "key_prompt_press_color";
     private static final String KEY_FULL_KEYBOARD_PRESS_COLOR = "full_keyboard_press_color";
@@ -91,6 +97,8 @@ public final class OverlayState {
     private static final String KEY_CUSTOM_POSITION_Y = "custom_position_y";
     private static final String KEY_MOUSE_POSITION_X = "mouse_position_x";
     private static final String KEY_MOUSE_POSITION_Y = "mouse_position_y";
+    private static final String KEY_KEYBOARD_CAT_POSITION_X = "keyboard_cat_position_x";
+    private static final String KEY_KEYBOARD_CAT_POSITION_Y = "keyboard_cat_position_y";
     private static final String KEY_KEY_PROMPT_POSITION_X = "key_prompt_position_x";
     private static final String KEY_KEY_PROMPT_POSITION_Y = "key_prompt_position_y";
     private static final String KEY_MOUSE_TRAJECTORY_POSITION_X = "mouse_trajectory_position_x";
@@ -160,6 +168,8 @@ public final class OverlayState {
     private static final int DEFAULT_CUSTOM_Y = 62;
     private static final int DEFAULT_MOUSE_X = 50;
     private static final int DEFAULT_MOUSE_Y = 82;
+    private static final int DEFAULT_KEYBOARD_CAT_X = 50;
+    private static final int DEFAULT_KEYBOARD_CAT_Y = 58;
     private static final int DEFAULT_KEY_PROMPT_X = 50;
     private static final int DEFAULT_KEY_PROMPT_Y = 14;
     private static final int DEFAULT_MOUSE_TRAJECTORY_X = 50;
@@ -227,6 +237,32 @@ public final class OverlayState {
 
     public static void setMouseEnabled(Context context, boolean enabled) {
         setBooleanAndRefresh(context, KEY_MOUSE_ENABLED, enabled);
+    }
+
+    public static boolean isKeyboardCatEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_KEYBOARD_CAT_ENABLED, false);
+    }
+
+    public static void setKeyboardCatEnabled(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_KEYBOARD_CAT_ENABLED, enabled);
+    }
+
+    /** When enabled, BongoCat uses the source standard model: mouse pad replaces the arrow-key area. */
+    public static boolean isKeyboardCatMouseMode(Context context) {
+        return prefs(context).getBoolean(KEY_KEYBOARD_CAT_MOUSE_MODE, false);
+    }
+
+    public static void setKeyboardCatMouseMode(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_KEYBOARD_CAT_MOUSE_MODE, enabled);
+    }
+
+    /** Reverses only BongoCat input targets horizontally; the cat model and background stay unchanged. */
+    public static boolean isKeyboardCatGlobalReverse(Context context) {
+        return prefs(context).getBoolean(KEY_KEYBOARD_CAT_GLOBAL_REVERSE, false);
+    }
+
+    public static void setKeyboardCatGlobalReverse(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_KEYBOARD_CAT_GLOBAL_REVERSE, enabled);
     }
 
     public static boolean isKeyPromptEnabled(Context context) {
@@ -337,7 +373,8 @@ public final class OverlayState {
     }
 
     public static boolean isAnyDisplayEnabled(Context context) {
-        return isEnabled(context) || isInputFullKeyboardEnabled(context) || isMouseEnabled(context) || isKeyPromptEnabled(context)
+        return isEnabled(context) || isInputFullKeyboardEnabled(context) || isMouseEnabled(context)
+                || isKeyboardCatEnabled(context) || isKeyPromptEnabled(context)
                 || isCustomEnabled(context) || isMouseTrajectoryEnabled(context)
                 || isDpsEnabled(context) || isAnyGamepadDisplayEnabled(context);
     }
@@ -557,6 +594,14 @@ public final class OverlayState {
 
     public static void setMouseSize(Context context, int percent) {
         setIntAndRefresh(context, KEY_MOUSE_SIZE, clampSize(percent));
+    }
+
+    public static int getKeyboardCatSize(Context context) {
+        return clampSize(prefs(context).getInt(KEY_KEYBOARD_CAT_SIZE, DEFAULT_SIZE));
+    }
+
+    public static void setKeyboardCatSize(Context context, int percent) {
+        setIntAndRefresh(context, KEY_KEYBOARD_CAT_SIZE, clampSize(percent));
     }
 
     public static int getKeyPromptSize(Context context) {
@@ -826,92 +871,14 @@ public final class OverlayState {
         setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
     }
 
-    public static int getKeyIdleColor(Context context, int displayType) {
-        String key = appearanceExtraKey(displayType, "idle_color");
-        int defaultColor = defaultKeyIdleColor(context, displayType);
-        if (key == null) return defaultColor;
-        return 0xff000000 | (prefs(context).getInt(key, defaultColor) & 0x00ffffff);
+    public static int getKeyboardTextColor(Context context) {
+        return 0xff000000 | (prefs(context).getInt(
+                KEY_KEYBOARD_TEXT_COLOR, UiPalette.overlayTextIdle(context)) & 0x00ffffff);
     }
 
-    public static void setKeyIdleColor(Context context, int displayType, int color) {
-        String key = appearanceExtraKey(displayType, "idle_color");
-        if (key != null) setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
-    }
-
-    public static int getKeyTextColor(Context context, int displayType) {
-        String key = appearanceExtraKey(displayType, "text_color");
-        if (key == null) return UiPalette.overlayTextIdle(context);
-        return 0xff000000 | (prefs(context).getInt(key, UiPalette.overlayTextIdle(context)) & 0x00ffffff);
-    }
-
-    public static void setKeyTextColor(Context context, int displayType, int color) {
-        String key = appearanceExtraKey(displayType, "text_color");
-        if (key != null) setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
-    }
-
-    public static int getKeyCornerScale(Context context, int displayType) {
-        String key = appearanceExtraKey(displayType, "corner_scale");
-        return key == null ? 100 : clampAppearancePercent(prefs(context).getInt(key, 100));
-    }
-
-    public static void setKeyCornerScale(Context context, int displayType, int percent) {
-        String key = appearanceExtraKey(displayType, "corner_scale");
-        if (key != null) setIntAndRefresh(context, key, clampAppearancePercent(percent));
-    }
-
-    public static int getKeyRippleStrength(Context context, int displayType) {
-        String key = appearanceExtraKey(displayType, "ripple_strength");
-        return key == null ? 100 : clampAppearancePercent(prefs(context).getInt(key, 100));
-    }
-
-    public static void setKeyRippleStrength(Context context, int displayType, int percent) {
-        String key = appearanceExtraKey(displayType, "ripple_strength");
-        if (key != null) setIntAndRefresh(context, key, clampAppearancePercent(percent));
-    }
-
-    public static void resetKeyAppearance(Context context, int displayType) {
-        String style = keyStyleKey(displayType);
-        String pressed = keyPressColorKey(displayType);
-        String prefix = appearanceExtraKey(displayType, "");
-        if (style == null || pressed == null || prefix == null) return;
-        SharedPreferences.Editor editor = prefs(context).edit()
-                .remove(style)
-                .remove(pressed)
-                .remove(prefix + "idle_color")
-                .remove(prefix + "text_color")
-                .remove(prefix + "corner_scale")
-                .remove(prefix + "ripple_strength");
-        editor.apply();
-        refreshAfterConfigChange(context);
-    }
-
-    private static int clampAppearancePercent(int value) {
-        return Math.max(0, Math.min(200, value));
-    }
-
-    private static int defaultKeyIdleColor(Context context, int displayType) {
-        if (displayType == GamepadOverlayView.DISPLAY_FACE
-                || displayType == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
-                || displayType == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER) {
-            return UiPalette.overlayShell(context);
-        }
-        return UiPalette.overlayKeyIdle(context);
-    }
-
-    private static String appearanceExtraKey(int displayType, String suffix) {
-        String prefix;
-        switch (displayType) {
-            case KeyOverlayView.DISPLAY_KEYBOARD: prefix = "keyboard_key"; break;
-            case KeyOverlayView.DISPLAY_MOUSE: prefix = "mouse_key"; break;
-            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: prefix = "key_prompt_key"; break;
-            case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: prefix = "full_keyboard_key"; break;
-            case KeyOverlayView.DISPLAY_CUSTOM: prefix = "custom_key"; break;
-            case GamepadOverlayView.DISPLAY_FACE: prefix = "gamepad_face_key"; break;
-            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: prefix = "gamepad_left_shoulder_key"; break;
-            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: prefix = "gamepad_right_shoulder_key"; break;
-            default: return null;
-        }
-        return prefix + "_" + suffix;
+    public static void setKeyboardTextColor(Context context, int color) {
+        setIntAndRefresh(context, KEY_KEYBOARD_TEXT_COLOR,
+                0xff000000 | (color & 0x00ffffff));
     }
 
     private static String keyStyleKey(int displayType) {
@@ -947,6 +914,7 @@ public final class OverlayState {
             case KeyOverlayView.DISPLAY_KEYBOARD: return KEY_KEYBOARD_OPACITY;
             case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_OPACITY;
             case KeyOverlayView.DISPLAY_MOUSE: return KEY_MOUSE_OPACITY;
+            case KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT: return KEY_KEYBOARD_CAT_OPACITY;
             case MouseTrajectoryView.DISPLAY_TRAJECTORY: return KEY_MOUSE_TRAJECTORY_OPACITY;
             case GamepadOverlayView.DISPLAY_LEFT_STICK: return KEY_GAMEPAD_LEFT_STICK_OPACITY;
             case GamepadOverlayView.DISPLAY_RIGHT_STICK: return KEY_GAMEPAD_RIGHT_STICK_OPACITY;
@@ -1075,6 +1043,7 @@ public final class OverlayState {
             case KeyOverlayView.DISPLAY_KEYBOARD -> xAxis ? KEY_KEYBOARD_POSITION_X : KEY_KEYBOARD_POSITION_Y;
             case KeyOverlayView.DISPLAY_CUSTOM -> xAxis ? KEY_CUSTOM_POSITION_X : KEY_CUSTOM_POSITION_Y;
             case KeyOverlayView.DISPLAY_MOUSE -> xAxis ? KEY_MOUSE_POSITION_X : KEY_MOUSE_POSITION_Y;
+            case KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT -> xAxis ? KEY_KEYBOARD_CAT_POSITION_X : KEY_KEYBOARD_CAT_POSITION_Y;
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT -> xAxis ? KEY_KEY_PROMPT_POSITION_X : KEY_KEY_PROMPT_POSITION_Y;
             case MouseTrajectoryView.DISPLAY_TRAJECTORY -> xAxis ? KEY_MOUSE_TRAJECTORY_POSITION_X : KEY_MOUSE_TRAJECTORY_POSITION_Y;
             case DpsOverlayView.DISPLAY_DPS -> xAxis ? KEY_DPS_POSITION_X : KEY_DPS_POSITION_Y;
@@ -1092,6 +1061,7 @@ public final class OverlayState {
             case KeyOverlayView.DISPLAY_KEYBOARD -> xAxis ? DEFAULT_KEYBOARD_X : DEFAULT_KEYBOARD_Y;
             case KeyOverlayView.DISPLAY_CUSTOM -> xAxis ? DEFAULT_CUSTOM_X : DEFAULT_CUSTOM_Y;
             case KeyOverlayView.DISPLAY_MOUSE -> xAxis ? DEFAULT_MOUSE_X : DEFAULT_MOUSE_Y;
+            case KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT -> xAxis ? DEFAULT_KEYBOARD_CAT_X : DEFAULT_KEYBOARD_CAT_Y;
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT -> xAxis ? DEFAULT_KEY_PROMPT_X : DEFAULT_KEY_PROMPT_Y;
             case MouseTrajectoryView.DISPLAY_TRAJECTORY -> xAxis ? DEFAULT_MOUSE_TRAJECTORY_X : DEFAULT_MOUSE_TRAJECTORY_Y;
             case DpsOverlayView.DISPLAY_DPS -> xAxis ? DEFAULT_DPS_X : DEFAULT_DPS_Y;

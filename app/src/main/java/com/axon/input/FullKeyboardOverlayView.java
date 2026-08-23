@@ -97,18 +97,12 @@ public final class FullKeyboardOverlayView extends View {
     private final float density;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
     private int pressColor;
-    private int idleColor;
-    private int textColor;
-    private int cornerScalePercent = 100;
-    private int rippleStrengthPercent = 100;
     private boolean rippleActive;
 
     public FullKeyboardOverlayView(Context context) {
         super(context);
         density = getResources().getDisplayMetrics().density;
         pressColor = UiPalette.overlayKeyPressed(context);
-        idleColor = UiPalette.overlayKeyIdle(context);
-        textColor = UiPalette.overlayTextIdle(context);
         paint.setTypeface(FontManager.normal(context));
         setClickable(false);
         setFocusable(false);
@@ -118,18 +112,6 @@ public final class FullKeyboardOverlayView extends View {
     public void setKeyAppearance(int style, int color) {
         keyStyle = KeyAppearance.clampStyle(style);
         pressColor = 0xff000000 | (color & 0x00ffffff);
-        invalidate();
-    }
-
-    public void setKeyColors(int idleColor, int textColor) {
-        this.idleColor = 0xff000000 | (idleColor & 0x00ffffff);
-        this.textColor = 0xff000000 | (textColor & 0x00ffffff);
-        invalidate();
-    }
-
-    public void setKeyEffects(int cornerScalePercent, int rippleStrengthPercent) {
-        this.cornerScalePercent = Math.max(0, Math.min(200, cornerScalePercent));
-        this.rippleStrengthPercent = Math.max(0, Math.min(200, rippleStrengthPercent));
         invalidate();
     }
 
@@ -197,17 +179,17 @@ public final class FullKeyboardOverlayView extends View {
         for (KeySpec key : row) {
             float width = unit * key.weight;
             boolean pressed = held.get(key.code) || flashUntil.get(key.code, 0L) > now;
-            paint.setColor(pressed ? pressColor : idleColor);
+            paint.setColor(pressed ? pressColor : UiPalette.overlayKeyIdle(getContext()));
             rect.set(x, y, x + width, y + height);
-            float radius = KeyAppearance.scaleRadius(dp(KEY_RADIUS_DP), cornerScalePercent);
+            float radius = dp(KEY_RADIUS_DP);
             KeyAppearance.drawShape(canvas, rect, keyStyle, radius, paint);
             long rippleStart = rippleStartedAt.get(key.code, 0L);
             if (rippleStart > 0L && now - rippleStart < KeyAppearance.RIPPLE_MS) rippleActive = true;
-            KeyAppearance.drawRipple(canvas, rect, pressColor, rippleStart, now, rippleStrengthPercent, paint);
+            KeyAppearance.drawRipple(canvas, rect, pressColor, rippleStart, now, paint);
 
             paint.setColor(pressed
                     ? KeyAppearance.pressedTextColor(pressColor)
-                    : textColor);
+                    : UiPalette.overlayTextIdle(getContext()));
             paint.setTypeface(FontManager.normal(getContext()));
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setTextSize(Math.max(dp(7f), Math.min(height * 0.36f, dp(12f))));

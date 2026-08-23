@@ -1,0 +1,18 @@
+Axon Input - BongoCat keyboard model integration
+
+BongoCat source/model assets
+----------------------------
+Source: BongoCat (ayangweb / BongoCatPet)
+The integrated keyboard model assets, textures, key overlays and related source-derived behavior are taken from the user-supplied BongoCat source tree.
+License: MIT License. A copy is bundled at:
+app/src/main/assets/bongocat/BONGOCAT_LICENSE.txt
+
+Live2D Cubism Core
+------------------
+app/src/main/assets/bongocat/live2dcubismcore.min.js retains its original copyright and license header:
+(C) 2019 Live2D Inc. All rights reserved.
+It identifies itself as "Redistributable Code" under the Live2D Proprietary Software License Agreement and contains the upstream license URL in its own header.
+
+Implementation note
+-------------------
+The Android overlay renders the original BongoCat keyboard .moc3 model and original textures at runtime through Live2D Cubism Core. Android system key/mouse events are translated to the same keyboard resource names and model parameters used by the BongoCat keyboard model.

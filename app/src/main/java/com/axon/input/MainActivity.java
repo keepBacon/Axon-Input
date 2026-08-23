@@ -4,11 +4,13 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
+import android.content.res.ColorStateList;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -23,13 +25,17 @@ import android.util.SparseArray;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewParent;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.ScrollView;
@@ -43,6 +49,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.IdentityHashMap;
 
 /** 应用主界面。负责设置、用户操作和权限流程。 */
 public final class MainActivity extends Activity implements ShizukuBridge.Listener {
@@ -54,10 +61,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private static final int SIZE_MIN = 50;
     private static final int SIZE_MAX = 150;
     private static final int OPACITY_MAX = 100;
-    private static final int APPEARANCE_EFFECT_MAX = 200;
-    private static final int KEY_COLOR_IDLE = 0;
-    private static final int KEY_COLOR_PRESSED = 1;
-    private static final int KEY_COLOR_TEXT = 2;
     private static final int KEY_SPACING_MAX = 16;
     private static final int SENSITIVITY_FINE_MAX = 200;
     private static final int SENSITIVITY_HIGH_STEP = 5;
@@ -72,6 +75,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private static final int[] OPACITY_DISPLAY_TYPES = {
             KeyOverlayView.DISPLAY_KEYBOARD,
             KeyOverlayView.DISPLAY_MOUSE,
+            KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT,
             KeyPromptOverlayView.DISPLAY_KEY_PROMPT,
             MouseTrajectoryView.DISPLAY_TRAJECTORY,
             KeyOverlayView.DISPLAY_CUSTOM,
@@ -93,6 +97,21 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     };
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final IdentityHashMap<View, TextView> detailDisclosures = new IdentityHashMap<>();
+    private final IdentityHashMap<View, View> detailDisclosureTargets = new IdentityHashMap<>();
+
+    // Top-level settings pagination. Every section owns a dedicated ScrollView so page
+    // transitions never mutate a large layout tree in the middle of an animation.
+    private FrameLayout sectionPagerHost;
+    private ScrollView[] sectionPageViews;
+    private TextView[] sectionNavigationItems;
+    private HorizontalScrollView sectionNavigationView;
+    private int selectedSectionPage;
+    private int displayedSectionPage;
+    private int sectionPageTransitionToken;
+    private float pageSwipeDownX;
+    private float pageSwipeDownY;
+    private boolean pageSwipeBlocked;
 
     private Switch displaySwitch;
     private TextView keyboardSizeLabel;
@@ -102,6 +121,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private Switch spaceDisplaySwitch;
     private Switch spaceDpsSwitch;
     private Switch mouseSwitch;
+    private Switch keyboardCatSwitch;
+    private Switch keyboardCatMouseModeSwitch;
+    private Switch keyboardCatGlobalReverseSwitch;
+    private LinearLayout keyboardCatDetails;
+    private TextView keyboardCatSizeLabel;
+    private SeekBar keyboardCatSizeSeekBar;
     private Switch keyPromptSwitch;
     private TextView keyPromptSizeLabel;
     private SeekBar keyPromptSizeSeekBar;
@@ -186,11 +211,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private final Spinner[] motionSpinners = new Spinner[4];
     private final SparseArray<OpacityControl> opacityControls = new SparseArray<>();
     private final SparseArray<Spinner> keyStyleSpinners = new SparseArray<>();
-    private final SparseArray<View> keyIdleColorDots = new SparseArray<>();
     private final SparseArray<View> keyPressColorDots = new SparseArray<>();
-    private final SparseArray<View> keyTextColorDots = new SparseArray<>();
-    private final SparseArray<OpacityControl> keyCornerControls = new SparseArray<>();
-    private final SparseArray<OpacityControl> keyRippleControls = new SparseArray<>();
+    private View keyboardTextColorDot;
     private Switch globalHtmlSwitch;
     private Button globalHtmlImportButton;
     private TextView globalHtmlStatusText;
@@ -244,21 +266,20 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         applySystemBars();
         internalChange = true;
 
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.setFillViewport(true);
-        scrollView.setClipToPadding(false);
-        scrollView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
-        scrollView.setBackgroundColor(UiPalette.background(this));
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(UiPalette.background(this));
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.TOP);
-        root.setPadding(dp(20), dp(14), dp(20), dp(28));
+        root.setPadding(dp(16), dp(8), dp(16), dp(32));
         root.setBackgroundColor(UiPalette.background(this));
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(16), dp(4), dp(16), 0);
         TextView title = createTitle();
         title.setText(R.string.app_name);
         header.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -269,9 +290,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         authorLink.setPaintFlags(authorLink.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
         authorLink.setPadding(dp(8), dp(8), 0, dp(8));
         authorLink.setOnClickListener(v -> showAuthorDialog());
+        UiMotion.bindPressFeedback(authorLink);
         header.addView(authorLink, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(header, contentParams(dp(18)));
+        page.addView(header, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(58)));
 
         TextView appearanceSection = createSectionLabel();
         appearanceSection.setText(R.string.section_appearance);
@@ -298,6 +321,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardDetails.addView(keyboardSpacingSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD);
         addKeyAppearanceControls(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD);
+        addKeyboardTextColorControl(keyboardDetails);
         spaceDisplaySwitch = createSwitch(R.string.space_display_switch);
         spaceDisplaySwitch.setTextSize(14f);
         keyboardDetails.addView(spaceDisplaySwitch, switchParams(dp(2)));
@@ -322,6 +346,21 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         addKeyAppearanceControls(mouseDetails, KeyOverlayView.DISPLAY_MOUSE);
         addMotionControls(mouseDetails, KeyOverlayView.DISPLAY_MOUSE, R.string.mouse_motion_label);
         root.addView(createFeatureGroup(mouseSwitch, mouseDetails), contentParams(dp(10)));
+
+        keyboardCatSwitch = createSwitch(R.string.keyboard_cat_switch_label);
+        keyboardCatDetails = createDetailsContainer();
+        keyboardCatSizeLabel = createLabel();
+        keyboardCatDetails.addView(keyboardCatSizeLabel, supportingParams(0));
+        keyboardCatSizeSeekBar = createSizeSeekBar();
+        keyboardCatDetails.addView(keyboardCatSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(keyboardCatDetails, KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT);
+        keyboardCatMouseModeSwitch = createSwitch(R.string.keyboard_cat_mouse_mode_switch_label);
+        keyboardCatMouseModeSwitch.setTextSize(14f);
+        keyboardCatDetails.addView(keyboardCatMouseModeSwitch, switchParams(dp(4)));
+        keyboardCatGlobalReverseSwitch = createSwitch(R.string.keyboard_cat_global_reverse_switch_label);
+        keyboardCatGlobalReverseSwitch.setTextSize(14f);
+        keyboardCatDetails.addView(keyboardCatGlobalReverseSwitch, switchParams(dp(4)));
+        root.addView(createFeatureGroup(keyboardCatSwitch, keyboardCatDetails), contentParams(dp(10)));
 
         keyPromptSwitch = createSwitch(R.string.key_prompt_switch_label);
         keyPromptDetails = createDetailsContainer();
@@ -387,6 +426,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         columnsSeekBar = new SeekBar(this);
         columnsSeekBar.setMax(7);
+        styleSeekBar(columnsSeekBar);
         customDetails.addView(columnsSeekBar, seekBarLayoutParams(dp(4)));
         root.addView(createFeatureGroup(customDisplaySwitch, customDetails), contentParams(dp(14)));
 
@@ -518,7 +558,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         sensitivityResetButton.setAllCaps(false);
         sensitivityResetButton.setTextSize(12f);
         sensitivityResetButton.setMinHeight(dp(36));
-        sensitivityResetButton.setMinimumHeight(dp(36));
+        sensitivityResetButton.setMinimumHeight(dp(40));
+        styleActionButton(sensitivityResetButton);
         sensitivityDetails.addView(sensitivityResetButton, supportingParams(dp(4)));
         sensitivityResetButton.setOnClickListener(v -> {
             OverlayState.setMouseSensitivity(MainActivity.this, 100);
@@ -569,7 +610,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         fontImportButton.setAllCaps(false);
         fontImportButton.setTextSize(13f);
         fontImportButton.setMinHeight(dp(38));
-        fontImportButton.setMinimumHeight(dp(38));
+        fontImportButton.setMinimumHeight(dp(40));
+        styleActionButton(fontImportButton);
         fontGroup.addView(fontImportButton, supportingParams(dp(4)));
         fontStatusText = createSupportingText();
         fontGroup.addView(fontStatusText, supportingParams(dp(2)));
@@ -620,7 +662,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         compatibilityResetButton.setAllCaps(false);
         compatibilityResetButton.setTextSize(12f);
         compatibilityResetButton.setMinHeight(dp(36));
-        compatibilityResetButton.setMinimumHeight(dp(36));
+        compatibilityResetButton.setMinimumHeight(dp(40));
+        styleActionButton(compatibilityResetButton);
         compatibilityGroup.addView(compatibilityResetButton, supportingParams(0));
         root.addView(compatibilityGroup, contentParams(dp(10)));
 
@@ -634,7 +677,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         globalHtmlImportButton.setAllCaps(false);
         globalHtmlImportButton.setTextSize(13f);
         globalHtmlImportButton.setMinHeight(dp(38));
-        globalHtmlImportButton.setMinimumHeight(dp(38));
+        globalHtmlImportButton.setMinimumHeight(dp(40));
+        styleActionButton(globalHtmlImportButton);
         globalHtmlDetails.addView(globalHtmlImportButton, supportingParams(dp(2)));
         globalHtmlStatusText = createSupportingText();
         globalHtmlDetails.addView(globalHtmlStatusText, supportingParams(dp(6)));
@@ -657,6 +701,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         htmlGuideLink.setOnClickListener(v -> {
             startActivity(new Intent(MainActivity.this, HtmlGuideActivity.class));
         });
+        UiMotion.bindPressFeedback(htmlGuideLink);
         root.addView(htmlGuideLink, contentParams(0));
 
         TextView kookJoinLink = createSupportingText();
@@ -666,12 +711,30 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         kookJoinLink.setPaintFlags(kookJoinLink.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
         kookJoinLink.setPadding(0, dp(8), dp(8), dp(2));
         kookJoinLink.setOnClickListener(v -> openKookChannel());
+        UiMotion.bindPressFeedback(kookJoinLink);
         root.addView(kookJoinLink, contentParams(0));
 
-        scrollView.addView(root, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        setContentView(scrollView);
+        View[] sectionPages = new View[]{appearanceSection, displaySection, gamepadSection,
+                sensitivitySection, behaviorSection, configurationSection};
+        sectionPageViews = splitContentIntoSectionPages(root, sectionPages);
+        sectionPagerHost = createSectionPagerHost(sectionPageViews);
+
+        HorizontalScrollView sectionNav = createSectionNavigation(
+                new int[]{R.string.section_appearance, R.string.section_keyboard_mouse,
+                        R.string.section_gamepad, R.string.section_sensitivity,
+                        R.string.section_behavior, R.string.section_configuration},
+                sectionPages.length);
+        sectionNavigationView = sectionNav;
+        selectSectionPage(0, false);
+        page.addView(sectionNav, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
+        View navDivider = new View(this);
+        navDivider.setBackgroundColor(UiPalette.divider(this));
+        page.addView(navDivider, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+        page.addView(sectionPagerHost, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        setContentView(page);
 
         themeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
@@ -700,6 +763,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 enabled -> OverlayState.setInputFullKeyboardEnabled(this, enabled));
         bindFeatureSwitch(mouseSwitch, mouseDetails,
                 enabled -> OverlayState.setMouseEnabled(this, enabled));
+        bindFeatureSwitch(keyboardCatSwitch, keyboardCatDetails,
+                enabled -> OverlayState.setKeyboardCatEnabled(this, enabled));
+        bindSimpleSwitch(keyboardCatMouseModeSwitch,
+                enabled -> OverlayState.setKeyboardCatMouseMode(this, enabled));
+        bindSimpleSwitch(keyboardCatGlobalReverseSwitch,
+                enabled -> OverlayState.setKeyboardCatGlobalReverse(this, enabled));
         bindFeatureSwitch(keyPromptSwitch, keyPromptDetails,
                 enabled -> OverlayState.setKeyPromptEnabled(this, enabled));
         bindFeatureSwitch(mouseTrajectorySwitch, mouseTrajectoryDetails,
@@ -732,6 +801,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         mouseSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 mouseSizeLabel, R.string.mouse_size_format,
                 value -> OverlayState.setMouseSize(MainActivity.this, value)));
+
+        keyboardCatSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
+                keyboardCatSizeLabel, R.string.keyboard_cat_size_format,
+                value -> OverlayState.setKeyboardCatSize(MainActivity.this, value)));
 
         keyPromptSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 keyPromptSizeLabel, R.string.key_prompt_size_format,
@@ -846,7 +919,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         });
 
         sensitivitySwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(sensitivityDetails, enabled);
             if (internalChange) return;
             OverlayState.setSensitivityEnabled(this, enabled);
             if (enabled) {
@@ -881,7 +953,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 value -> OverlayState.setGamepadSensitivity(MainActivity.this, value)));
 
         dpsSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(dpsDetails, enabled);
             if (internalChange) return;
             if (enabled) {
                 OverlayState.setDpsTargetKeyCode(this, OverlayState.DPS_TARGET_NONE);
@@ -902,7 +973,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 enabled -> OverlayState.setDragEnabled(this, enabled));
 
         globalHtmlSwitch.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(globalHtmlDetails, enabled);
             if (internalChange) return;
             OverlayState.setGlobalHtmlEnabled(this, enabled);
             syncGlobalHtmlUi();
@@ -1066,6 +1136,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         spaceDpsSwitch.setEnabled(spaceDisplaySwitch.isChecked());
         inputFullKeyboardSwitch.setChecked(OverlayState.isInputFullKeyboardEnabled(this));
         mouseSwitch.setChecked(OverlayState.isMouseEnabled(this));
+        keyboardCatSwitch.setChecked(OverlayState.isKeyboardCatEnabled(this));
+        keyboardCatMouseModeSwitch.setChecked(OverlayState.isKeyboardCatMouseMode(this));
+        keyboardCatGlobalReverseSwitch.setChecked(OverlayState.isKeyboardCatGlobalReverse(this));
         keyPromptSwitch.setChecked(OverlayState.isKeyPromptEnabled(this));
         mouseTrajectorySwitch.setChecked(OverlayState.isMouseTrajectoryEnabled(this));
         mouseTrajectoryLeftColorSwitch.setChecked(OverlayState.isMouseTrajectoryLeftColorEnabled(this));
@@ -1114,6 +1187,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 OverlayState.getKeyboardSpacing(this), R.string.keyboard_spacing_format);
         syncSizeControl(mouseSizeSeekBar, mouseSizeLabel,
                 OverlayState.getMouseSize(this), R.string.mouse_size_format);
+        syncSizeControl(keyboardCatSizeSeekBar, keyboardCatSizeLabel,
+                OverlayState.getKeyboardCatSize(this), R.string.keyboard_cat_size_format);
         syncSizeControl(keyPromptSizeSeekBar, keyPromptSizeLabel,
                 OverlayState.getKeyPromptSize(this), R.string.key_prompt_size_format);
         syncSizeControl(mouseTrajectorySizeSeekBar, mouseTrajectorySizeLabel,
@@ -1164,19 +1239,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         for (int type : MOTION_DISPLAY_TYPES) syncMotionUi(type);
         for (int type : OPACITY_DISPLAY_TYPES) syncOpacityUi(type);
         for (int type : KEY_APPEARANCE_DISPLAY_TYPES) syncKeyAppearanceUi(type);
-        setDetailsVisible(keyboardDetails, displaySwitch.isChecked());
-        setDetailsVisible(inputFullKeyboardDetails, inputFullKeyboardSwitch.isChecked());
-        setDetailsVisible(mouseDetails, mouseSwitch.isChecked());
-        setDetailsVisible(keyPromptDetails, keyPromptSwitch.isChecked());
-        setDetailsVisible(mouseTrajectoryDetails, mouseTrajectorySwitch.isChecked());
-        setDetailsVisible(customDetails, customDisplaySwitch.isChecked());
-        setDetailsVisible(gamepadLeftStickDetails, gamepadLeftStickSwitch.isChecked());
-        setDetailsVisible(gamepadRightStickDetails, gamepadRightStickSwitch.isChecked());
-        setDetailsVisible(gamepadFaceDetails, gamepadFaceSwitch.isChecked());
-        setDetailsVisible(gamepadLeftShoulderDetails, gamepadLeftShoulderSwitch.isChecked());
-        setDetailsVisible(gamepadRightShoulderDetails, gamepadRightShoulderSwitch.isChecked());
-        setDetailsVisible(sensitivityDetails, sensitivitySwitch.isChecked());
-        setDetailsVisible(globalHtmlDetails, globalHtmlSwitch.isChecked());
+        syncKeyboardTextColorUi();
         syncGlobalHtmlUi();
         syncFontUi();
         internalChange = false;
@@ -1441,6 +1504,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         button.setTextSize(13f);
         button.setMinHeight(dp(40));
         button.setMinimumHeight(dp(40));
+        styleActionButton(button);
         button.setOnClickListener(action);
         return button;
     }
@@ -1642,17 +1706,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         row.addView(label, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        Spinner spinner = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(
-                this,
-                android.R.layout.simple_spinner_item,
-                new String[]{getString(R.string.motion_size), getString(R.string.motion_alpha),
-                        getString(R.string.motion_ripple), getString(R.string.motion_none)});
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinner.setAdapter(adapter);
+        Spinner spinner = createChoiceSpinner(new String[]{
+                getString(R.string.motion_size), getString(R.string.motion_alpha),
+                getString(R.string.motion_ripple), getString(R.string.motion_none)});
         motionSpinners[displayType] = spinner;
         row.addView(spinner, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Math.min(dp(156), Math.round(getResources().getDisplayMetrics().widthPixels * 0.46f)),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(row, supportingParams(dp(2)));
 
@@ -1811,14 +1870,25 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(18), dp(18));
-        dotParams.rightMargin = dp(10);
-        row.addView(dot, dotParams);
+
         toggle.setMinHeight(dp(44));
         toggle.setMinimumHeight(dp(44));
         row.addView(toggle, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        dot.setOnClickListener(v -> showTrajectoryColorDialog(left, dot));
+
+        LinearLayout colorTarget = new LinearLayout(this);
+        colorTarget.setGravity(Gravity.CENTER);
+        colorTarget.setContentDescription(getString(left
+                ? R.string.mouse_trajectory_left_color_title
+                : R.string.mouse_trajectory_right_color_title));
+        colorTarget.setBackground(createRippleBackground(UiPalette.debugSurface(this), 9f));
+        colorTarget.addView(dot, new LinearLayout.LayoutParams(dp(22), dp(22)));
+        colorTarget.setOnClickListener(v -> showTrajectoryColorDialog(left, dot));
+        UiMotion.bindPressFeedback(colorTarget);
+
+        LinearLayout.LayoutParams colorParams = new LinearLayout.LayoutParams(dp(44), dp(44));
+        colorParams.leftMargin = dp(8);
+        row.addView(colorTarget, colorParams);
         return row;
     }
 
@@ -1854,6 +1924,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             label.setText(names[i] + " " + rgb[i]);
             row.addView(label, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT));
             SeekBar bar = new SeekBar(this);
+            styleSeekBar(bar);
             bar.setMax(255);
             bar.setProgress(rgb[i]);
             row.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -1904,116 +1975,85 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             @Override public void onNothingSelected(AdapterView<?> parentView) {}
         });
 
-        addKeyColorControl(parent, displayType, KEY_COLOR_IDLE,
-                R.string.key_idle_color, R.string.key_idle_color_title, keyIdleColorDots);
-        addKeyColorControl(parent, displayType, KEY_COLOR_PRESSED,
-                R.string.key_press_color, R.string.key_press_color_title, keyPressColorDots);
-        addKeyColorControl(parent, displayType, KEY_COLOR_TEXT,
-                R.string.key_text_color, R.string.key_text_color_title, keyTextColorDots);
-        addKeyEffectControl(parent, displayType, true);
-        addKeyEffectControl(parent, displayType, false);
-        TextView hint = createSupportingText();
-        hint.setText(R.string.key_appearance_hint);
-        parent.addView(hint, supportingParams(dp(2)));
-        Button reset = createConfigButton(R.string.key_appearance_reset, v -> {
-            OverlayState.resetKeyAppearance(MainActivity.this, displayType);
-            boolean oldInternal = internalChange;
-            internalChange = true;
-            syncKeyAppearanceUi(displayType);
-            internalChange = oldInternal;
-        });
-        parent.addView(reset, supportingParams(dp(4)));
-    }
-
-    private void addKeyColorControl(LinearLayout parent, int displayType, int colorKind,
-                                    int labelRes, int titleRes, SparseArray<View> dots) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(dp(44));
-        TextView label = createLabel();
-        label.setText(labelRes);
-        row.addView(label, new LinearLayout.LayoutParams(
+        LinearLayout colorRow = new LinearLayout(this);
+        colorRow.setOrientation(LinearLayout.HORIZONTAL);
+        colorRow.setGravity(Gravity.CENTER_VERTICAL);
+        colorRow.setMinimumHeight(dp(44));
+        TextView colorLabel = createLabel();
+        colorLabel.setText(R.string.key_press_color);
+        colorRow.addView(colorLabel, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        View dot = createColorDot(getKeyAppearanceColor(displayType, colorKind));
-        dots.put(displayType, dot);
+        View dot = createColorDot(OverlayState.getKeyPressColor(this, displayType));
+        keyPressColorDots.put(displayType, dot);
         LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(22), dp(22));
         dotParams.leftMargin = dp(12);
-        row.addView(dot, dotParams);
-        View.OnClickListener openColor = v -> showKeyColorDialog(displayType, colorKind, titleRes, dot);
-        row.setOnClickListener(openColor);
+        colorRow.addView(dot, dotParams);
+        View.OnClickListener openColor = v -> showKeyPressColorDialog(displayType, dot);
+        colorRow.setOnClickListener(openColor);
+        colorRow.setBackground(createRippleBackground(UiPalette.debugSurface(this), 8f));
+        UiMotion.bindPressFeedback(colorRow);
         dot.setOnClickListener(openColor);
-        parent.addView(row, supportingParams(dp(2)));
+        parent.addView(colorRow, supportingParams(dp(2)));
     }
 
-    private void addKeyEffectControl(LinearLayout parent, int displayType, boolean corner) {
-        TextView label = createLabel();
-        SeekBar seekBar = new SeekBar(this);
-        seekBar.setMax(APPEARANCE_EFFECT_MAX);
-        seekBar.setPadding(0, 0, 0, 0);
-        SparseArray<OpacityControl> controls = corner ? keyCornerControls : keyRippleControls;
-        controls.put(displayType, new OpacityControl(label, seekBar));
-        parent.addView(label, supportingParams(dp(2)));
-        parent.addView(seekBar, seekBarLayoutParams(dp(4)));
-        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
-                label.setText(getString(corner
-                        ? R.string.key_corner_scale_format
-                        : R.string.key_ripple_strength_format, progress));
-                if (fromUser && !internalChange) {
-                    if (corner) OverlayState.setKeyCornerScale(MainActivity.this, displayType, progress);
-                    else OverlayState.setKeyRippleStrength(MainActivity.this, displayType, progress);
-                }
-            }
+    private void addKeyboardTextColorControl(LinearLayout parent) {
+        LinearLayout colorRow = new LinearLayout(this);
+        colorRow.setOrientation(LinearLayout.HORIZONTAL);
+        colorRow.setGravity(Gravity.CENTER_VERTICAL);
+        colorRow.setMinimumHeight(dp(44));
 
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-        });
+        TextView colorLabel = createLabel();
+        colorLabel.setText(R.string.key_text_color);
+        colorRow.addView(colorLabel, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        keyboardTextColorDot = createColorDot(OverlayState.getKeyboardTextColor(this));
+        LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(22), dp(22));
+        dotParams.leftMargin = dp(12);
+        colorRow.addView(keyboardTextColorDot, dotParams);
+
+        View.OnClickListener openColor = v -> showKeyboardTextColorDialog(keyboardTextColorDot);
+        colorRow.setOnClickListener(openColor);
+        colorRow.setBackground(createRippleBackground(UiPalette.debugSurface(this), 8f));
+        UiMotion.bindPressFeedback(colorRow);
+        keyboardTextColorDot.setOnClickListener(openColor);
+        parent.addView(colorRow, supportingParams(dp(2)));
+    }
+
+    private void syncKeyboardTextColorUi() {
+        if (keyboardTextColorDot != null) {
+            updateColorDot(keyboardTextColorDot, OverlayState.getKeyboardTextColor(this));
+        }
+    }
+
+    private void showKeyboardTextColorDialog(View sourceDot) {
+        showRgbColorDialog(
+                R.string.key_text_color_title,
+                OverlayState.getKeyboardTextColor(this),
+                sourceDot,
+                color -> OverlayState.setKeyboardTextColor(MainActivity.this, color));
     }
 
     private void syncKeyAppearanceUi(int displayType) {
         Spinner spinner = keyStyleSpinners.get(displayType);
         if (spinner != null) spinner.setSelection(OverlayState.getKeyStyle(this, displayType), false);
-        syncKeyColorDot(keyIdleColorDots, displayType, OverlayState.getKeyIdleColor(this, displayType));
-        syncKeyColorDot(keyPressColorDots, displayType, OverlayState.getKeyPressColor(this, displayType));
-        syncKeyColorDot(keyTextColorDots, displayType, OverlayState.getKeyTextColor(this, displayType));
-        syncKeyEffectControl(keyCornerControls.get(displayType),
-                OverlayState.getKeyCornerScale(this, displayType), R.string.key_corner_scale_format);
-        syncKeyEffectControl(keyRippleControls.get(displayType),
-                OverlayState.getKeyRippleStrength(this, displayType), R.string.key_ripple_strength_format);
+        View dot = keyPressColorDots.get(displayType);
+        if (dot != null) updateColorDot(dot, OverlayState.getKeyPressColor(this, displayType));
     }
 
-    private void syncKeyColorDot(SparseArray<View> dots, int displayType, int color) {
-        View dot = dots.get(displayType);
-        if (dot != null) updateColorDot(dot, color);
+    private interface ColorCommit {
+        void apply(int color);
     }
 
-    private void syncKeyEffectControl(OpacityControl control, int value, int formatRes) {
-        if (control == null) return;
-        control.seekBar.setProgress(value);
-        control.label.setText(getString(formatRes, value));
+    private void showKeyPressColorDialog(int displayType, View sourceDot) {
+        showRgbColorDialog(
+                R.string.key_press_color_title,
+                OverlayState.getKeyPressColor(this, displayType),
+                sourceDot,
+                color -> OverlayState.setKeyPressColor(MainActivity.this, displayType, color));
     }
 
-    private int getKeyAppearanceColor(int displayType, int colorKind) {
-        switch (colorKind) {
-            case KEY_COLOR_IDLE: return OverlayState.getKeyIdleColor(this, displayType);
-            case KEY_COLOR_TEXT: return OverlayState.getKeyTextColor(this, displayType);
-            default: return OverlayState.getKeyPressColor(this, displayType);
-        }
-    }
-
-    private void setKeyAppearanceColor(int displayType, int colorKind, int color) {
-        switch (colorKind) {
-            case KEY_COLOR_IDLE -> OverlayState.setKeyIdleColor(this, displayType, color);
-            case KEY_COLOR_TEXT -> OverlayState.setKeyTextColor(this, displayType, color);
-            default -> OverlayState.setKeyPressColor(this, displayType, color);
-        }
-    }
-
-    private void showKeyColorDialog(int displayType, int colorKind, int titleRes, View sourceDot) {
-        int current = getKeyAppearanceColor(displayType, colorKind);
+    private void showRgbColorDialog(int titleRes, int current, View sourceDot, ColorCommit commit) {
         final int[] rgb = new int[]{Color.red(current), Color.green(current), Color.blue(current)};
 
         LinearLayout content = new LinearLayout(this);
@@ -2042,6 +2082,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             label.setText(names[i] + " " + rgb[i]);
             row.addView(label, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT));
             SeekBar bar = new SeekBar(this);
+            styleSeekBar(bar);
             bar.setMax(255);
             bar.setProgress(rgb[i]);
             row.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -2067,7 +2108,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             int color = Color.rgb(rgb[0], rgb[1], rgb[2]);
-            setKeyAppearanceColor(displayType, colorKind, color);
+            commit.apply(color);
             updateColorDot(sourceDot, color);
             dialog.dismiss();
         }));
@@ -2089,6 +2130,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         SeekBar seekBar = new SeekBar(this);
         seekBar.setMax(OPACITY_MAX);
         seekBar.setPadding(0, 0, 0, 0);
+        styleSeekBar(seekBar);
         opacityControls.put(displayType, new OpacityControl(label, seekBar));
         parent.addView(label, supportingParams(dp(2)));
         parent.addView(seekBar, seekBarLayoutParams(dp(4)));
@@ -2117,19 +2159,21 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private TextView createTitle() {
         TextView title = new TextView(this);
         title.setTextColor(UiPalette.textPrimary(this));
-        title.setTextSize(22f);
+        title.setTextSize(24f);
         title.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         title.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        title.setMinHeight(dp(42));
+        title.setMinHeight(dp(44));
         return title;
     }
 
     private TextView createSectionLabel() {
         TextView label = new TextView(this);
-        label.setTextColor(UiPalette.textSecondary(this));
-        label.setTextSize(13f);
+        label.setTextColor(UiPalette.textTertiary(this));
+        label.setTextSize(12f);
         label.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         label.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        label.setMinHeight(dp(28));
+        label.setPadding(dp(2), 0, 0, 0);
         return label;
     }
 
@@ -2137,11 +2181,20 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         Switch view = new Switch(this);
         view.setText(labelRes);
         view.setTextColor(UiPalette.textPrimary(this));
-        view.setTextSize(16f);
+        view.setTextSize(15f);
         view.setGravity(Gravity.CENTER_VERTICAL);
-        view.setMinHeight(dp(50));
-        view.setMinimumHeight(dp(50));
+        view.setMinHeight(dp(52));
+        view.setMinimumHeight(dp(52));
         view.setPadding(0, 0, 0, 0);
+
+        int[][] states = new int[][]{
+                new int[]{android.R.attr.state_checked},
+                new int[]{-android.R.attr.state_checked}
+        };
+        view.setTrackTintList(new ColorStateList(states, new int[]{
+                UiPalette.switchTrackOn(this), UiPalette.switchTrackOff(this)}));
+        view.setThumbTintList(new ColorStateList(states, new int[]{
+                UiPalette.switchThumbOn(this), UiPalette.switchThumbOff(this)}));
         return view;
     }
 
@@ -2150,6 +2203,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         label.setTextColor(UiPalette.textSecondary(this));
         label.setTextSize(13f);
         label.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        label.setMinHeight(dp(24));
         return label;
     }
 
@@ -2157,28 +2211,23 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         TextView text = new TextView(this);
         text.setTextColor(UiPalette.textSecondary(this));
         text.setTextSize(12f);
+        text.setLineSpacing(0f, 1.08f);
         return text;
     }
 
     private LinearLayout createDetailsContainer() {
         LinearLayout details = new LinearLayout(this);
         details.setOrientation(LinearLayout.VERTICAL);
-        details.setPadding(dp(12), dp(10), dp(12), dp(10));
+        details.setPadding(dp(12), dp(12), dp(12), dp(10));
         details.setBackground(UiPalette.rounded(this, UiPalette.debugSurface(this), 10f));
         details.setVisibility(View.GONE);
-
-        TextView debug = createSupportingText();
-        debug.setText(R.string.debug_label);
-        debug.setTextSize(11f);
-        debug.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
-        details.addView(debug, supportingParams(dp(8)));
         return details;
     }
 
     private LinearLayout createSwitchGroup(Switch primary) {
         LinearLayout group = new LinearLayout(this);
         group.setOrientation(LinearLayout.VERTICAL);
-        group.setPadding(dp(14), dp(2), dp(14), dp(2));
+        group.setPadding(dp(14), dp(3), dp(14), dp(3));
         group.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 12f));
         group.addView(primary, switchParams(0));
         return group;
@@ -2187,42 +2236,420 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private LinearLayout createFeatureGroup(Switch primary, LinearLayout details) {
         LinearLayout group = new LinearLayout(this);
         group.setOrientation(LinearLayout.VERTICAL);
-        group.setPadding(dp(14), dp(2), dp(14), dp(12));
+        group.setPadding(dp(14), dp(3), dp(10), dp(10));
         group.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 12f));
-        group.addView(primary, switchParams(0));
+        UiMotion.enableLayoutMotion(group);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(primary, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        LinearLayout disclosureTarget = new LinearLayout(this);
+        disclosureTarget.setOrientation(LinearLayout.HORIZONTAL);
+        disclosureTarget.setGravity(Gravity.CENTER);
+        disclosureTarget.setPadding(dp(9), 0, dp(7), 0);
+        disclosureTarget.setMinimumHeight(dp(40));
+        disclosureTarget.setContentDescription(getString(R.string.details_expand));
+        disclosureTarget.setBackground(createRippleBackground(UiPalette.surface(this), 9f));
+
+        TextView settingsLabel = new TextView(this);
+        settingsLabel.setText(R.string.details_action);
+        settingsLabel.setTextColor(UiPalette.textTertiary(this));
+        settingsLabel.setTextSize(11f);
+        settingsLabel.setGravity(Gravity.CENTER);
+        disclosureTarget.addView(settingsLabel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView disclosure = new TextView(this);
+        disclosure.setText("⌄");
+        disclosure.setTextColor(UiPalette.textTertiary(this));
+        disclosure.setTextSize(16f);
+        disclosure.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams arrowParams = new LinearLayout.LayoutParams(dp(18), dp(36));
+        arrowParams.leftMargin = dp(2);
+        disclosureTarget.addView(disclosure, arrowParams);
+
+        LinearLayout.LayoutParams disclosureParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
+        disclosureParams.leftMargin = dp(4);
+        header.addView(disclosureTarget, disclosureParams);
+        group.addView(header, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        detailParams.topMargin = dp(2);
+        detailParams.topMargin = dp(4);
+        detailParams.rightMargin = dp(4);
         group.addView(details, detailParams);
+
+        detailDisclosures.put(details, disclosure);
+        detailDisclosureTargets.put(details, disclosureTarget);
+        disclosureTarget.setOnClickListener(v -> setDetailsExpanded(
+                details, details.getVisibility() != View.VISIBLE, true));
+        UiMotion.bindPressFeedback(disclosureTarget);
         return group;
     }
 
     private Spinner createChoiceSpinner(String[] values) {
         Spinner spinner = new Spinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
-                this, android.R.layout.simple_spinner_item, values);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                this, android.R.layout.simple_spinner_item, values) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                return createSpinnerText(getItem(position), false);
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                return createSpinnerText(getItem(position), true);
+            }
+        };
         spinner.setAdapter(adapter);
+        spinner.setMinimumHeight(dp(40));
+        spinner.setPadding(0, 0, 0, 0);
+        spinner.setBackground(createRippleBackground(UiPalette.controlSurface(this), 9f));
+        spinner.setPopupBackgroundDrawable(UiPalette.rounded(this, UiPalette.surfaceRaised(this), 12f));
+        spinner.setDropDownVerticalOffset(dp(4));
         return spinner;
+    }
+
+    private TextView createSpinnerText(String value, boolean dropdown) {
+        TextView text = new TextView(this);
+        text.setText(value == null ? "" : value);
+        text.setTextColor(UiPalette.textPrimary(this));
+        text.setTextSize(13f);
+        text.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        text.setSingleLine(true);
+        text.setEllipsize(TextUtils.TruncateAt.END);
+        text.setMinHeight(dp(dropdown ? 44 : 40));
+        text.setPadding(dp(12), 0, dp(12), 0);
+        return text;
     }
 
     private LinearLayout createInlineChoiceRow(int labelRes, Spinner spinner) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(48));
         TextView label = createLabel();
         label.setText(labelRes);
-        row.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        labelParams.rightMargin = dp(12);
+        row.addView(label, labelParams);
+        int maxSpinnerWidth = Math.min(dp(188), Math.round(getResources().getDisplayMetrics().widthPixels * 0.54f));
         row.addView(spinner, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                maxSpinnerWidth, ViewGroup.LayoutParams.WRAP_CONTENT));
         return row;
     }
 
     private LinearLayout createChoiceGroup(int labelRes, Spinner spinner) {
         LinearLayout group = createInlineChoiceRow(labelRes, spinner);
-        group.setPadding(dp(14), dp(6), dp(10), dp(6));
+        group.setPadding(dp(14), dp(5), dp(10), dp(5));
         group.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 12f));
         return group;
+    }
+
+    private void styleActionButton(Button button) {
+        button.setTextColor(UiPalette.textPrimary(this));
+        button.setTextSize(13f);
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(12), 0, dp(12), 0);
+        button.setMinHeight(dp(40));
+        button.setMinimumHeight(dp(40));
+        button.setElevation(0f);
+        button.setStateListAnimator(null);
+        button.setBackground(createRippleBackground(UiPalette.controlSurface(this), 10f));
+        UiMotion.bindPressFeedback(button);
+    }
+
+    private RippleDrawable createRippleBackground(int fillColor, float radiusDp) {
+        GradientDrawable content = UiPalette.rounded(this, fillColor, radiusDp);
+        GradientDrawable mask = UiPalette.rounded(this, Color.WHITE, radiusDp);
+        return new RippleDrawable(ColorStateList.valueOf(UiPalette.ripple(this)), content, mask);
+    }
+
+    private void styleSeekBar(SeekBar seekBar) {
+        seekBar.setProgressTintList(ColorStateList.valueOf(UiPalette.accent(this)));
+        seekBar.setThumbTintList(ColorStateList.valueOf(UiPalette.accent(this)));
+        seekBar.setProgressBackgroundTintList(ColorStateList.valueOf(UiPalette.divider(this)));
+        seekBar.setMinimumHeight(dp(32));
+    }
+
+    private HorizontalScrollView createSectionNavigation(int[] labelResIds, int pageCount) {
+        HorizontalScrollView nav = new HorizontalScrollView(this);
+        nav.setHorizontalScrollBarEnabled(false);
+        nav.setFillViewport(false);
+        nav.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        nav.setBackgroundColor(UiPalette.background(this));
+
+        LinearLayout rail = new LinearLayout(this);
+        rail.setOrientation(LinearLayout.HORIZONTAL);
+        rail.setGravity(Gravity.CENTER_VERTICAL);
+        rail.setPadding(dp(10), 0, dp(10), dp(4));
+
+        int count = Math.min(labelResIds.length, pageCount);
+        TextView[] items = new TextView[count];
+        for (int i = 0; i < count; i++) {
+            TextView item = new TextView(this);
+            items[i] = item;
+            item.setText(labelResIds[i]);
+            item.setTextSize(12f);
+            item.setGravity(Gravity.CENTER);
+            item.setSingleLine(true);
+            item.setMinHeight(dp(38));
+            item.setPadding(dp(11), 0, dp(11), 0);
+            final int pageIndex = i;
+            item.setOnClickListener(v -> selectSectionPage(pageIndex, true));
+            UiMotion.bindPressFeedback(item);
+
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
+            if (i > 0) params.leftMargin = dp(2);
+            rail.addView(item, params);
+        }
+        sectionNavigationItems = items;
+        updateSectionNavigationSelection(items, 0);
+        nav.addView(rail, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        return nav;
+    }
+
+    private void selectSectionPage(int requestedIndex, boolean centerNavigation) {
+        if (sectionPageViews == null || sectionPageViews.length == 0) return;
+
+        int target = Math.max(0, Math.min(requestedIndex, sectionPageViews.length - 1));
+        selectedSectionPage = target;
+
+        if (sectionNavigationItems != null) {
+            updateSectionNavigationSelection(sectionNavigationItems, target);
+        }
+
+        if (centerNavigation && sectionNavigationView != null
+                && sectionNavigationItems != null && target < sectionNavigationItems.length) {
+            TextView item = sectionNavigationItems[target];
+            sectionNavigationView.post(() -> {
+                int targetX = Math.max(0, item.getLeft()
+                        - (sectionNavigationView.getWidth() - item.getWidth()) / 2);
+                // Do not run a second long scroller beside the page transition. A direct
+                // nav correction keeps the content animation on the critical frame path.
+                sectionNavigationView.scrollTo(targetX, 0);
+            });
+        }
+
+        // Initial setup is immediate. All pages already exist; only one is visible.
+        if (!centerNavigation) {
+            sectionPageTransitionToken++;
+            displayedSectionPage = target;
+            normalizeSectionPages(target);
+            return;
+        }
+
+        if (target == displayedSectionPage) return;
+
+        // Interruptions settle instantly onto the latest destination before starting the
+        // next transition. This prevents half-translated/half-transparent page states.
+        int from = displayedSectionPage;
+        int direction = target > from ? 1 : -1;
+        int transitionToken = ++sectionPageTransitionToken;
+        UiMotion.cancelPageTransition(sectionPageViews);
+        normalizeSectionPages(from);
+
+        ScrollView outgoing = sectionPageViews[from];
+        ScrollView incoming = sectionPageViews[target];
+        incoming.stopNestedScroll();
+        incoming.scrollTo(0, 0);
+        incoming.post(() -> incoming.scrollTo(0, 0));
+        incoming.setVisibility(View.VISIBLE);
+        incoming.bringToFront();
+
+        // Treat the destination as current as soon as motion starts. If another page is
+        // requested mid-flight, the new gesture continues from this destination cleanly.
+        displayedSectionPage = target;
+        UiMotion.animatePageTransition(outgoing, incoming, direction, () -> {
+            if (transitionToken != sectionPageTransitionToken) return;
+            normalizeSectionPages(target);
+        });
+    }
+
+    /**
+     * Converts the original linear settings list into independent page trees once during
+     * Activity creation. No child is reparented while a page transition is running.
+     */
+    private ScrollView[] splitContentIntoSectionPages(
+            LinearLayout source, View[] sectionStarts) {
+        int pageCount = sectionStarts == null ? 0 : sectionStarts.length;
+        ScrollView[] pages = new ScrollView[pageCount];
+
+        for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+            LinearLayout content = new LinearLayout(this);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setGravity(Gravity.TOP);
+            content.setPadding(dp(16), dp(8), dp(16), dp(32));
+            content.setBackgroundColor(UiPalette.background(this));
+
+            int start = source.indexOfChild(sectionStarts[pageIndex]);
+            int end = pageIndex + 1 < pageCount
+                    ? source.indexOfChild(sectionStarts[pageIndex + 1])
+                    : source.getChildCount();
+            if (start < 0) start = 0;
+            if (end < start) end = source.getChildCount();
+
+            int moveCount = end - start;
+            for (int i = 0; i < moveCount; i++) {
+                View child = source.getChildAt(start);
+                ViewGroup.LayoutParams params = child.getLayoutParams();
+                source.removeViewAt(start);
+                content.addView(child, params);
+            }
+
+            ScrollView page = new ScrollView(this);
+            page.setFillViewport(true);
+            page.setClipToPadding(false);
+            page.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+            page.setBackgroundColor(UiPalette.background(this));
+            page.addView(content, new ScrollView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            pages[pageIndex] = page;
+        }
+        return pages;
+    }
+
+    private FrameLayout createSectionPagerHost(ScrollView[] pages) {
+        FrameLayout host = new FrameLayout(this);
+        host.setClipChildren(true);
+        host.setClipToPadding(true);
+        host.setBackgroundColor(UiPalette.background(this));
+        if (pages != null) {
+            for (ScrollView page : pages) {
+                page.setVisibility(View.INVISIBLE);
+                host.addView(page, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+        }
+        return host;
+    }
+
+    private void normalizeSectionPages(int visibleIndex) {
+        if (sectionPageViews == null) return;
+        int safe = Math.max(0, Math.min(visibleIndex, sectionPageViews.length - 1));
+        for (int i = 0; i < sectionPageViews.length; i++) {
+            ScrollView page = sectionPageViews[i];
+            page.animate().cancel();
+            page.setTranslationX(0f);
+            page.setAlpha(1f);
+            page.setLayerType(View.LAYER_TYPE_NONE, null);
+            page.setVisibility(i == safe ? View.VISIBLE : View.INVISIBLE);
+        }
+        sectionPageViews[safe].bringToFront();
+    }
+
+    private void updateSectionNavigationSelection(TextView[] items, int selectedIndex) {
+        for (int i = 0; i < items.length; i++) {
+            TextView item = items[i];
+            boolean selected = i == selectedIndex;
+            item.setSelected(selected);
+            item.setTextColor(selected
+                    ? UiPalette.textPrimary(this)
+                    : UiPalette.textSecondary(this));
+            item.setBackground(createRippleBackground(
+                    selected ? UiPalette.surface(this) : UiPalette.background(this), 8f));
+        }
+    }
+
+    /**
+     * Observe horizontal gestures without consuming the touch stream. Vertical scrolling and
+     * child controls keep their native behaviour; a completed horizontal swipe only changes
+     * the top-level settings page after the child has received ACTION_UP.
+     */
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            pageSwipeDownX = event.getRawX();
+            pageSwipeDownY = event.getRawY();
+            pageSwipeBlocked = shouldBlockPageSwipe(pageSwipeDownX, pageSwipeDownY);
+            return super.dispatchTouchEvent(event);
+        }
+
+        if (action == MotionEvent.ACTION_CANCEL) {
+            pageSwipeBlocked = false;
+            return super.dispatchTouchEvent(event);
+        }
+
+        if (action == MotionEvent.ACTION_UP) {
+            float deltaX = event.getRawX() - pageSwipeDownX;
+            float deltaY = event.getRawY() - pageSwipeDownY;
+            float absX = Math.abs(deltaX);
+            float absY = Math.abs(deltaY);
+            boolean switchPage = !pageSwipeBlocked
+                    && sectionPageViews != null
+                    && absX >= dp(64)
+                    && absX > absY * 1.35f;
+
+            // Let the current child finish its gesture before changing page visibility.
+            boolean handled = super.dispatchTouchEvent(event);
+            if (switchPage) {
+                int nextPage = selectedSectionPage + (deltaX < 0f ? 1 : -1);
+                if (nextPage >= 0 && nextPage < sectionPageViews.length) {
+                    selectSectionPage(nextPage, true);
+                }
+            }
+            pageSwipeBlocked = false;
+            return handled;
+        }
+
+        return super.dispatchTouchEvent(event);
+    }
+
+    private boolean shouldBlockPageSwipe(float rawX, float rawY) {
+        if (isPointInsideView(sectionNavigationView, rawX, rawY)) return true;
+
+        View decor = getWindow() != null ? getWindow().getDecorView() : null;
+        View touched = findDeepestViewAt(decor, rawX, rawY);
+        View current = touched;
+        while (current != null) {
+            if (current instanceof SeekBar
+                    || current instanceof Switch
+                    || current instanceof Spinner
+                    || current instanceof EditText
+                    || current instanceof HorizontalScrollView) {
+                return true;
+            }
+            ViewParent parent = current.getParent();
+            current = parent instanceof View ? (View) parent : null;
+        }
+        return false;
+    }
+
+    private View findDeepestViewAt(View view, float rawX, float rawY) {
+        if (view == null || view.getVisibility() != View.VISIBLE
+                || !isPointInsideView(view, rawX, rawY)) {
+            return null;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = group.getChildCount() - 1; i >= 0; i--) {
+                View hit = findDeepestViewAt(group.getChildAt(i), rawX, rawY);
+                if (hit != null) return hit;
+            }
+        }
+        return view;
+    }
+
+    private boolean isPointInsideView(View view, float rawX, float rawY) {
+        if (view == null || view.getVisibility() != View.VISIBLE
+                || view.getWidth() <= 0 || view.getHeight() <= 0) {
+            return false;
+        }
+        int[] location = new int[2];
+        view.getLocationOnScreen(location);
+        return rawX >= location[0] && rawX < location[0] + view.getWidth()
+                && rawY >= location[1] && rawY < location[1] + view.getHeight();
     }
 
     private void applySystemBars() {
@@ -2239,7 +2666,6 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private void bindFeatureSwitch(Switch toggle, View details, BooleanSetter setter) {
         toggle.setOnCheckedChangeListener((button, enabled) -> {
-            setDetailsVisible(details, enabled);
             if (internalChange) return;
             setter.set(enabled);
             handleDisplayModeChanged();
@@ -2267,9 +2693,19 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private void setDetailsVisible(View details, boolean visible) {
+        setDetailsExpanded(details, visible, false);
+    }
+
+    private void setDetailsExpanded(View details, boolean visible, boolean animated) {
         if (details == null) return;
-        int target = visible ? View.VISIBLE : View.GONE;
-        if (details.getVisibility() != target) details.setVisibility(target);
+        TextView disclosure = detailDisclosures.get(details);
+        View disclosureTarget = detailDisclosureTargets.get(details);
+        UiMotion.setDetailsVisible(details, visible, animated);
+        UiMotion.rotateDisclosure(disclosure, visible, animated);
+        if (disclosureTarget != null) {
+            disclosureTarget.setContentDescription(getString(
+                    visible ? R.string.details_collapse : R.string.details_expand));
+        }
     }
 
     private void addDivider(LinearLayout root, int topMargin, int bottomMargin) {
@@ -2286,6 +2722,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         SeekBar seekBar = new SeekBar(this);
         seekBar.setMax(SIZE_MAX - SIZE_MIN);
         seekBar.setPadding(0, 0, 0, 0);
+        styleSeekBar(seekBar);
         return seekBar;
     }
 
@@ -2293,6 +2730,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         SeekBar seekBar = new SeekBar(this);
         seekBar.setMax(KEY_SPACING_MAX);
         seekBar.setPadding(0, 0, 0, 0);
+        styleSeekBar(seekBar);
         return seekBar;
     }
 
@@ -2300,6 +2738,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         SeekBar seekBar = new SeekBar(this);
         seekBar.setMax(SENSITIVITY_SEEKBAR_MAX);
         seekBar.setPadding(0, 0, 0, 0);
+        styleSeekBar(seekBar);
         return seekBar;
     }
 

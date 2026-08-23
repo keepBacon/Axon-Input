@@ -4,7 +4,7 @@ import android.content.Context;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 
-/** 用户选择的浅色和黑色调色板。系统主题不会覆盖。 */
+/** User-selected light / black palette shared by app settings and overlays. */
 public final class UiPalette {
     private UiPalette() {}
 
@@ -16,8 +16,18 @@ public final class UiPalette {
         return dark(context) ? Color.rgb(17, 17, 19) : Color.WHITE;
     }
 
+    /** Slightly raised surface for nested controls, without a visible border. */
+    public static int surfaceRaised(Context context) {
+        return dark(context) ? Color.rgb(22, 22, 24) : Color.rgb(250, 250, 251);
+    }
+
+    /** Quiet control background for buttons, selectors and detail rows. */
+    public static int controlSurface(Context context) {
+        return dark(context) ? Color.rgb(29, 29, 32) : Color.rgb(239, 239, 241);
+    }
+
     public static int debugSurface(Context context) {
-        return dark(context) ? Color.rgb(23, 23, 25) : Color.rgb(243, 243, 245);
+        return dark(context) ? Color.rgb(22, 22, 24) : Color.rgb(246, 246, 247);
     }
 
     public static int textPrimary(Context context) {
@@ -28,12 +38,36 @@ public final class UiPalette {
         return dark(context) ? Color.rgb(158, 158, 165) : Color.rgb(105, 105, 112);
     }
 
+    public static int textTertiary(Context context) {
+        return dark(context) ? Color.rgb(116, 116, 123) : Color.rgb(137, 137, 145);
+    }
+
     public static int divider(Context context) {
-        return dark(context) ? Color.rgb(38, 38, 41) : Color.rgb(230, 230, 233);
+        return dark(context) ? Color.argb(150, 43, 43, 47) : Color.argb(185, 226, 226, 230);
     }
 
     public static int accent(Context context) {
         return dark(context) ? Color.rgb(244, 244, 245) : Color.rgb(23, 23, 25);
+    }
+
+    public static int switchTrackOff(Context context) {
+        return dark(context) ? Color.rgb(64, 64, 69) : Color.rgb(205, 205, 211);
+    }
+
+    public static int switchThumbOff(Context context) {
+        return dark(context) ? Color.rgb(190, 190, 196) : Color.WHITE;
+    }
+
+    public static int switchTrackOn(Context context) {
+        return dark(context) ? Color.rgb(235, 235, 238) : Color.rgb(31, 31, 34);
+    }
+
+    public static int switchThumbOn(Context context) {
+        return dark(context) ? Color.rgb(20, 20, 22) : Color.WHITE;
+    }
+
+    public static int ripple(Context context) {
+        return dark(context) ? Color.argb(28, 255, 255, 255) : Color.argb(18, 0, 0, 0);
     }
 
     public static int overlayKeyIdle(Context context) {

@@ -125,8 +125,7 @@ const stopInput = KeyDisplay.onInput({
 --kd-overlay-shell --kd-overlay-secondary
 --kd-trajectory-panel --kd-trajectory-stroke --kd-trajectory-dot
 --kd-width --kd-height --kd-density
---kd-opacity --kd-opacity-percent --kd-key-spacing --kd-idle-color --kd-press-color --kd-text-color
---kd-corner-scale --kd-ripple-strength --kd-key-style
+--kd-opacity --kd-opacity-percent --kd-key-spacing --kd-press-color --kd-key-style
 --kd-mouse-sensitivity --kd-gamepad-sensitivity
 */
 """);
@@ -331,15 +330,10 @@ KeyDisplay.onState(s => {
   root.style.opacity=String((c.opacityPercent??100)/100);
   root.style.setProperty('--gap',(c.spacingDp??0)+'px');
   root.dataset.style=c.keyStyle||'rounded';
-  root.style.setProperty('--idle',c.idleColor||s.palette.keyIdle);
   root.style.setProperty('--pressed',c.pressColor||s.palette.keyPressed);
-  root.style.setProperty('--text',c.textColor||s.palette.keyTextIdle);
-  root.style.setProperty('--corner-scale',String((c.cornerScalePercent??100)/100));
-  root.style.setProperty('--ripple-strength',String((c.rippleStrengthPercent??100)/100));
 });
 // 同样可以直接使用：
-// --kd-opacity --kd-key-spacing --kd-idle-color --kd-press-color --kd-text-color
-// --kd-corner-scale --kd-ripple-strength --kd-key-style
+// --kd-opacity --kd-key-spacing --kd-press-color --kd-key-style
 """);
 
         addSection(root, "21. 本地存储与手柄兼容状态");

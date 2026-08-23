@@ -78,10 +78,6 @@ public final class GamepadOverlayView extends FrameLayout {
     private boolean globalHtmlEnabled;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
     private int pressColor;
-    private int idleColor;
-    private int textColor;
-    private int cornerScalePercent = 100;
-    private int rippleStrengthPercent = 100;
 
     private float targetX;
     private float targetY;
@@ -142,8 +138,6 @@ public final class GamepadOverlayView extends FrameLayout {
         accentPaint.setColor(UiPalette.overlayKeyPressed(context));
         buttonPaint.setStyle(Paint.Style.FILL);
         pressColor = UiPalette.overlayKeyPressed(context);
-        idleColor = UiPalette.overlayShell(context);
-        textColor = UiPalette.overlayTextIdle(context);
         buttonPaint.setColor(pressColor);
 
         setScaleX(0.94f);
@@ -175,23 +169,6 @@ public final class GamepadOverlayView extends FrameLayout {
         pressColor = 0xff000000 | (color & 0x00ffffff);
         buttonPaint.setColor(pressColor);
         invalidate();
-    }
-
-    public void setKeyColors(int idleColor, int textColor) {
-        this.idleColor = 0xff000000 | (idleColor & 0x00ffffff);
-        this.textColor = 0xff000000 | (textColor & 0x00ffffff);
-        fillPaint.setColor(this.idleColor);
-        invalidate();
-    }
-
-    public void setKeyEffects(int cornerScalePercent, int rippleStrengthPercent) {
-        this.cornerScalePercent = Math.max(0, Math.min(200, cornerScalePercent));
-        this.rippleStrengthPercent = Math.max(0, Math.min(200, rippleStrengthPercent));
-        invalidate();
-    }
-
-    private float keyRadius(float baseRadius) {
-        return KeyAppearance.scaleRadius(baseRadius, cornerScalePercent);
     }
 
     public void setStickDotSize(int percent) {
@@ -434,13 +411,13 @@ public final class GamepadOverlayView extends FrameLayout {
         Paint body = pressed ? buttonPaint : fillPaint;
         int oldText = textPaint.getColor();
         Typeface oldTypeface = textPaint.getTypeface();
-        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : textColor);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(corner), body);
+        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : UiPalette.overlayTextIdle(getContext()));
+        KeyAppearance.drawShape(canvas, rect, keyStyle, corner, body);
         if (index >= 0) {
             KeyAppearance.drawRipple(canvas, rect, pressColor,
-                    rippleStartedAt[index], SystemClock.uptimeMillis(), rippleStrengthPercent, ripplePaint);
+                    rippleStartedAt[index], SystemClock.uptimeMillis(), ripplePaint);
         }
-        KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(corner), strokePaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, corner, strokePaint);
 
         // CPS 开关不改变主标签字号。
         final float primarySize = radius * 0.92f;
@@ -485,10 +462,10 @@ public final class GamepadOverlayView extends FrameLayout {
                 pad + w - topInset, pad + topHeight);
         boolean topPressed = topScale < 0.97f;
         Paint topPaint = topPressed ? buttonPaint : fillPaint;
-        KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(radius), topPaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, topPaint);
         KeyAppearance.drawRipple(canvas, rect, pressColor,
-                rippleStartedAt[0], SystemClock.uptimeMillis(), rippleStrengthPercent, ripplePaint);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(radius), strokePaint);
+                rippleStartedAt[0], SystemClock.uptimeMillis(), ripplePaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
         if (shoulderDpsEnabled) {
             drawCenteredTextWithDps(canvas, left ? "L1" : "R1", left ? l1Dps : r1Dps, rect, topScale < 0.97f);
         } else {
@@ -503,25 +480,25 @@ public final class GamepadOverlayView extends FrameLayout {
         boolean triggerPressed = bottomScale < 0.97f || trigger > 0.08f;
         float bottomRadius = radius * 1.18f;
         Paint bottomPaint = (!triggerProgressEnabled && triggerPressed) ? buttonPaint : fillPaint;
-        KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(bottomRadius), bottomPaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, bottomPaint);
 
         if (triggerProgressEnabled && trigger > 0.001f) {
             RectF fill = new RectF(rect.left, rect.top,
                     rect.left + rect.width() * clamp(trigger, 0f, 1f), rect.bottom);
             canvas.save();
             canvas.clipRect(fill);
-            KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(bottomRadius), buttonPaint);
+            KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, buttonPaint);
             canvas.restore();
         }
         KeyAppearance.drawRipple(canvas, rect, pressColor,
-                rippleStartedAt[1], SystemClock.uptimeMillis(), rippleStrengthPercent, ripplePaint);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, keyRadius(bottomRadius), strokePaint);
+                rippleStartedAt[1], SystemClock.uptimeMillis(), ripplePaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, strokePaint);
         drawCenteredText(canvas, left ? "L2" : "R2", rect, triggerPressed);
     }
 
     private void drawCenteredText(Canvas canvas, String text, RectF area, boolean pressed) {
         textPaint.setTextSize(Math.min(area.height() * 0.43f, dp(18f)));
-        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : textColor);
+        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : UiPalette.overlayTextIdle(getContext()));
         Paint.FontMetrics fm = textPaint.getFontMetrics();
         float baseline = area.centerY() - (fm.ascent + fm.descent) * 0.5f;
         canvas.drawText(text, area.centerX(), baseline, textPaint);
@@ -529,7 +506,7 @@ public final class GamepadOverlayView extends FrameLayout {
 
     private void drawCenteredTextWithDps(Canvas canvas, String text, int dps, RectF area, boolean pressed) {
         Typeface oldTypeface = textPaint.getTypeface();
-        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : textColor);
+        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : UiPalette.overlayTextIdle(getContext()));
 
         // L1/R1 主标签使用统一字号和字体。
         final float primarySize = Math.min(area.height() * 0.43f, dp(18f));

@@ -88,8 +88,7 @@ gamepad:
 
 config:
   当前窗口直接相关的设置：
-  motionMode, opacityPercent, keyStyle, idleColor, pressColor, textColor,
-  cornerScalePercent, rippleStrengthPercent, spacingDp,
+  motionMode, opacityPercent, keyStyle, pressColor, spacingDp,
   dotSizePercent, showSpaceCps, showTriggerProgress 等。
 
 palette:
@@ -124,11 +123,7 @@ capabilities:
 --kd-dot-size
 --kd-opacity --kd-opacity-percent
 --kd-key-spacing
---kd-idle-color
 --kd-press-color
---kd-text-color
---kd-corner-scale
---kd-ripple-strength
 --kd-key-style
 --kd-position-x --kd-position-y
 --kd-mouse-sensitivity --kd-gamepad-sensitivity
@@ -155,11 +150,7 @@ data-kd-reduced-motion
 2. 外观状态
 - config.opacityPercent：当前窗口透明度。
 - config.keyStyle：rounded / square / circle。
-- config.idleColor：当前按键底色。
 - config.pressColor：当前按下颜色。
-- config.textColor：当前文字颜色。
-- config.cornerScalePercent：圆角强度，0–200，100 为原效果。
-- config.rippleStrengthPercent：扩散强度，0–200，0 可关闭。
 - config.spacingDp：键盘、自定义按键或 ABXY 的间距。
 
 3. 状态辅助
