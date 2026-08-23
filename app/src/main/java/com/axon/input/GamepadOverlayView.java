@@ -17,6 +17,7 @@ public final class GamepadOverlayView extends FrameLayout {
     public static final int DISPLAY_FACE = 12;
     public static final int DISPLAY_LEFT_SHOULDER = 13;
     public static final int DISPLAY_RIGHT_SHOULDER = 14;
+    public static final int DISPLAY_BACK = 15;
 
     public static final int SHAPE_CIRCLE = 0;
     public static final int SHAPE_SQUARE = 1;
@@ -31,8 +32,15 @@ public final class GamepadOverlayView extends FrameLayout {
     public static final int BTN_R1 = 1 << 7;
     public static final int BTN_L2 = 1 << 8;
     public static final int BTN_R2 = 1 << 9;
+    public static final int BTN_SELECT = 1 << 10;
+    public static final int BTN_START = 1 << 11;
+    public static final int BTN_MODE = 1 << 12;
     public static final int BTN_L3 = 1 << 13;
     public static final int BTN_R3 = 1 << 14;
+    public static final int BTN_BACK_1 = 1 << 15;
+    public static final int BTN_BACK_2 = 1 << 16;
+    public static final int BTN_BACK_3 = 1 << 17;
+    public static final int BTN_BACK_4 = 1 << 18;
 
     private static final String[] FACE_LABELS_NORMAL = {"Y", "B", "A", "X"};
     private static final String[] FACE_LABELS_REVERSED = {"A", "X", "Y", "B"};
@@ -59,6 +67,7 @@ public final class GamepadOverlayView extends FrameLayout {
     private boolean dragging;
     private int stickShape = SHAPE_CIRCLE;
     private boolean faceReversed;
+    private boolean vader5BackLabels;
     private boolean faceYDpsEnabled;
     private boolean faceXDpsEnabled;
     private boolean faceBDpsEnabled;
@@ -77,6 +86,7 @@ public final class GamepadOverlayView extends FrameLayout {
     private GlobalHtmlWebView htmlView;
     private boolean globalHtmlEnabled;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
+    private int cornerStrength = KeyAppearance.DEFAULT_CORNER_STRENGTH;
     private int pressColor;
 
     private float targetX;
@@ -168,6 +178,13 @@ public final class GamepadOverlayView extends FrameLayout {
         keyStyle = KeyAppearance.clampStyle(style);
         pressColor = 0xff000000 | (color & 0x00ffffff);
         buttonPaint.setColor(pressColor);
+        invalidate();
+    }
+
+    public void setCornerStrength(int strength) {
+        int resolved = KeyAppearance.clampCornerStrength(strength);
+        if (cornerStrength == resolved) return;
+        cornerStrength = resolved;
         invalidate();
     }
 
@@ -314,6 +331,11 @@ public final class GamepadOverlayView extends FrameLayout {
         } else if (displayType == DISPLAY_RIGHT_SHOULDER) {
             pressTargets[0] = (buttons & BTN_R1) != 0;
             pressTargets[1] = (buttons & BTN_R2) != 0 || targetRt > 0.08f;
+        } else if (displayType == DISPLAY_BACK) {
+            pressTargets[0] = (buttons & BTN_BACK_1) != 0;
+            pressTargets[1] = (buttons & BTN_BACK_2) != 0;
+            pressTargets[2] = (buttons & BTN_BACK_3) != 0;
+            pressTargets[3] = (buttons & BTN_BACK_4) != 0;
         }
         long now = SystemClock.uptimeMillis();
         if (pressTargets[0] && !old0) rippleStartedAt[0] = now;
@@ -332,6 +354,7 @@ public final class GamepadOverlayView extends FrameLayout {
         else if (displayType == DISPLAY_FACE) drawFaceButtons(canvas);
         else if (displayType == DISPLAY_LEFT_SHOULDER) drawShoulders(canvas, true);
         else if (displayType == DISPLAY_RIGHT_SHOULDER) drawShoulders(canvas, false);
+        else if (displayType == DISPLAY_BACK) drawBackButtons(canvas);
     }
 
     private void drawStick(Canvas canvas) {
@@ -407,7 +430,7 @@ public final class GamepadOverlayView extends FrameLayout {
         boolean pressed = scale < 0.97f;
         int index = faceIndex(label);
         rect.set(cx - r, cy - r, cx + r, cy + r);
-        float corner = radius * 0.42f;
+        float corner = KeyAppearance.roundedRadius(rect, cornerStrength);
         Paint body = pressed ? buttonPaint : fillPaint;
         int oldText = textPaint.getColor();
         Typeface oldTypeface = textPaint.getTypeface();
@@ -454,7 +477,6 @@ public final class GamepadOverlayView extends FrameLayout {
         float h = getHeight() - pad * 2f;
         float topHeight = h * 0.38f;
         float bottomTop = pad + topHeight + h * 0.08f;
-        float radius = Math.min(w, h) * 0.12f;
 
         float topScale = press[0];
         float topInset = (1f - topScale) * w * 0.06f;
@@ -462,10 +484,11 @@ public final class GamepadOverlayView extends FrameLayout {
                 pad + w - topInset, pad + topHeight);
         boolean topPressed = topScale < 0.97f;
         Paint topPaint = topPressed ? buttonPaint : fillPaint;
-        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, topPaint);
+        float topRadius = KeyAppearance.roundedRadius(rect, cornerStrength);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, topRadius, topPaint);
         KeyAppearance.drawRipple(canvas, rect, pressColor,
                 rippleStartedAt[0], SystemClock.uptimeMillis(), ripplePaint);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, topRadius, strokePaint);
         if (shoulderDpsEnabled) {
             drawCenteredTextWithDps(canvas, left ? "L1" : "R1", left ? l1Dps : r1Dps, rect, topScale < 0.97f);
         } else {
@@ -478,7 +501,7 @@ public final class GamepadOverlayView extends FrameLayout {
         rect.set(pad + bottomInset, bottomTop,
                 pad + w - bottomInset, pad + h);
         boolean triggerPressed = bottomScale < 0.97f || trigger > 0.08f;
-        float bottomRadius = radius * 1.18f;
+        float bottomRadius = KeyAppearance.roundedRadius(rect, cornerStrength);
         Paint bottomPaint = (!triggerProgressEnabled && triggerPressed) ? buttonPaint : fillPaint;
         KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, bottomPaint);
 
@@ -494,6 +517,39 @@ public final class GamepadOverlayView extends FrameLayout {
                 rippleStartedAt[1], SystemClock.uptimeMillis(), ripplePaint);
         KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, strokePaint);
         drawCenteredText(canvas, left ? "L2" : "R2", rect, triggerPressed);
+    }
+
+    public void setVader5BackLabels(boolean enabled) {
+        if (vader5BackLabels == enabled) return;
+        vader5BackLabels = enabled;
+        invalidate();
+    }
+
+    private void drawBackButtons(Canvas canvas) {
+        float pad = dp(6f);
+        float gap = dp(6f);
+        float cellW = (getWidth() - pad * 2f - gap) * 0.5f;
+        float cellH = (getHeight() - pad * 2f - gap) * 0.5f;
+        String prefix = vader5BackLabels ? "M" : "P";
+        drawBackButton(canvas, 0, prefix + "1", pad, pad, cellW, cellH);
+        drawBackButton(canvas, 1, prefix + "2", pad + cellW + gap, pad, cellW, cellH);
+        drawBackButton(canvas, 2, prefix + "3", pad, pad + cellH + gap, cellW, cellH);
+        drawBackButton(canvas, 3, prefix + "4", pad + cellW + gap, pad + cellH + gap, cellW, cellH);
+    }
+
+    private void drawBackButton(Canvas canvas, int index, String label, float left, float top, float width, float height) {
+        float scale = press[index];
+        float insetX = (1f - scale) * width * 0.08f;
+        float insetY = (1f - scale) * height * 0.10f;
+        rect.set(left + insetX, top + insetY, left + width - insetX, top + height - insetY);
+        boolean pressed = scale < 0.97f;
+        Paint body = pressed ? buttonPaint : fillPaint;
+        float radius = KeyAppearance.roundedRadius(rect, cornerStrength);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, body);
+        KeyAppearance.drawRipple(canvas, rect, pressColor,
+                rippleStartedAt[index], SystemClock.uptimeMillis(), ripplePaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
+        drawCenteredText(canvas, label, rect, pressed);
     }
 
     private void drawCenteredText(Canvas canvas, String text, RectF area, boolean pressed) {
@@ -561,6 +617,7 @@ public final class GamepadOverlayView extends FrameLayout {
             case DISPLAY_FACE: type = GlobalHtmlWebView.TYPE_GAMEPAD_FACE; break;
             case DISPLAY_LEFT_SHOULDER: type = GlobalHtmlWebView.TYPE_GAMEPAD_LEFT_SHOULDER; break;
             case DISPLAY_RIGHT_SHOULDER: type = GlobalHtmlWebView.TYPE_GAMEPAD_RIGHT_SHOULDER; break;
+            case DISPLAY_BACK: type = GlobalHtmlWebView.TYPE_GAMEPAD_BACK; break;
             default: type = GlobalHtmlWebView.TYPE_GAMEPAD_LEFT_STICK; break;
         }
         GlobalHtmlWebView web = new GlobalHtmlWebView(getContext(), type);

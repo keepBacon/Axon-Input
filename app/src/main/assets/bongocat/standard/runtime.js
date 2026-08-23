@@ -5,6 +5,7 @@
   const DESIGN_HEIGHT = 354;
   const FRAME_INTERVAL = 1000 / 60;
   const DAMPING_DECAY = 0.75;
+  const MIN_MOUSE_PRESS_MS = 36;
 
   // Exact input groups for BongoCat's original standard (mouse + keyboard) model.
   const LEFT_KEYS = new Set([
@@ -57,6 +58,8 @@
     leftKey: null,
     rightKey: null,
     mouseButtons: 0,
+    mouseVisualButtons: 0,
+    mousePressUntil: [0, 0],
     cursorX: 0.5,
     cursorY: 0.5,
     targetX: 0.5,
@@ -75,6 +78,20 @@
   let renderer = null;
   let lastFrameTime = 0;
   let animationHandle = 0;
+  let recoveryScheduled = false;
+
+  function scheduleRendererRecovery() {
+    if (recoveryScheduled) return;
+    recoveryScheduled = true;
+    setTimeout(() => location.reload(), 120);
+  }
+
+  canvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    state.ready = false;
+    renderer = null;
+    scheduleRendererRecovery();
+  }, false);
 
   // CubismEyeBlink defaults from the same Cubism framework used by easy-live2d.
   const blink = {
@@ -196,9 +213,52 @@
     }
   }
 
+  function applyMouseDelta(dx, dy, screenWidth, screenHeight) {
+    const width = Math.max(1, Number(screenWidth) || DESIGN_WIDTH);
+    const height = Math.max(1, Number(screenHeight) || DESIGN_HEIGHT);
+    const moveX = Number(dx) || 0;
+    const moveY = Number(dy) || 0;
+    if (moveX === 0 && moveY === 0) return;
+    state.targetX = Math.max(0, Math.min(1, state.targetX + moveX / width));
+    state.targetY = Math.max(0, Math.min(1, state.targetY + moveY / height));
+    state.pointerActive = true;
+  }
+
+  function applyMouseButtons(mask, pulseMask = 0) {
+    const next = (Number(mask) || 0) & 3;
+    const pulses = (Number(pulseMask) || 0) & 3;
+    const now = performance.now();
+    state.mouseButtons = next;
+
+    for (let index = 0; index < 2; index++) {
+      const bit = 1 << index;
+      if ((next & bit) || (pulses & bit)) {
+        state.mouseVisualButtons |= bit;
+        state.mousePressUntil[index] = Math.max(
+          state.mousePressUntil[index],
+          now + MIN_MOUSE_PRESS_MS,
+        );
+      }
+    }
+  }
+
+  function updateMouseButtonVisual(now) {
+    for (let index = 0; index < 2; index++) {
+      const bit = 1 << index;
+      if (state.mouseButtons & bit) {
+        state.mouseVisualButtons |= bit;
+        continue;
+      }
+      if (now >= state.mousePressUntil[index]) {
+        state.mouseVisualButtons &= ~bit;
+      }
+    }
+  }
+
   window.AxonBongoCat = {
     key(key, pressed) {
-      const rawValue = String(key || '');
+      const rawInput = String(key || '');
+      const rawValue = /^F\d+$/.test(rawInput) ? 'Fn' : rawInput;
       const rawSide = keySide(rawValue);
       if (!rawSide) return;
 
@@ -222,19 +282,20 @@
     },
 
     mouseButtons(mask) {
-      state.mouseButtons = Number(mask) || 0;
-      if (!renderer) return;
-      // Standard BongoCat source model exposes real mouse-button parameters.
-      renderer.setOverride('ParamMouseLeftDown', (state.mouseButtons & 1) ? 1 : 0);
-      renderer.setOverride('ParamMouseRightDown', (state.mouseButtons & 2) ? 1 : 0);
+      const next = (Number(mask) || 0) & 3;
+      const rising = next & ~state.mouseButtons;
+      applyMouseButtons(next, rising);
     },
 
     mouseDelta(dx, dy, screenWidth, screenHeight) {
-      const width = Math.max(1, Number(screenWidth) || DESIGN_WIDTH);
-      const height = Math.max(1, Number(screenHeight) || DESIGN_HEIGHT);
-      state.targetX = Math.max(0, Math.min(1, state.targetX + (Number(dx) || 0) / width));
-      state.targetY = Math.max(0, Math.min(1, state.targetY + (Number(dy) || 0) / height));
-      state.pointerActive = true;
+      applyMouseDelta(dx, dy, screenWidth, screenHeight);
+    },
+
+    // Android 端把同一帧内的鼠标移动和按键合并后一次送入，避免 WebView JS 队列
+    // 在高 CPS 点击时堆积。pulseMask 保证极短点击至少显示一帧，不会丢失释放状态。
+    mouseFrame(mask, pulseMask, dx, dy, screenWidth, screenHeight) {
+      applyMouseButtons(mask, pulseMask);
+      applyMouseDelta(dx, dy, screenWidth, screenHeight);
     },
 
     pointerRatio(x, y) {
@@ -252,6 +313,9 @@
       state.leftKey = null;
       state.rightKey = null;
       state.mouseButtons = 0;
+      state.mouseVisualButtons = 0;
+      state.mousePressUntil[0] = 0;
+      state.mousePressUntil[1] = 0;
       state.cursorX = state.targetX = 0.5;
       state.cursorY = state.targetY = 0.5;
       state.pointerActive = false;
@@ -292,6 +356,7 @@
     const deltaMs = Math.min(100, Math.max(0.1, lastFrameTime ? now - lastFrameTime : FRAME_INTERVAL));
     lastFrameTime = now;
     updatePointer(deltaMs);
+    updateMouseButtonVisual(now);
     renderer.setEyeBlink(eyeBlinkValue(now));
     renderer.render(deltaMs / 1000);
   }
@@ -478,6 +543,11 @@
       for (const [index, value] of this.overrides) {
         this.parameters.values[index] = value;
       }
+
+      // 鼠标按键直接由当前可视状态逐帧写入，不放入持久 overrides。
+      // 即使高频点击期间发生合并、页面恢复或输入监听重连，也不会残留在按下态。
+      this.setValue('ParamMouseLeftDown', (state.mouseVisualButtons & 1) ? 1 : 0);
+      this.setValue('ParamMouseRightDown', (state.mouseVisualButtons & 2) ? 1 : 0);
     }
 
     bindGeometry(program, drawableIndex) {
@@ -618,8 +688,7 @@
 
       renderer = new CoreRenderer(core, model, [texture0, texture1, texture2]);
       syncHandOverrides();
-      renderer.setOverride('ParamMouseLeftDown', (state.mouseButtons & 1) ? 1 : 0);
-      renderer.setOverride('ParamMouseRightDown', (state.mouseButtons & 2) ? 1 : 0);
+      state.mouseVisualButtons = state.mouseButtons;
       fallback.classList.add('hidden');
       state.ready = true;
 

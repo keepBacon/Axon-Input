@@ -31,6 +31,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         MouseTrajectoryView.DragListener,
         GamepadOverlayView.DragListener,
         GamepadInputMonitor.Listener,
+        Vader5ProUsbMonitor.Listener,
         SensitivityProxyController.Listener,
         DpsOverlayView.DragListener {
 
@@ -50,6 +51,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private static final int GAMEPAD_FACE_SIZE_DP = 142;
     private static final int GAMEPAD_SHOULDER_WIDTH_DP = 132;
     private static final int GAMEPAD_SHOULDER_HEIGHT_DP = 86;
+    private static final int GAMEPAD_BACK_WIDTH_DP = 132;
+    private static final int GAMEPAD_BACK_HEIGHT_DP = 86;
     private static final int DPS_WIDTH_DP = 112;
     private static final int DPS_HEIGHT_DP = 40;
     private static final int FULL_KEYBOARD_MAX_WIDTH_DP = 720;
@@ -64,6 +67,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private InputManager inputManager;
     private MouseInputMonitor mouseMonitor;
     private GamepadInputMonitor gamepadMonitor;
+    private Vader5ProUsbMonitor vader5UsbMonitor;
     private SensitivityProxyController sensitivityController;
     private boolean mouseTickerRunning;
     private boolean mouseMonitorActive;
@@ -75,6 +79,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private int proxyMouseButtons;
     private int gamepadLx, gamepadLy, gamepadRx, gamepadRy, gamepadLt, gamepadRt, gamepadButtons;
     private int rawGamepadButtons;
+    private boolean vader5ProConnected;
+    private boolean vader5NativeProfile;
+    private boolean vader5UsbProfile;
+    private int vader5UsbBackButtons;
     private int androidGamepadButtons;
     private int androidGamepadKnownMask;
     private boolean globalHtmlActive;
@@ -98,6 +106,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private final GamepadWindow faceWindow = new GamepadWindow(GamepadOverlayView.DISPLAY_FACE, "AxonInputFaceButtons");
     private final GamepadWindow leftShoulderWindow = new GamepadWindow(GamepadOverlayView.DISPLAY_LEFT_SHOULDER, "AxonInputLeftShoulder");
     private final GamepadWindow rightShoulderWindow = new GamepadWindow(GamepadOverlayView.DISPLAY_RIGHT_SHOULDER, "AxonInputRightShoulder");
+    private final GamepadWindow backWindow = new GamepadWindow(GamepadOverlayView.DISPLAY_BACK, "AxonInputBackButtons");
 
     private KeyPromptOverlayView keyPromptView;
     private WindowManager.LayoutParams keyPromptParams;
@@ -226,6 +235,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             service.removeGamepadWindowImmediate(service.faceWindow);
             service.removeGamepadWindowImmediate(service.leftShoulderWindow);
             service.removeGamepadWindowImmediate(service.rightShoulderWindow);
+            service.removeGamepadWindowImmediate(service.backWindow);
             service.applySavedState();
         };
         if (Looper.myLooper() == Looper.getMainLooper()) action.run();
@@ -251,8 +261,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         inputManager = (InputManager) getSystemService(INPUT_SERVICE);
         if (inputManager != null) inputManager.registerInputDeviceListener(this, null);
 
-        mouseMonitor = new MouseInputMonitor(this);
+        mouseMonitor = new MouseInputMonitor(this, this);
         gamepadMonitor = new GamepadInputMonitor(this, this);
+        vader5UsbMonitor = new Vader5ProUsbMonitor(this, this);
         sensitivityController = new SensitivityProxyController(this, this);
         ShizukuBridge.addListener(this);
         applySavedState();
@@ -296,6 +307,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
         // 手柄按键使用 Android 语义层，轴数据继续读取 /dev/input。
         if (isPhysicalGamepadEvent(event)) {
+            if (OverlayState.isKeyboardCatEnabled(this) && keyboardCatView != null && keyboardCatView.isGamepadStyle()) {
+                keyboardCatView.setGamepadDirectional(event.getKeyCode(), action == KeyEvent.ACTION_DOWN);
+            }
             int logicalBit = GamepadButtons.fromAndroidEvent(event);
             if (logicalBit != 0) {
                 boolean pressed = action == KeyEvent.ACTION_DOWN;
@@ -386,7 +400,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
     @Override
     public void onShizukuDead() {
-        stopMouseMonitor();
+        if (OverlayState.getSensitivityMode(this) != OverlayState.SENSITIVITY_MODE_ROOT) {
+            stopMouseMonitor();
+        }
         if (OverlayState.getSensitivityMode(this) == OverlayState.SENSITIVITY_MODE_SHIZUKU) stopGamepadMonitor();
         if (sensitivityController != null) sensitivityController.onShizukuDead();
     }
@@ -449,6 +465,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             if (keyPromptView != null && OverlayState.isKeyPromptEnabled(this)) {
                 keyPromptView.updateMouseButton(button, pressed, SystemClock.uptimeMillis());
             }
+            if (keyboardCatView != null && OverlayState.isKeyboardCatEnabled(this)) {
+                keyboardCatView.setMouseAuxButton(button, pressed);
+            }
         });
     }
 
@@ -468,6 +487,38 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     @Override
     public void onGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons) {
         mainHandler.post(() -> applyGamepadState(lx, ly, rx, ry, lt, rt, buttons));
+    }
+
+    @Override
+    public void onGamepadProfile(boolean vader5Pro) {
+        mainHandler.post(() -> {
+            vader5NativeProfile = vader5Pro;
+            updateVader5ProfileState();
+        });
+    }
+
+    @Override
+    public void onVader5UsbProfile(boolean connected) {
+        mainHandler.post(() -> {
+            vader5UsbProfile = connected;
+            updateVader5ProfileState();
+        });
+    }
+
+    @Override
+    public void onVader5UsbBackButtons(int mask) {
+        mainHandler.post(() -> {
+            if (vader5UsbBackButtons == mask) return;
+            vader5UsbBackButtons = mask;
+            applyGamepadState(gamepadLx, gamepadLy, gamepadRx, gamepadRy,
+                    gamepadLt, gamepadRt, rawGamepadButtons);
+        });
+    }
+
+    private void updateVader5ProfileState() {
+        boolean connected = vader5NativeProfile || vader5UsbProfile;
+        vader5ProConnected = connected;
+        if (backWindow.view != null) backWindow.view.setVader5BackLabels(connected);
     }
 
     @Override
@@ -674,6 +725,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (inputManager != null) inputManager.unregisterInputDeviceListener(this);
         stopMouseMonitor();
         stopGamepadMonitor();
+        stopVader5UsbMonitor();
         stopDpsTicker();
         if (sensitivityController != null) {
             sensitivityController.destroy();
@@ -692,6 +744,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         removeGamepadWindowImmediate(faceWindow);
         removeGamepadWindowImmediate(leftShoulderWindow);
         removeGamepadWindowImmediate(rightShoulderWindow);
+        removeGamepadWindowImmediate(backWindow);
         super.onDestroy();
     }
 
@@ -699,7 +752,12 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         InputDevice device = event.getDevice();
         if (device == null || device.isVirtual()) return false;
         int sources = event.getSource();
-        return (sources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD;
+        // Some 2.4G/Bluetooth keyboards expose a vendor source mask that omits SOURCE_KEYBOARD
+        // even though Android classifies the device as an alphabetic/non-alphabetic keyboard.
+        // Accept the hardware keyboard classification as a fallback so Mver key animations see
+        // the same physical presses as the rest of Axon Input.
+        return (sources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
+                || device.getKeyboardType() != InputDevice.KEYBOARD_TYPE_NONE;
     }
 
     private boolean isPhysicalGamepadEvent(KeyEvent event) {
@@ -738,6 +796,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         syncGamepadWindow(faceWindow, OverlayState.isGamepadFaceEnabled(this));
         syncGamepadWindow(leftShoulderWindow, OverlayState.isGamepadLeftShoulderEnabled(this));
         syncGamepadWindow(rightShoulderWindow, OverlayState.isGamepadRightShoulderEnabled(this));
+        syncGamepadWindow(backWindow, OverlayState.isGamepadBackEnabled(this));
+        syncVader5UsbMonitor();
         applyOverlayVisibility();
         refreshDpsTicker();
 
@@ -782,6 +842,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             inputFullKeyboardView.setKeyAppearance(
                     OverlayState.getKeyStyle(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD),
                     OverlayState.getKeyPressColor(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD));
+            inputFullKeyboardView.setCornerStrength(
+                    OverlayState.getKeyCornerStrength(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD));
         }
         updateInputFullKeyboardLayout();
     }
@@ -804,6 +866,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         inputFullKeyboardView.setKeyAppearance(
                 OverlayState.getKeyStyle(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD),
                 OverlayState.getKeyPressColor(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD));
+        inputFullKeyboardView.setCornerStrength(
+                OverlayState.getKeyCornerStrength(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD));
         inputFullKeyboardParams = new WindowManager.LayoutParams(
                 fullKeyboardWidthPx(), fullKeyboardHeightPx(),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -959,6 +1023,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         window.view.setKeyAppearance(
                 OverlayState.getKeyStyle(this, window.type),
                 OverlayState.getKeyPressColor(this, window.type));
+        window.view.setCornerStrength(OverlayState.getKeyCornerStrength(this, window.type));
         if (window.type == KeyOverlayView.DISPLAY_KEYBOARD) {
             window.view.setTextColor(OverlayState.getKeyboardTextColor(this));
             window.view.setKeySpacing(OverlayState.getKeyboardSpacing(this));
@@ -1094,8 +1159,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyboardCatRemoving = false;
         ensureKeyboardCatWindow();
         if (keyboardCatView != null) {
+            keyboardCatView.setStyleId(OverlayState.getKeyboardCatStyleId(this));
             keyboardCatView.setMouseMode(OverlayState.isKeyboardCatMouseMode(this));
             keyboardCatView.setGlobalReverse(OverlayState.isKeyboardCatGlobalReverse(this));
+            keyboardCatView.setDebugExpression(OverlayState.getKeyboardCatDebugExpression(this));
+            pushCurrentGamepadToKeyboardCat(keyboardCatView);
             keyboardCatView.setDragEnabled(OverlayState.isDragEnabled(this));
             keyboardCatView.setAlpha(OverlayState.getDisplayOpacity(
                     this, KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT) / 100f);
@@ -1107,7 +1175,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private void ensureKeyboardCatWindow() {
         if (keyboardCatAttached || windowManager == null) return;
         KeyboardCatOverlayView view = new KeyboardCatOverlayView(this);
+        view.setStyleId(OverlayState.getKeyboardCatStyleId(this));
         view.setMouseMode(OverlayState.isKeyboardCatMouseMode(this));
+        view.setDebugExpression(OverlayState.getKeyboardCatDebugExpression(this));
         view.setGlobalReverse(OverlayState.isKeyboardCatGlobalReverse(this));
         view.setDragListener(this);
         view.setDragEnabled(OverlayState.isDragEnabled(this));
@@ -1125,6 +1195,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         windowManager.addView(view, keyboardCatParams);
         keyboardCatAttached = true;
         view.clearInput();
+        pushCurrentGamepadToKeyboardCat(view);
     }
 
     private void updateKeyboardCatLayout() {
@@ -1133,8 +1204,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyboardCatParams.width = keyboardCatWidthPx();
         keyboardCatParams.height = keyboardCatHeightPx();
         keyboardCatParams.flags = windowFlags();
+        keyboardCatView.setStyleId(OverlayState.getKeyboardCatStyleId(this));
         keyboardCatView.setMouseMode(OverlayState.isKeyboardCatMouseMode(this));
         keyboardCatView.setGlobalReverse(OverlayState.isKeyboardCatGlobalReverse(this));
+        keyboardCatView.setDebugExpression(OverlayState.getKeyboardCatDebugExpression(this));
+        pushCurrentGamepadToKeyboardCat(keyboardCatView);
         keyboardCatView.setDragEnabled(OverlayState.isDragEnabled(this));
         keyboardCatView.setAlpha(OverlayState.getDisplayOpacity(
                 this, KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT) / 100f);
@@ -1142,14 +1216,41 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         windowManager.updateViewLayout(keyboardCatView, keyboardCatParams);
     }
 
+    private void pushCurrentGamepadToKeyboardCat(KeyboardCatOverlayView view) {
+        if (view == null || !view.isGamepadStyle()) return;
+        view.setGamepadState(gamepadLx, gamepadLy, gamepadRx, gamepadRy, gamepadLt, gamepadRt, gamepadButtons);
+    }
+
+    /**
+     * 导入样式不再强制使用原版 360x208 的横向窗口。
+     * 保持原版窗口面积基本不变，仅按样式自身画布比例重排宽高，避免方形/竖向模型
+     * 被原版键盘猫的横向视口裁掉，同时避免因为画布分辨率更大而视觉尺寸突然放大。
+     */
+    private int[] keyboardCatBaseSizeDp() {
+        BongoCatStyleManager.StyleInfo style = BongoCatStyleManager.selected(this);
+        if (style == null || style.builtin) {
+            return new int[]{KEYBOARD_CAT_WIDTH_DP, KEYBOARD_CAT_HEIGHT_DP};
+        }
+
+        float aspect = style.aspectRatio();
+        if (!Float.isFinite(aspect) || aspect <= 0.05f || aspect >= 20f) {
+            aspect = KEYBOARD_CAT_WIDTH_DP / (float) KEYBOARD_CAT_HEIGHT_DP;
+        }
+
+        float baseArea = KEYBOARD_CAT_WIDTH_DP * (float) KEYBOARD_CAT_HEIGHT_DP;
+        int width = Math.max(1, Math.round((float) Math.sqrt(baseArea * aspect)));
+        int height = Math.max(1, Math.round(width / aspect));
+        return new int[]{width, height};
+    }
+
     private int keyboardCatWidthPx() {
-        return Math.max(1, dp(KEYBOARD_CAT_WIDTH_DP
-                * OverlayState.getKeyboardCatSize(this) / 100f));
+        int[] base = keyboardCatBaseSizeDp();
+        return Math.max(1, dp(base[0] * OverlayState.getKeyboardCatSize(this) / 100f));
     }
 
     private int keyboardCatHeightPx() {
-        return Math.max(1, dp(KEYBOARD_CAT_HEIGHT_DP
-                * OverlayState.getKeyboardCatSize(this) / 100f));
+        int[] base = keyboardCatBaseSizeDp();
+        return Math.max(1, dp(base[1] * OverlayState.getKeyboardCatSize(this) / 100f));
     }
 
     private void applyKeyboardCatPosition() {
@@ -1243,10 +1344,12 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         window.view.setAlpha(OverlayState.getDisplayOpacity(this, window.type) / 100f);
         if (window.type == GamepadOverlayView.DISPLAY_FACE
                 || window.type == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
-                || window.type == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER) {
+                || window.type == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
+                || window.type == GamepadOverlayView.DISPLAY_BACK) {
             window.view.setKeyAppearance(
                     OverlayState.getKeyStyle(this, window.type),
                     OverlayState.getKeyPressColor(this, window.type));
+            window.view.setCornerStrength(OverlayState.getKeyCornerStrength(this, window.type));
         }
         window.view.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
         if (window.type == GamepadOverlayView.DISPLAY_LEFT_STICK) {
@@ -1271,6 +1374,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             window.view.setShoulderOptions(
                     OverlayState.isGamepadR2ProgressEnabled(this),
                     OverlayState.isGamepadR1DpsEnabled(this));
+        } else if (window.type == GamepadOverlayView.DISPLAY_BACK) {
+            window.view.setVader5BackLabels(vader5ProConnected);
         }
         pushDpsToView(window.view, SystemClock.uptimeMillis());
     }
@@ -1279,7 +1384,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         int base = (type == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
                 || type == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER)
                 ? GAMEPAD_SHOULDER_WIDTH_DP
-                : (type == GamepadOverlayView.DISPLAY_FACE ? GAMEPAD_FACE_SIZE_DP : GAMEPAD_STICK_SIZE_DP);
+                : (type == GamepadOverlayView.DISPLAY_BACK ? GAMEPAD_BACK_WIDTH_DP
+                : (type == GamepadOverlayView.DISPLAY_FACE ? GAMEPAD_FACE_SIZE_DP : GAMEPAD_STICK_SIZE_DP));
         return Math.max(1, dp(base * OverlayState.getGamepadDisplaySize(this, type) / 100f));
     }
 
@@ -1287,7 +1393,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         int base = (type == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
                 || type == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER)
                 ? GAMEPAD_SHOULDER_HEIGHT_DP
-                : (type == GamepadOverlayView.DISPLAY_FACE ? GAMEPAD_FACE_SIZE_DP : GAMEPAD_STICK_SIZE_DP);
+                : (type == GamepadOverlayView.DISPLAY_BACK ? GAMEPAD_BACK_HEIGHT_DP
+                : (type == GamepadOverlayView.DISPLAY_FACE ? GAMEPAD_FACE_SIZE_DP : GAMEPAD_STICK_SIZE_DP));
         return Math.max(1, dp(base * OverlayState.getGamepadDisplaySize(this, type) / 100f));
     }
 
@@ -1326,6 +1433,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (faceWindow.view == source) return faceWindow;
         if (leftShoulderWindow.view == source) return leftShoulderWindow;
         if (rightShoulderWindow.view == source) return rightShoulderWindow;
+        if (backWindow.view == source) return backWindow;
         return null;
     }
 
@@ -1419,7 +1527,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
     private void applyGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons) {
         rawGamepadButtons = buttons;
-        int effectiveButtons = mergeGamepadButtons(buttons);
+        int effectiveButtons = mergeGamepadButtons(buttons | vader5UsbBackButtons);
 
         if (OverlayState.isGamepadSwapXY(this)) {
             effectiveButtons = swapGamepadButtonGroups(
@@ -1432,6 +1540,13 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                     effectiveButtons,
                     GamepadOverlayView.BTN_SOUTH,
                     GamepadOverlayView.BTN_EAST | GamepadOverlayView.BTN_Z);
+        }
+        if (OverlayState.isGamepadCustomSwapEnabled(this)) {
+            int first = OverlayState.getGamepadCustomSwapFirst(this);
+            int second = OverlayState.getGamepadCustomSwapSecond(this);
+            if (first != 0 && second != 0 && first != second) {
+                effectiveButtons = swapGamepadButtonGroups(effectiveButtons, first, second);
+            }
         }
 
         if (OverlayState.isGamepadSwapSticks(this)) {
@@ -1466,6 +1581,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         pushGamepadState(faceWindow, lx, ly, rx, ry, lt, rt, effectiveButtons);
         pushGamepadState(leftShoulderWindow, lx, ly, rx, ry, lt, rt, effectiveButtons);
         pushGamepadState(rightShoulderWindow, lx, ly, rx, ry, lt, rt, effectiveButtons);
+        pushGamepadState(backWindow, lx, ly, rx, ry, lt, rt, effectiveButtons);
+        if (keyboardCatView != null && OverlayState.isKeyboardCatEnabled(this) && keyboardCatView.isGamepadStyle()) {
+            keyboardCatView.setGamepadState(lx, ly, rx, ry, lt, rt, effectiveButtons);
+        }
         if (effectiveButtons != previousButtons && needsDpsTicker()) pushDpsToViews(now);
     }
 
@@ -1488,6 +1607,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             keyPromptView.setKeyAppearance(
                     OverlayState.getKeyStyle(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT),
                     OverlayState.getKeyPressColor(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+            keyPromptView.setCornerStrength(
+                    OverlayState.getKeyCornerStrength(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
             keyPromptView.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
             keyPromptView.animateIn();
         }
@@ -1504,6 +1625,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyPromptView.setKeyAppearance(
                 OverlayState.getKeyStyle(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT),
                 OverlayState.getKeyPressColor(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+        keyPromptView.setCornerStrength(
+                OverlayState.getKeyCornerStrength(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
         keyPromptParams = new WindowManager.LayoutParams(
                 keyPromptWidthPx(), keyPromptHeightPx(),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -1527,6 +1650,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         keyPromptView.setKeyAppearance(
                 OverlayState.getKeyStyle(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT),
                 OverlayState.getKeyPressColor(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+        keyPromptView.setCornerStrength(
+                OverlayState.getKeyCornerStrength(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
         keyPromptView.setGlobalHtmlRenderer(globalHtmlActive, globalHtmlContent);
         applyKeyPromptPosition();
         windowManager.updateViewLayout(keyPromptView, keyPromptParams);
@@ -1781,8 +1906,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     }
 
     private void startMouseMonitor() {
-        if (!needsMouseMonitor() || !ShizukuBridge.isReady() || !ShizukuBridge.hasPermission()) return;
-        if (mouseMonitor == null) mouseMonitor = new MouseInputMonitor(this);
+        if (!needsMouseMonitor()) return;
+        int mode = OverlayState.getSensitivityMode(this);
+        if (mode != OverlayState.SENSITIVITY_MODE_ROOT
+                && (!ShizukuBridge.isReady() || !ShizukuBridge.hasPermission())) return;
+        if (mouseMonitor == null) mouseMonitor = new MouseInputMonitor(this, this);
         mouseMonitor.start();
         mouseMonitorActive = true;
         if (OverlayState.isMouseEnabled(this) && !mouseTickerRunning) {
@@ -1801,9 +1929,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                 && (target == OverlayState.DPS_TARGET_NONE
                 || target == OverlayState.DPS_TARGET_MOUSE_LEFT
                 || target == OverlayState.DPS_TARGET_MOUSE_RIGHT);
+        boolean keyboardCatNeedsMouse = OverlayState.isKeyboardCatEnabled(this)
+                && !BongoCatStyleManager.isSelectedGamepad(this);
         return !OverlayState.isSensitivityEnabled(this)
                 && (OverlayState.isMouseEnabled(this) || OverlayState.isMouseTrajectoryEnabled(this)
-                || OverlayState.isKeyboardCatEnabled(this)
+                || keyboardCatNeedsMouse
                 || OverlayState.isKeyPromptEnabled(this) || cpsNeedsMouse);
     }
 
@@ -1811,8 +1941,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         int target = OverlayState.getDpsTargetKeyCode(this);
         boolean cpsNeedsGamepad = OverlayState.isDpsEnabled(this)
                 && (target == OverlayState.DPS_TARGET_NONE || OverlayState.isGamepadDpsTarget(target));
+        boolean keyboardCatGamepad = OverlayState.isKeyboardCatEnabled(this)
+                && BongoCatStyleManager.isSelectedGamepad(this);
         return !OverlayState.isSensitivityEnabled(this)
-                && (OverlayState.isAnyGamepadDisplayEnabled(this) || cpsNeedsGamepad);
+                && (OverlayState.isAnyGamepadDisplayEnabled(this) || keyboardCatGamepad || cpsNeedsGamepad);
     }
 
     private void startGamepadMonitor() {
@@ -1832,6 +1964,25 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             gamepadMonitorActive = false;
             if (gamepadMonitor != null) gamepadMonitor.stop();
         }
+    }
+
+    private void syncVader5UsbMonitor() {
+        // M1-M4 不在标准 XInput 报告中。背键显示开启时始终尝试 USB Host 扩展接口，
+        // 不依赖 Root/Shizuku，也不受灵敏度代理是否接管 evdev 的影响。
+        boolean needed = OverlayState.isGamepadBackEnabled(this);
+        if (needed) {
+            if (vader5UsbMonitor == null) vader5UsbMonitor = new Vader5ProUsbMonitor(this, this);
+            vader5UsbMonitor.start();
+        } else {
+            stopVader5UsbMonitor();
+        }
+    }
+
+    private void stopVader5UsbMonitor() {
+        if (vader5UsbMonitor != null) vader5UsbMonitor.stop();
+        vader5UsbBackButtons = 0;
+        vader5UsbProfile = false;
+        updateVader5ProfileState();
     }
 
     private void stopMouseMonitor() {

@@ -27,6 +27,7 @@ public final class GlobalHtmlWebView extends WebView {
     public static final String TYPE_GAMEPAD_FACE = "gamepad-face";
     public static final String TYPE_GAMEPAD_LEFT_SHOULDER = "gamepad-left-shoulder";
     public static final String TYPE_GAMEPAD_RIGHT_SHOULDER = "gamepad-right-shoulder";
+    public static final String TYPE_GAMEPAD_BACK = "gamepad-back";
 
     private static final int BTN_SOUTH = 1 << 0;
     private static final int BTN_EAST = 1 << 1;
@@ -36,6 +37,10 @@ public final class GlobalHtmlWebView extends WebView {
     private static final int BTN_Z = 1 << 5;
     private static final int BTN_L1 = 1 << 6;
     private static final int BTN_R1 = 1 << 7;
+    private static final int BTN_BACK_1 = 1 << 15;
+    private static final int BTN_BACK_2 = 1 << 16;
+    private static final int BTN_BACK_3 = 1 << 17;
+    private static final int BTN_BACK_4 = 1 << 18;
     private static final int BTN_L2 = 1 << 8;
     private static final int BTN_R2 = 1 << 9;
     private static final int BTN_L3 = 1 << 13;
@@ -538,6 +543,10 @@ public final class GlobalHtmlWebView extends WebView {
             buttons.put("r2", (gamepadButtons & BTN_R2) != 0 || gamepadRt > 80);
             buttons.put("l3", (gamepadButtons & BTN_L3) != 0);
             buttons.put("r3", (gamepadButtons & BTN_R3) != 0);
+            buttons.put("p1", (gamepadButtons & BTN_BACK_1) != 0);
+            buttons.put("p2", (gamepadButtons & BTN_BACK_2) != 0);
+            buttons.put("p3", (gamepadButtons & BTN_BACK_3) != 0);
+            buttons.put("p4", (gamepadButtons & BTN_BACK_4) != 0);
             pad.put("buttons", buttons);
             JSONObject cps = new JSONObject();
             cps.put("y", faceYDps);
@@ -802,12 +811,21 @@ public final class GlobalHtmlWebView extends WebView {
         appendAppearance(rightShoulder, c, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
         gamepad.put("rightShoulder", rightShoulder);
 
+        JSONObject back = new JSONObject();
+        back.put("enabled", OverlayState.isGamepadBackEnabled(c));
+        back.put("sizePercent", OverlayState.getGamepadDisplaySize(c, GamepadOverlayView.DISPLAY_BACK));
+        appendAppearance(back, c, GamepadOverlayView.DISPLAY_BACK);
+        gamepad.put("back", back);
+
         JSONObject compatibility = new JSONObject();
         compatibility.put("mode", gamepadCompatibilityName(OverlayState.getGamepadCompatibilityMode(c)));
         compatibility.put("swapXY", OverlayState.isGamepadSwapXY(c));
         compatibility.put("swapAB", OverlayState.isGamepadSwapAB(c));
         compatibility.put("swapSticks", OverlayState.isGamepadSwapSticks(c));
         compatibility.put("swapTriggers", OverlayState.isGamepadSwapTriggers(c));
+        compatibility.put("customSwapEnabled", OverlayState.isGamepadCustomSwapEnabled(c));
+        compatibility.put("customSwapFirst", OverlayState.getGamepadCustomSwapFirst(c));
+        compatibility.put("customSwapSecond", OverlayState.getGamepadCustomSwapSecond(c));
         gamepad.put("compatibility", compatibility);
         root.put("gamepad", gamepad);
 
@@ -867,6 +885,7 @@ public final class GlobalHtmlWebView extends WebView {
         if (TYPE_GAMEPAD_FACE.equals(type)) return OverlayState.isGamepadFaceEnabled(c);
         if (TYPE_GAMEPAD_LEFT_SHOULDER.equals(type)) return OverlayState.isGamepadLeftShoulderEnabled(c);
         if (TYPE_GAMEPAD_RIGHT_SHOULDER.equals(type)) return OverlayState.isGamepadRightShoulderEnabled(c);
+        if (TYPE_GAMEPAD_BACK.equals(type)) return OverlayState.isGamepadBackEnabled(c);
         return OverlayState.isEnabled(c);
     }
 
@@ -901,6 +920,7 @@ public final class GlobalHtmlWebView extends WebView {
         if (TYPE_GAMEPAD_FACE.equals(type)) return GamepadOverlayView.DISPLAY_FACE;
         if (TYPE_GAMEPAD_LEFT_SHOULDER.equals(type)) return GamepadOverlayView.DISPLAY_LEFT_SHOULDER;
         if (TYPE_GAMEPAD_RIGHT_SHOULDER.equals(type)) return GamepadOverlayView.DISPLAY_RIGHT_SHOULDER;
+        if (TYPE_GAMEPAD_BACK.equals(type)) return GamepadOverlayView.DISPLAY_BACK;
         return KeyOverlayView.DISPLAY_KEYBOARD;
     }
 
@@ -908,7 +928,7 @@ public final class GlobalHtmlWebView extends WebView {
         return "(function(){"
                 + "const KD=window.KeyDisplay=window.KeyDisplay||{};"
                 + "KD.apiVersion=" + API_VERSION + ";KD.version='" + RENDERER_VERSION + "';KD.type=" + JSONObject.quote(type) + ";"
-                + "KD.types=['keyboard','mouse','custom','mouse-trajectory','key-prompt','gamepad-left-stick','gamepad-right-stick','gamepad-face','gamepad-left-shoulder','gamepad-right-shoulder'];"
+                + "KD.types=['keyboard','mouse','custom','mouse-trajectory','key-prompt','gamepad-left-stick','gamepad-right-stick','gamepad-face','gamepad-left-shoulder','gamepad-right-shoulder','gamepad-back'];"
                 + "KD.getState=()=>window.__KEYDISPLAY_STATE__||null;"
                 + "KD.on=(n,f)=>{const e=n.startsWith('keydisplay:')?n:'keydisplay:'+n;window.addEventListener(e,f);return()=>window.removeEventListener(e,f)};"
                 + "KD.once=(n,f)=>{const off=KD.on(n,e=>{off();f(e)});return off};"

@@ -47,6 +47,7 @@ public final class NativeKeyCanvasView extends View {
     private final int keyPressedColor;
     private int pressColor;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
+    private int cornerStrength = KeyAppearance.DEFAULT_CORNER_STRENGTH;
     private final int textIdleColor;
     private final int textPressedColor;
     private int textColorOverride;
@@ -73,7 +74,6 @@ public final class NativeKeyCanvasView extends View {
 
     private final float keySize;
     private final float gap;
-    private final float radius;
     private final float spaceWidth;
     private final float spaceHeight;
     private final float mouseWidth;
@@ -129,7 +129,6 @@ public final class NativeKeyCanvasView extends View {
 
         keySize = dp(50);
         gap = dp(8);
-        radius = dp(10);
         spaceWidth = dp(150);
         spaceHeight = dp(44);
         mouseWidth = dp(156);
@@ -152,6 +151,13 @@ public final class NativeKeyCanvasView extends View {
     public void setKeyAppearance(int style, int color) {
         keyStyle = KeyAppearance.clampStyle(style);
         pressColor = 0xff000000 | (color & 0x00ffffff);
+        postInvalidateOnAnimation();
+    }
+
+    public void setCornerStrength(int strength) {
+        int resolved = KeyAppearance.clampCornerStrength(strength);
+        if (cornerStrength == resolved) return;
+        cornerStrength = resolved;
         postInvalidateOnAnimation();
     }
 
@@ -487,7 +493,7 @@ public final class NativeKeyCanvasView extends View {
 
         fillPaint.setStyle(Paint.Style.FILL);
         fillPaint.setColor(withMotionAlpha(pressed ? pressColor : keyIdleColor, motion));
-        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, fillPaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, KeyAppearance.roundedRadius(rect, cornerStrength), fillPaint);
         if (animationMode == OverlayState.MOTION_RIPPLE) {
             KeyAppearance.drawRipple(canvas, rect, pressColor,
                     customRippleStartedAt[index], SystemClock.uptimeMillis(), ripplePaint);
@@ -495,7 +501,7 @@ public final class NativeKeyCanvasView extends View {
 
         if (!pressed) {
             strokePaint.setColor(withMotionAlpha(strokeColor, motion));
-            KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
+            KeyAppearance.drawShape(canvas, rect, keyStyle, KeyAppearance.roundedRadius(rect, cornerStrength), strokePaint);
         }
 
         textPaint.setColor(withMotionAlpha(resolveTextColor(pressed), motion));
@@ -515,7 +521,7 @@ public final class NativeKeyCanvasView extends View {
         RectF outer = new RectF(left, top, right, bottom);
         RectF leftArea = new RectF(left, top, middle, bottom);
         RectF rightArea = new RectF(middle, top, right, bottom);
-        float outerRadius = mouseOuterRadius();
+        float outerRadius = mouseOuterRadius(outer);
         int leftCps = (int) ((mouseStats >>> 8) & 0xffL);
         int rightCps = (int) ((mouseStats >>> 16) & 0xffL);
 
@@ -557,10 +563,10 @@ public final class NativeKeyCanvasView extends View {
         textPaint.setTypeface(typefaceBold);
     }
 
-    private float mouseOuterRadius() {
+    private float mouseOuterRadius(RectF area) {
         if (keyStyle == KeyAppearance.STYLE_SQUARE) return 0f;
-        if (keyStyle == KeyAppearance.STYLE_CIRCLE) return mouseHeight * 0.5f;
-        return Math.min(radius * 1.35f, mouseHeight * 0.24f);
+        if (keyStyle == KeyAppearance.STYLE_CIRCLE) return Math.min(area.width(), area.height()) * 0.5f;
+        return KeyAppearance.roundedRadius(area, cornerStrength);
     }
 
     private void drawMouseOuterShape(Canvas canvas, RectF area, float outerRadius, Paint paint) {
@@ -589,7 +595,7 @@ public final class NativeKeyCanvasView extends View {
 
         fillPaint.setStyle(Paint.Style.FILL);
         fillPaint.setColor(withMotionAlpha(pressed ? pressColor : keyIdleColor, motion));
-        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, fillPaint);
+        KeyAppearance.drawShape(canvas, rect, keyStyle, KeyAppearance.roundedRadius(rect, cornerStrength), fillPaint);
         if (animationMode == OverlayState.MOTION_RIPPLE) {
             KeyAppearance.drawRipple(canvas, rect, pressColor,
                     rippleStartedAt[slot], SystemClock.uptimeMillis(), ripplePaint);
@@ -597,7 +603,7 @@ public final class NativeKeyCanvasView extends View {
 
         if (!pressed) {
             strokePaint.setColor(withMotionAlpha(strokeColor, motion));
-            KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
+            KeyAppearance.drawShape(canvas, rect, keyStyle, KeyAppearance.roundedRadius(rect, cornerStrength), strokePaint);
         }
 
         textPaint.setColor(withMotionAlpha(resolveTextColor(pressed), motion));

@@ -11,12 +11,23 @@ final class KeyAppearance {
     static final int STYLE_SQUARE = 1;
     static final int STYLE_CIRCLE = 2;
     static final long RIPPLE_MS = 260L;
+    static final int DEFAULT_CORNER_STRENGTH = 40;
 
     private KeyAppearance() {}
 
     static int clampStyle(int style) {
         if (style == STYLE_SQUARE || style == STYLE_CIRCLE) return style;
         return STYLE_ROUNDED;
+    }
+
+    static int clampCornerStrength(int strength) {
+        return Math.max(0, Math.min(100, strength));
+    }
+
+    static float roundedRadius(RectF area, int strength) {
+        if (area == null) return 0f;
+        float maxRadius = Math.min(area.width(), area.height()) * 0.5f;
+        return maxRadius * (clampCornerStrength(strength) / 100f);
     }
 
     static void drawShape(Canvas canvas, RectF area, int style, float radius, Paint paint) {

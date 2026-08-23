@@ -17,7 +17,6 @@ public final class FullKeyboardOverlayView extends View {
     private static final long FLASH_MS = 140L;
     private static final float KEY_GAP_DP = 3f;
     private static final float PANEL_PADDING_DP = 6f;
-    private static final float KEY_RADIUS_DP = 5f;
     private static final float PANEL_RADIUS_DP = 10f;
 
     private static final class KeySpec {
@@ -96,6 +95,7 @@ public final class FullKeyboardOverlayView extends View {
     private final SparseLongArray rippleStartedAt = new SparseLongArray();
     private final float density;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
+    private int cornerStrength = KeyAppearance.DEFAULT_CORNER_STRENGTH;
     private int pressColor;
     private boolean rippleActive;
 
@@ -112,6 +112,13 @@ public final class FullKeyboardOverlayView extends View {
     public void setKeyAppearance(int style, int color) {
         keyStyle = KeyAppearance.clampStyle(style);
         pressColor = 0xff000000 | (color & 0x00ffffff);
+        invalidate();
+    }
+
+    public void setCornerStrength(int strength) {
+        int resolved = KeyAppearance.clampCornerStrength(strength);
+        if (cornerStrength == resolved) return;
+        cornerStrength = resolved;
         invalidate();
     }
 
@@ -181,7 +188,7 @@ public final class FullKeyboardOverlayView extends View {
             boolean pressed = held.get(key.code) || flashUntil.get(key.code, 0L) > now;
             paint.setColor(pressed ? pressColor : UiPalette.overlayKeyIdle(getContext()));
             rect.set(x, y, x + width, y + height);
-            float radius = dp(KEY_RADIUS_DP);
+            float radius = KeyAppearance.roundedRadius(rect, cornerStrength);
             KeyAppearance.drawShape(canvas, rect, keyStyle, radius, paint);
             long rippleStart = rippleStartedAt.get(key.code, 0L);
             if (rippleStart > 0L && now - rippleStart < KeyAppearance.RIPPLE_MS) rippleActive = true;

@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <linux/hidraw.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -20,7 +21,12 @@
 
 namespace {
 constexpr int kMaxEvents = 256;
+constexpr int kMaxHidraw = 64;
+constexpr int kMaxVaderRaw = 8;
 constexpr int kScanIntervalMs = 900;
+constexpr uint16_t kFlydigiVendor = 0x37d7;
+constexpr uint16_t kVader5ProProduct = 0x2401;
+constexpr uint32_t kBackButtonMask = (1u << 15) | (1u << 16) | (1u << 17) | (1u << 18);
 constexpr const char* kVirtualPrefix = "Axon Input Virtual";
 volatile sig_atomic_t gStop = 0;
 
@@ -61,7 +67,10 @@ int gamepadDeviceScore(int fd) {
         BTN_GAMEPAD, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_C, BTN_Z,
         BTN_TL, BTN_TR, BTN_TL2, BTN_TR2, BTN_SELECT, BTN_START, BTN_MODE,
         BTN_THUMBL, BTN_THUMBR, BTN_TRIGGER, BTN_THUMB, BTN_THUMB2, BTN_TOP,
-        BTN_TOP2, BTN_PINKIE, BTN_BASE, BTN_BASE2
+        BTN_TOP2, BTN_PINKIE, BTN_BASE, BTN_BASE2, BTN_BASE3, BTN_BASE4, BTN_BASE5, BTN_BASE6,
+        BTN_TRIGGER_HAPPY1, BTN_TRIGGER_HAPPY2, BTN_TRIGGER_HAPPY3, BTN_TRIGGER_HAPPY4,
+        BTN_TRIGGER_HAPPY5, BTN_TRIGGER_HAPPY6, BTN_TRIGGER_HAPPY7, BTN_TRIGGER_HAPPY8,
+        BTN_TRIGGER_HAPPY9, BTN_TRIGGER_HAPPY10, BTN_TRIGGER_HAPPY11, BTN_TRIGGER_HAPPY12, BTN_TRIGGER_HAPPY13
     };
     for (int code : gamepadKeys) if (bitTest(keyBits, code)) ++buttonCount;
 
@@ -188,6 +197,15 @@ int buttonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
         case BTN_PINKIE: return 7;
         case BTN_BASE: return 8;
         case BTN_BASE2: return 9;
+        case BTN_BASE3: case BTN_TRIGGER_HAPPY1: return 15;
+        case BTN_BASE4: case BTN_TRIGGER_HAPPY2: return 16;
+        case BTN_BASE5: case BTN_TRIGGER_HAPPY3: return 17;
+        case BTN_BASE6: case BTN_TRIGGER_HAPPY4: return 18;
+        // Flydigi Vader 5 Pro / SDL paddle range. Kernel Flydigi driver exposes M1..M4 here.
+        case BTN_TRIGGER_HAPPY5: return 15;
+        case BTN_TRIGGER_HAPPY6: return 16;
+        case BTN_TRIGGER_HAPPY7: return 17;
+        case BTN_TRIGGER_HAPPY8: return 18;
         default: return -1;
     }
 }
@@ -195,7 +213,7 @@ int buttonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
 struct GamepadState {
     int lx = 0, ly = 0, rx = 0, ry = 0;
     int lt = 0, rt = 0;
-    uint16_t buttons = 0;
+    uint32_t buttons = 0;
 };
 
 struct Device {
@@ -215,10 +233,187 @@ struct Device {
     bool digitalRt = false;
     bool hasStandardEast = false;
     bool hasStandardWest = false;
+    bool vader5Pro = false;
+    uint16_t vendor = 0;
+    uint16_t product = 0;
+    uint32_t evdevBackMask = 0;
+    uint32_t rawBackMask = 0;
     GamepadState state{};
     GamepadState emitted{};
     bool emittedOnce = false;
 };
+
+
+struct VaderRaw {
+    int fd = -1;
+    bool writable = false;
+    bool extendedSeen = false;
+    uint32_t backMask = 0;
+    char path[64]{};
+};
+
+void refreshBackButtons(Device* d) {
+    if (!d) return;
+    d->state.buttons = (d->state.buttons & ~kBackButtonMask)
+            | (d->evdevBackMask & kBackButtonMask)
+            | (d->rawBackMask & kBackButtonMask);
+}
+
+bool isVader5Id(int fd, input_id* out = nullptr) {
+    input_id id{};
+    if (ioctl(fd, EVIOCGID, &id) < 0) return false;
+    if (out) *out = id;
+    return id.vendor == kFlydigiVendor && id.product == kVader5ProProduct;
+}
+
+ssize_t writeHidrawPacket(int fd, const uint8_t payload[32]) {
+    if (fd < 0 || !payload) return -1;
+    // Vader 5 Pro 的 interface 1 是 unnumbered 32-byte report。先发送原始 32 字节；
+    // 只有某些内核 hidraw 明确要求 report-id 时才回退到前置 0 的兼容形式。
+    ssize_t n = write(fd, payload, 32);
+    if (n >= 0) return n;
+    uint8_t numbered[33]{};
+    memcpy(numbered + 1, payload, 32);
+    return write(fd, numbered, sizeof(numbered));
+}
+
+void sendVader5Command(int fd, const uint8_t* prefix, size_t prefixSize) {
+    if (fd < 0 || !prefix || prefixSize == 0 || prefixSize > 32) return;
+    uint8_t packet[32]{};
+    memcpy(packet, prefix, prefixSize);
+    (void)writeHidrawPacket(fd, packet);
+}
+
+void enableVader5Extended(VaderRaw* raw) {
+    if (!raw || raw->fd < 0 || !raw->writable) return;
+    static const uint8_t kInfo[] = {0x5a, 0xa5, 0x01, 0x02, 0x03};
+    static const uint8_t kSerial[] = {0x5a, 0xa5, 0xa1, 0x02, 0xa3};
+    static const uint8_t kConfigRead[] = {0x5a, 0xa5, 0x02, 0x02, 0x04};
+    static const uint8_t kConfigData[] = {0x5a, 0xa5, 0x04, 0x02, 0x06};
+    static const uint8_t kTestMode[] = {0x5a, 0xa5, 0x11, 0x07, 0xff, 0x01, 0xff, 0xff, 0xff, 0x15};
+    sendVader5Command(raw->fd, kInfo, sizeof(kInfo));
+    usleep(2500);
+    sendVader5Command(raw->fd, kSerial, sizeof(kSerial));
+    usleep(2500);
+    sendVader5Command(raw->fd, kConfigRead, sizeof(kConfigRead));
+    usleep(2500);
+    sendVader5Command(raw->fd, kConfigData, sizeof(kConfigData));
+    usleep(2500);
+    sendVader5Command(raw->fd, kTestMode, sizeof(kTestMode));
+}
+
+void closeVaderRaw(VaderRaw* raw) {
+    if (!raw) return;
+    if (raw->fd >= 0 && raw->writable && raw->extendedSeen) {
+        static const uint8_t kDisable[] = {0x5a, 0xa5, 0x11, 0x07, 0xff, 0x00, 0xff, 0xff, 0xff, 0x14};
+        sendVader5Command(raw->fd, kDisable, sizeof(kDisable));
+    }
+    if (raw->fd >= 0) close(raw->fd);
+    *raw = VaderRaw{};
+    raw->fd = -1;
+}
+
+void closeVaderRaws(VaderRaw* raws, int* count, Device* d) {
+    if (!raws || !count) return;
+    for (int i = 0; i < *count; ++i) closeVaderRaw(&raws[i]);
+    *count = 0;
+    if (d) {
+        d->rawBackMask = 0;
+        refreshBackButtons(d);
+    }
+}
+
+int scanVaderRaws(VaderRaw* raws, int capacity) {
+    if (!raws || capacity <= 0) return 0;
+    int count = 0;
+    for (int i = 0; i < kMaxHidraw && count < capacity; ++i) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/hidraw%d", i);
+        int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        bool writable = fd >= 0;
+        if (fd < 0) fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) continue;
+        hidraw_devinfo info{};
+        if (ioctl(fd, HIDIOCGRAWINFO, &info) < 0
+                || static_cast<uint16_t>(info.vendor) != kFlydigiVendor
+                || static_cast<uint16_t>(info.product) != kVader5ProProduct) {
+            close(fd);
+            continue;
+        }
+        VaderRaw raw{};
+        raw.fd = fd;
+        raw.writable = writable;
+        snprintf(raw.path, sizeof(raw.path), "%s", path);
+        raws[count] = raw;
+        enableVader5Extended(&raws[count]);
+        ++count;
+    }
+    if (count > 0) {
+        printf("STATUS vader5-pro-raw-ready %d\n", count);
+        fflush(stdout);
+    }
+    return count;
+}
+
+uint32_t parseVader5BackMask(const uint8_t* report, size_t size) {
+    if (!report || size < 14) return 0;
+    size_t off = 0;
+    if (!(report[0] == 0x5a && report[1] == 0xa5 && report[2] == 0xef)) {
+        // Compatibility with stacks that prepend a zero report-id on read.
+        if (size >= 15 && report[0] == 0x00
+                && report[1] == 0x5a && report[2] == 0xa5 && report[3] == 0xef) {
+            off = 1;
+        } else {
+            return UINT32_MAX;
+        }
+    }
+    uint8_t ext = report[off + 13];
+    uint32_t mask = 0;
+    if (ext & (1u << 2)) mask |= (1u << 15); // M1
+    if (ext & (1u << 3)) mask |= (1u << 16); // M2
+    if (ext & (1u << 4)) mask |= (1u << 17); // M3
+    if (ext & (1u << 5)) mask |= (1u << 18); // M4
+    return mask;
+}
+
+bool readVaderRaw(VaderRaw* raw) {
+    if (!raw || raw->fd < 0) return false;
+    bool changed = false;
+    uint8_t buffer[256];
+    for (;;) {
+        ssize_t n = read(raw->fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            size_t size = static_cast<size_t>(n);
+            bool parsed = false;
+            // hidraw normally returns one report per read, but scan the buffer defensively.
+            for (size_t off = 0; off + 14 <= size; ++off) {
+                uint32_t mask = parseVader5BackMask(buffer + off, size - off);
+                if (mask == UINT32_MAX) continue;
+                if (raw->backMask != mask) {
+                    raw->backMask = mask;
+                    changed = true;
+                }
+                raw->extendedSeen = true;
+                parsed = true;
+                break;
+            }
+            if (parsed) continue;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) return changed;
+        if (n == 0) return changed;
+        closeVaderRaw(raw);
+        return true;
+    }
+}
+
+uint32_t aggregateVaderBackMask(const VaderRaw* raws, int count) {
+    uint32_t mask = 0;
+    for (int i = 0; raws && i < count; ++i) {
+        if (raws[i].fd >= 0 && raws[i].extendedSeen) mask |= raws[i].backMask;
+    }
+    return mask & kBackButtonMask;
+}
 
 void closeDevice(Device* d) {
     if (!d) return;
@@ -331,6 +526,12 @@ bool attachDevice(const char* path, Device* d) {
     }
     Device candidate{};
     candidate.fd = fd;
+    input_id id{};
+    if (ioctl(fd, EVIOCGID, &id) >= 0) {
+        candidate.vendor = id.vendor;
+        candidate.product = id.product;
+        candidate.vader5Pro = id.vendor == kFlydigiVendor && id.product == kVader5ProProduct;
+    }
     if (!selectAxes(fd, &candidate)) {
         close(fd);
         return false;
@@ -343,7 +544,7 @@ bool attachDevice(const char* path, Device* d) {
     snprintf(candidate.path, sizeof(candidate.path), "%s", path);
     snprintf(candidate.name, sizeof(candidate.name), "%s", name[0] ? name : "gamepad");
     *d = candidate;
-    printf("STATUS gamepad-ready %s %s\n", d->path, d->name);
+    printf("STATUS gamepad-ready %s %s%s\n", d->path, d->name, d->vader5Pro ? " vader5-pro" : "");
     fflush(stdout);
     return true;
 }
@@ -361,6 +562,11 @@ void scan(Device* d) {
         char name[128]{};
         getDeviceName(fd, name, sizeof(name));
         int score = (name[0] && strstr(name, kVirtualPrefix)) ? 0 : gamepadDeviceScore(fd);
+        input_id id{};
+        if (score > 0 && ioctl(fd, EVIOCGID, &id) >= 0
+                && id.vendor == kFlydigiVendor && id.product == kVader5ProProduct) {
+            score += 500;
+        }
         close(fd);
         if (score > bestScore) {
             bestScore = score;
@@ -390,11 +596,17 @@ bool process(Device* d, const input_event& ev) {
     if (!d || d->fd < 0) return false;
     if (ev.type == EV_KEY) {
         int index = buttonIndex(ev.code, d->hasStandardEast, d->hasStandardWest);
-        if (index >= 0 && index < 16) {
-            uint16_t bit = static_cast<uint16_t>(1u << index);
+        if (index >= 0 && index < 32) {
+            uint32_t bit = static_cast<uint32_t>(1u << index);
             bool pressed = ev.value != 0;
-            if (pressed) d->state.buttons |= bit;
-            else d->state.buttons &= static_cast<uint16_t>(~bit);
+            if (index >= 15 && index <= 18) {
+                if (pressed) d->evdevBackMask |= bit;
+                else d->evdevBackMask &= ~bit;
+                refreshBackButtons(d);
+            } else {
+                if (pressed) d->state.buttons |= bit;
+                else d->state.buttons &= ~bit;
+            }
             if (ev.code == BTN_TL2) d->digitalLt = pressed;
             else if (ev.code == BTN_TR2) d->digitalRt = pressed;
             d->state.lt = d->digitalLt ? 1000 : d->analogLt;
@@ -446,8 +658,14 @@ int main() {
 
     Device device{};
     device.fd = -1;
+    VaderRaw vaderRaws[kMaxVaderRaw]{};
+    for (auto& raw : vaderRaws) raw.fd = -1;
+    int vaderRawCount = 0;
     long long lastScan = 0;
+    long long lastRawScan = 0;
+    long long lastRawInitRetry = 0;
     long long lastHeartbeat = 0;
+
     while (!gStop) {
         long long now = nowMs();
         if (now - lastHeartbeat >= 1000) {
@@ -455,29 +673,96 @@ int main() {
             fflush(stdout);
             lastHeartbeat = now;
         }
+
         if (device.fd < 0 && now - lastScan >= kScanIntervalMs) {
             scan(&device);
             if (device.fd < 0) printf("STATUS waiting-gamepad\n");
             else emit(&device, true);
             lastScan = now;
         }
-        if (device.fd < 0) {
+
+        bool anyRawOpen = false;
+        for (int i = 0; i < vaderRawCount; ++i) {
+            if (vaderRaws[i].fd >= 0) { anyRawOpen = true; break; }
+        }
+        if (!anyRawOpen && now - lastRawScan >= kScanIntervalMs) {
+            closeVaderRaws(vaderRaws, &vaderRawCount, &device);
+            vaderRawCount = scanVaderRaws(vaderRaws, kMaxVaderRaw);
+            lastRawScan = now;
+            lastRawInitRetry = now;
+        }
+        if (anyRawOpen && now - lastRawInitRetry >= 1500) {
+            for (int i = 0; i < vaderRawCount; ++i) {
+                if (vaderRaws[i].fd >= 0 && !vaderRaws[i].extendedSeen) {
+                    enableVader5Extended(&vaderRaws[i]);
+                }
+            }
+            lastRawInitRetry = now;
+        }
+
+        pollfd pfds[1 + kMaxVaderRaw]{};
+        int kinds[1 + kMaxVaderRaw]{};
+        int refs[1 + kMaxVaderRaw]{};
+        int count = 0;
+        if (device.fd >= 0) {
+            pfds[count] = pollfd{device.fd, POLLIN | POLLERR | POLLHUP, 0};
+            kinds[count] = 0;
+            refs[count] = -1;
+            ++count;
+        }
+        for (int i = 0; i < vaderRawCount && count < 1 + kMaxVaderRaw; ++i) {
+            if (vaderRaws[i].fd < 0) continue;
+            pfds[count] = pollfd{vaderRaws[i].fd, POLLIN | POLLERR | POLLHUP, 0};
+            kinds[count] = 1;
+            refs[count] = i;
+            ++count;
+        }
+
+        if (count == 0) {
             poll(nullptr, 0, 120);
             continue;
         }
-        pollfd pfd{device.fd, POLLIN | POLLERR | POLLHUP, 0};
-        int result = poll(&pfd, 1, 120);
+
+        int result = poll(pfds, static_cast<nfds_t>(count), 120);
         if (result < 0) {
             if (errno == EINTR) continue;
             break;
         }
-        if (result > 0 && pfd.revents) {
-            if ((pfd.revents & (POLLERR | POLLHUP)) || !readEvents(&device)) {
-                printf("STATUS gamepad-disconnected\n");
-                closeDevice(&device);
+
+        bool rawChanged = false;
+        if (result > 0) {
+            for (int i = 0; i < count; ++i) {
+                if (!pfds[i].revents) continue;
+                if (kinds[i] == 0) {
+                    if ((pfds[i].revents & (POLLERR | POLLHUP)) || !readEvents(&device)) {
+                        printf("STATUS gamepad-disconnected\n");
+                        closeDevice(&device);
+                    }
+                } else {
+                    int rawIndex = refs[i];
+                    if (rawIndex < 0 || rawIndex >= vaderRawCount) continue;
+                    VaderRaw& raw = vaderRaws[rawIndex];
+                    if (pfds[i].revents & (POLLERR | POLLHUP)) {
+                        if (raw.backMask != 0) rawChanged = true;
+                        closeVaderRaw(&raw);
+                    } else if (pfds[i].revents & POLLIN) {
+                        if (readVaderRaw(&raw)) rawChanged = true;
+                    }
+                }
+            }
+        }
+
+        if (rawChanged && device.fd >= 0) {
+            uint32_t newRawMask = aggregateVaderBackMask(vaderRaws, vaderRawCount);
+            if (device.rawBackMask != newRawMask) {
+                device.rawBackMask = newRawMask;
+                refreshBackButtons(&device);
+                emit(&device, true);
             }
         }
     }
+
+    closeVaderRaws(vaderRaws, &vaderRawCount, &device);
     closeDevice(&device);
     printf("STATUS stopped\n");
     return 0;

@@ -1,12 +1,22 @@
 package com.axon.input;
 
+import android.content.Context;
 import android.os.SystemClock;
 
 import java.io.BufferedReader;
+import java.io.Closeable;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.StringTokenizer;
 
-/** 通过 Shizuku shell 读取鼠标按键和相对移动，不修改原始事件。 */
+/**
+ * 通过当前选择的 Shizuku / Root 只读监听 getevent。
+ *
+ * 鼠标按键按 /dev/input/event* 分设备聚合，避免多个输入节点的 DOWN/UP 相互覆盖；
+ * 监听进程断开时主动释放左右键，防止 BongoCat 按键视觉卡在按下态。
+ */
 public final class MouseInputMonitor {
     public interface Listener {
         void onMouseState(long packedStats);
@@ -14,60 +24,98 @@ public final class MouseInputMonitor {
         void onMousePromptButton(int button, boolean pressed);
     }
 
+    private interface PrivilegedProcess extends Closeable {
+        InputStream getInputStream();
+    }
+
     public static final int BUTTON_MIDDLE = 2;
     public static final int BUTTON_BACK = 3;
     public static final int BUTTON_FORWARD = 4;
 
+    private final Context context;
     private final Listener listener;
+    private final Map<String, Integer> deviceButtonMasks = new HashMap<>();
     private volatile boolean running;
-    private volatile ShizukuBridge.ShellProcess process;
+    private volatile PrivilegedProcess process;
     private Thread worker;
+    private int aggregateButtons;
 
-    public MouseInputMonitor(Listener listener) {
+    public MouseInputMonitor(Context context, Listener listener) {
+        this.context = context.getApplicationContext();
         this.listener = listener;
     }
 
     public synchronized void start() {
         if (running) return;
         running = true;
-        worker = new Thread(this::runLoop, "AxonInputMouseInput");
-        worker.start();
+        Thread thread = new Thread(this::runLoop, "AxonInputMouseInput");
+        thread.setDaemon(true);
+        worker = thread;
+        thread.start();
     }
 
     public synchronized void stop() {
         running = false;
-        ShizukuBridge.ShellProcess p = process;
+        PrivilegedProcess current = process;
         process = null;
-        if (p != null) p.close();
-        Thread t = worker;
+        if (current != null) {
+            try { current.close(); } catch (Throwable ignored) {}
+        }
+        Thread thread = worker;
         worker = null;
-        if (t != null) t.interrupt();
-        listener.onMouseState(NativeKeyEngine.nativeResetMouse(SystemClock.uptimeMillis()));
+        if (thread != null) thread.interrupt();
+        resetPressedButtons();
         listener.onMouseMotion(0, 0);
     }
 
     private void runLoop() {
         while (running) {
+            int mode = OverlayState.getSensitivityMode(context);
+            if (mode != OverlayState.SENSITIVITY_MODE_ROOT
+                    && (!ShizukuBridge.isReady() || !ShizukuBridge.hasPermission())) {
+                sleep(500L);
+                continue;
+            }
+
+            PrivilegedProcess current = null;
             try {
-                ShizukuBridge.ShellProcess p = ShizukuBridge.startShell("/system/bin/getevent -lt");
-                process = p;
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                // 每次重新连接都先清理上一次可能丢失的 UP 状态。
+                resetPressedButtons();
+                current = startPrivileged(mode, "/system/bin/getevent -lt");
+                process = current;
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(current.getInputStream()))) {
                     String line;
                     while (running && (line = reader.readLine()) != null) parseLine(line);
-                } finally {
-                    if (process == p) process = null;
-                    p.close();
                 }
             } catch (Throwable ignored) {
-                if (!running) break;
-                try {
-                    Thread.sleep(700L);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
+                // Root 被拒绝时避免反复触发 su 授权弹窗；Shizuku 可等待服务恢复后重连。
+                if (mode == OverlayState.SENSITIVITY_MODE_ROOT) running = false;
+            } finally {
+                if (process == current) process = null;
+                if (current != null) {
+                    try { current.close(); } catch (Throwable ignored) {}
                 }
+                resetPressedButtons();
             }
+
+            if (running) sleep(500L);
         }
+    }
+
+    private PrivilegedProcess startPrivileged(int mode, String command) throws Exception {
+        if (mode == OverlayState.SENSITIVITY_MODE_ROOT) {
+            RootBridge.RootProcess root = RootBridge.startShell(command);
+            return new PrivilegedProcess() {
+                @Override public InputStream getInputStream() { return root.getInputStream(); }
+                @Override public void close() { root.close(); }
+            };
+        }
+
+        ShizukuBridge.ShellProcess shizuku = ShizukuBridge.startShell(command);
+        return new PrivilegedProcess() {
+            @Override public InputStream getInputStream() { return shizuku.getInputStream(); }
+            @Override public void close() { shizuku.close(); }
+        };
     }
 
     private void parseLine(String line) {
@@ -87,19 +135,67 @@ public final class MouseInputMonitor {
         int button = detectButton(payload);
         if (button < 0) return;
         int value = detectButtonValue(payload);
-        if (value < 0) return;
+        if (value < 0 || value == 2) return; // EV_KEY repeat 不是新的按下沿。
+
+        boolean pressed = value != 0;
         if (button == NativeKeyEngine.MOUSE_LEFT || button == NativeKeyEngine.MOUSE_RIGHT) {
-            long stats = NativeKeyEngine.nativeUpdateMouseButton(
-                    button, value != 0, SystemClock.uptimeMillis());
-            listener.onMouseState(stats);
+            updatePrimaryButton(deviceKey(line), button, pressed);
         } else {
-            listener.onMousePromptButton(button, value != 0);
+            listener.onMousePromptButton(button, pressed);
         }
+    }
+
+    private synchronized void updatePrimaryButton(String device, int button, boolean pressed) {
+        String key = device == null ? "<unknown>" : device;
+        int bit = 1 << button;
+        int oldMask = deviceButtonMasks.getOrDefault(key, 0);
+        int nextMask = pressed ? (oldMask | bit) : (oldMask & ~bit);
+        if (nextMask == oldMask) return;
+
+        if (nextMask == 0) deviceButtonMasks.remove(key);
+        else deviceButtonMasks.put(key, nextMask);
+
+        int nextAggregate = 0;
+        for (int mask : deviceButtonMasks.values()) nextAggregate |= mask;
+        nextAggregate &= 0x3;
+        int changed = aggregateButtons ^ nextAggregate;
+        if (changed == 0) return;
+
+        aggregateButtons = nextAggregate;
+        long now = SystemClock.uptimeMillis();
+        long stats = NativeKeyEngine.nativeGetMouseStats(now);
+        if ((changed & 1) != 0) {
+            stats = NativeKeyEngine.nativeUpdateMouseButton(
+                    NativeKeyEngine.MOUSE_LEFT, (nextAggregate & 1) != 0, now);
+        }
+        if ((changed & 2) != 0) {
+            stats = NativeKeyEngine.nativeUpdateMouseButton(
+                    NativeKeyEngine.MOUSE_RIGHT, (nextAggregate & 2) != 0, now);
+        }
+        listener.onMouseState(stats);
+    }
+
+    private synchronized void resetPressedButtons() {
+        deviceButtonMasks.clear();
+        aggregateButtons = 0;
+        long now = SystemClock.uptimeMillis();
+        long stats = NativeKeyEngine.nativeUpdateMouseButton(NativeKeyEngine.MOUSE_LEFT, false, now);
+        stats = NativeKeyEngine.nativeUpdateMouseButton(NativeKeyEngine.MOUSE_RIGHT, false, now);
+        listener.onMouseState(stats);
     }
 
     private String payload(String line) {
         int colon = line.lastIndexOf(':');
         return colon >= 0 ? line.substring(colon + 1).trim() : line.trim();
+    }
+
+    private String deviceKey(String line) {
+        int start = line.indexOf("/dev/input/");
+        if (start < 0) return null;
+        int end = line.indexOf(':', start);
+        if (end < 0) end = line.indexOf(' ', start);
+        if (end < 0) end = line.length();
+        return line.substring(start, end).trim();
     }
 
     /** 0 表示 REL_X，1 表示 REL_Y，-1 表示非相对轴事件。 */
@@ -111,19 +207,17 @@ public final class MouseInputMonitor {
         if (tokens.countTokens() < 3) return -1;
         int eventType = parseHexToken(tokens.nextToken());
         int eventCode = parseHexToken(tokens.nextToken());
-        if (eventType != 0x0002) return -1; // 相对轴事件
-        if (eventCode == 0x0000) return 0;  // X 轴
-        if (eventCode == 0x0001) return 1;  // Y 轴
+        if (eventType != 0x0002) return -1;
+        if (eventCode == 0x0000) return 0;
+        if (eventCode == 0x0001) return 1;
         return -1;
     }
 
     private int detectRelativeValue(String payload) {
-        String token = lastToken(payload);
-        return parseSignedHexToken(token);
+        return parseSignedHexToken(lastToken(payload));
     }
 
     private int detectButton(String payload) {
-        // Android getevent 可能将 0x110 标记为 BTN_LEFT 或 BTN_MOUSE。
         if (payload.contains("BTN_LEFT") || payload.contains("BTN_MOUSE")) {
             return NativeKeyEngine.MOUSE_LEFT;
         }
@@ -136,7 +230,7 @@ public final class MouseInputMonitor {
         if (tokens.countTokens() < 2) return -1;
         int eventType = parseHexToken(tokens.nextToken());
         int eventCode = parseHexToken(tokens.nextToken());
-        if (eventType != 0x0001) return -1; // 按键事件
+        if (eventType != 0x0001) return -1;
         if (eventCode == 0x0110) return NativeKeyEngine.MOUSE_LEFT;
         if (eventCode == 0x0111) return NativeKeyEngine.MOUSE_RIGHT;
         if (eventCode == 0x0112) return BUTTON_MIDDLE;
@@ -149,8 +243,7 @@ public final class MouseInputMonitor {
         if (payload.contains(" DOWN")) return 1;
         if (payload.contains(" UP")) return 0;
         int value = parseSignedHexToken(lastToken(payload));
-        if (value == 0) return 0;
-        if (value == 1 || value == 2) return value;
+        if (value == 0 || value == 1 || value == 2) return value;
         return -1;
     }
 
@@ -168,13 +261,20 @@ public final class MouseInputMonitor {
         }
     }
 
-    /** 将 Linux input_event 数值解析为有符号 32 位整数。 */
     private int parseSignedHexToken(String token) {
         try {
             long raw = Long.parseLong(token, 16) & 0xffffffffL;
             return (int) raw;
         } catch (NumberFormatException ignored) {
             return Integer.MIN_VALUE;
+        }
+    }
+
+    private void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
         }
     }
 }

@@ -13,6 +13,7 @@ import java.io.InputStreamReader;
 public final class GamepadInputMonitor {
     public interface Listener {
         void onGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons);
+        void onGamepadProfile(boolean vader5Pro);
     }
 
     private interface PrivilegedProcess extends Closeable {
@@ -53,6 +54,7 @@ public final class GamepadInputMonitor {
         worker = null;
         if (thread != null) thread.interrupt();
         listener.onGamepadState(0, 0, 0, 0, 0, 0, 0);
+        listener.onGamepadProfile(false);
     }
 
     private void runLoop() {
@@ -92,8 +94,16 @@ public final class GamepadInputMonitor {
     }
 
     private void parseLine(String line) {
-        if (line == null || !line.startsWith("GAMEPAD ")
-                || !LineInts.parse(line, 8, parsedGamepad)) return;
+        if (line == null) return;
+        if (line.startsWith("STATUS gamepad-ready ")) {
+            listener.onGamepadProfile(line.contains("vader5-pro"));
+            return;
+        }
+        if (line.startsWith("STATUS vader5-pro-raw-ready")) {
+            listener.onGamepadProfile(true);
+            return;
+        }
+        if (!line.startsWith("GAMEPAD ") || !LineInts.parse(line, 8, parsedGamepad)) return;
         listener.onGamepadState(
                 parsedGamepad[0], parsedGamepad[1], parsedGamepad[2], parsedGamepad[3],
                 parsedGamepad[4], parsedGamepad[5], parsedGamepad[6]);

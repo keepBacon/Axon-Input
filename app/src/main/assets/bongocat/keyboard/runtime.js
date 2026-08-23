@@ -198,7 +198,8 @@
 
   window.AxonBongoCat = {
     key(key, pressed) {
-      const rawValue = String(key || '');
+      const rawInput = String(key || '');
+      const rawValue = /^F\d+$/.test(rawInput) ? 'Fn' : rawInput;
       const rawSide = keySide(rawValue);
       if (!rawSide) return;
 
@@ -222,12 +223,7 @@
     },
 
     mouseButtons(mask) {
-      state.mouseButtons = Number(mask) || 0;
-      if (!renderer) return;
-      // The keyboard model currently has no ParamMouse*Down parameter, but the source sends these
-      // values; setOverride intentionally becomes a no-op when the parameter is absent.
-      renderer.setOverride('ParamMouseLeftDown', (state.mouseButtons & 1) ? 1 : 0);
-      renderer.setOverride('ParamMouseRightDown', (state.mouseButtons & 2) ? 1 : 0);
+      state.mouseButtons = (Number(mask) || 0) & 3;
     },
 
     mouseDelta(dx, dy, screenWidth, screenHeight) {
@@ -236,6 +232,19 @@
       state.targetX = Math.max(0, Math.min(1, state.targetX + (Number(dx) || 0) / width));
       state.targetY = Math.max(0, Math.min(1, state.targetY + (Number(dy) || 0) / height));
       state.pointerActive = true;
+    },
+
+    mouseFrame(mask, _pulseMask, dx, dy, screenWidth, screenHeight) {
+      state.mouseButtons = (Number(mask) || 0) & 3;
+      const width = Math.max(1, Number(screenWidth) || DESIGN_WIDTH);
+      const height = Math.max(1, Number(screenHeight) || DESIGN_HEIGHT);
+      const moveX = Number(dx) || 0;
+      const moveY = Number(dy) || 0;
+      if (moveX !== 0 || moveY !== 0) {
+        state.targetX = Math.max(0, Math.min(1, state.targetX + moveX / width));
+        state.targetY = Math.max(0, Math.min(1, state.targetY + moveY / height));
+        state.pointerActive = true;
+      }
     },
 
     pointerRatio(x, y) {
@@ -619,8 +628,6 @@
 
       renderer = new CoreRenderer(core, model, [texture0, texture1, texture2]);
       syncHandOverrides();
-      renderer.setOverride('ParamMouseLeftDown', (state.mouseButtons & 1) ? 1 : 0);
-      renderer.setOverride('ParamMouseRightDown', (state.mouseButtons & 2) ? 1 : 0);
       fallback.classList.add('hidden');
       state.ready = true;
 

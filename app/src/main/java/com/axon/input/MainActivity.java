@@ -50,6 +50,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.IdentityHashMap;
+import java.util.ArrayList;
+import java.util.List;
 
 /** 应用主界面。负责设置、用户操作和权限流程。 */
 public final class MainActivity extends Activity implements ShizukuBridge.Listener {
@@ -58,6 +60,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private static final int CONFIG_EXPORT_REQUEST = 6201;
     private static final int CONFIG_IMPORT_REQUEST = 6202;
     private static final int FONT_IMPORT_REQUEST = 6203;
+    private static final int BONGOCAT_STYLE_IMPORT_REQUEST = 6204;
     private static final int SIZE_MIN = 50;
     private static final int SIZE_MAX = 150;
     private static final int OPACITY_MAX = 100;
@@ -83,7 +86,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             GamepadOverlayView.DISPLAY_RIGHT_STICK,
             GamepadOverlayView.DISPLAY_FACE,
             GamepadOverlayView.DISPLAY_LEFT_SHOULDER,
-            GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
+            GamepadOverlayView.DISPLAY_RIGHT_SHOULDER,
+            GamepadOverlayView.DISPLAY_BACK
     };
     private static final int[] KEY_APPEARANCE_DISPLAY_TYPES = {
             KeyOverlayView.DISPLAY_KEYBOARD,
@@ -93,7 +97,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             KeyOverlayView.DISPLAY_CUSTOM,
             GamepadOverlayView.DISPLAY_FACE,
             GamepadOverlayView.DISPLAY_LEFT_SHOULDER,
-            GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
+            GamepadOverlayView.DISPLAY_RIGHT_SHOULDER,
+            GamepadOverlayView.DISPLAY_BACK
     };
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -124,6 +129,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private Switch keyboardCatSwitch;
     private Switch keyboardCatMouseModeSwitch;
     private Switch keyboardCatGlobalReverseSwitch;
+    private Spinner keyboardCatStyleSpinner;
+    private Spinner keyboardCatExpressionSpinner;
+    private Button keyboardCatDeleteStyleButton;
+    private final List<BongoCatStyleManager.StyleInfo> keyboardCatStyles = new ArrayList<>();
+    private final List<BongoCatStyleManager.ExpressionOption> keyboardCatExpressions = new ArrayList<>();
     private LinearLayout keyboardCatDetails;
     private TextView keyboardCatSizeLabel;
     private SeekBar keyboardCatSizeSeekBar;
@@ -173,17 +183,20 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private Switch gamepadFaceSwitch;
     private Switch gamepadLeftShoulderSwitch;
     private Switch gamepadRightShoulderSwitch;
+    private Switch gamepadBackSwitch;
     private LinearLayout gamepadLeftStickDetails;
     private LinearLayout gamepadRightStickDetails;
     private LinearLayout gamepadFaceDetails;
     private LinearLayout gamepadLeftShoulderDetails;
     private LinearLayout gamepadRightShoulderDetails;
+    private LinearLayout gamepadBackDetails;
     private TextView gamepadLeftStickSizeLabel;
     private TextView gamepadRightStickSizeLabel;
     private TextView gamepadFaceSizeLabel;
     private TextView gamepadFaceSpacingLabel;
     private TextView gamepadLeftShoulderSizeLabel;
     private TextView gamepadRightShoulderSizeLabel;
+    private TextView gamepadBackSizeLabel;
     private SeekBar gamepadLeftStickSizeSeekBar;
     private SeekBar gamepadRightStickSizeSeekBar;
     private TextView gamepadLeftStickDotSizeLabel;
@@ -194,6 +207,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private SeekBar gamepadFaceSpacingSeekBar;
     private SeekBar gamepadLeftShoulderSizeSeekBar;
     private SeekBar gamepadRightShoulderSizeSeekBar;
+    private SeekBar gamepadBackSizeSeekBar;
     private Spinner gamepadLeftStickShapeSpinner;
     private Spinner gamepadRightStickShapeSpinner;
     private Switch gamepadFaceReverseSwitch;
@@ -211,6 +225,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private final Spinner[] motionSpinners = new Spinner[4];
     private final SparseArray<OpacityControl> opacityControls = new SparseArray<>();
     private final SparseArray<Spinner> keyStyleSpinners = new SparseArray<>();
+    private final SparseArray<CornerStrengthControl> keyCornerStrengthControls = new SparseArray<>();
     private final SparseArray<View> keyPressColorDots = new SparseArray<>();
     private View keyboardTextColorDot;
     private Switch globalHtmlSwitch;
@@ -224,10 +239,14 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private Switch gamepadSwapABSwitch;
     private Switch gamepadSwapSticksSwitch;
     private Switch gamepadSwapTriggersSwitch;
+    private Switch gamepadCustomSwapSwitch;
+    private TextView gamepadCustomSwapStatus;
 
     private boolean internalChange;
     private boolean waitingForShizuku;
     private boolean dpsCaptureArmed;
+    private int gamepadCustomSwapCaptureStep;
+    private int gamepadCustomSwapFirstPending;
 
     private final Runnable cpsBindingPoll = new Runnable() {
         @Override
@@ -354,6 +373,21 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardCatSizeSeekBar = createSizeSeekBar();
         keyboardCatDetails.addView(keyboardCatSizeSeekBar, seekBarLayoutParams(dp(4)));
         addOpacityControl(keyboardCatDetails, KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT);
+        TextView keyboardCatStyleLabel = createLabel();
+        keyboardCatStyleLabel.setText(R.string.keyboard_cat_style_label);
+        keyboardCatDetails.addView(keyboardCatStyleLabel, supportingParams(dp(6)));
+        keyboardCatStyleSpinner = createChoiceSpinner(new String[]{getString(R.string.keyboard_cat_style_builtin)});
+        keyboardCatDetails.addView(keyboardCatStyleSpinner, seekBarLayoutParams(dp(4)));
+        LinearLayout keyboardCatStyleActions = createConfigActionRow(
+                R.string.keyboard_cat_style_import, v -> openKeyboardCatStylePicker(),
+                R.string.keyboard_cat_style_delete, v -> confirmDeleteKeyboardCatStyle());
+        keyboardCatDeleteStyleButton = (Button) keyboardCatStyleActions.getChildAt(1);
+        keyboardCatDetails.addView(keyboardCatStyleActions, supportingParams(dp(6)));
+        TextView keyboardCatExpressionLabel = createLabel();
+        keyboardCatExpressionLabel.setText(R.string.keyboard_cat_expression_label);
+        keyboardCatDetails.addView(keyboardCatExpressionLabel, supportingParams(dp(6)));
+        keyboardCatExpressionSpinner = createChoiceSpinner(new String[]{getString(R.string.keyboard_cat_expression_auto)});
+        keyboardCatDetails.addView(keyboardCatExpressionSpinner, seekBarLayoutParams(dp(4)));
         keyboardCatMouseModeSwitch = createSwitch(R.string.keyboard_cat_mouse_mode_switch_label);
         keyboardCatMouseModeSwitch.setTextSize(14f);
         keyboardCatDetails.addView(keyboardCatMouseModeSwitch, switchParams(dp(4)));
@@ -528,7 +562,17 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadR1DpsSwitch = createSwitch(R.string.gamepad_r1_dps);
         gamepadR1DpsSwitch.setTextSize(14f);
         gamepadRightShoulderDetails.addView(gamepadR1DpsSwitch, switchParams(dp(2)));
-        root.addView(createFeatureGroup(gamepadRightShoulderSwitch, gamepadRightShoulderDetails), contentParams(dp(14)));
+        root.addView(createFeatureGroup(gamepadRightShoulderSwitch, gamepadRightShoulderDetails), contentParams(dp(10)));
+
+        gamepadBackSwitch = createSwitch(R.string.gamepad_back_switch);
+        gamepadBackDetails = createDetailsContainer();
+        gamepadBackSizeLabel = createLabel();
+        gamepadBackDetails.addView(gamepadBackSizeLabel, supportingParams(0));
+        gamepadBackSizeSeekBar = createSizeSeekBar();
+        gamepadBackDetails.addView(gamepadBackSizeSeekBar, seekBarLayoutParams(dp(4)));
+        addOpacityControl(gamepadBackDetails, GamepadOverlayView.DISPLAY_BACK);
+        addKeyAppearanceControls(gamepadBackDetails, GamepadOverlayView.DISPLAY_BACK);
+        root.addView(createFeatureGroup(gamepadBackSwitch, gamepadBackDetails), contentParams(dp(14)));
 
         TextView sensitivitySection = createSectionLabel();
         sensitivitySection.setText(R.string.section_sensitivity);
@@ -657,6 +701,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadSwapTriggersSwitch = createSwitch(R.string.gamepad_compat_swap_triggers);
         compatibilityGroup.addView(gamepadSwapTriggersSwitch, switchParams(dp(4)));
 
+        gamepadCustomSwapSwitch = createSwitch(R.string.gamepad_compat_custom_swap);
+        compatibilityGroup.addView(gamepadCustomSwapSwitch, switchParams(0));
+        gamepadCustomSwapStatus = createSupportingText();
+        compatibilityGroup.addView(gamepadCustomSwapStatus, supportingParams(dp(4)));
+
         Button compatibilityResetButton = new Button(this);
         compatibilityResetButton.setText(R.string.gamepad_compat_reset);
         compatibilityResetButton.setAllCaps(false);
@@ -714,8 +763,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         UiMotion.bindPressFeedback(kookJoinLink);
         root.addView(kookJoinLink, contentParams(0));
 
-        View[] sectionPages = new View[]{appearanceSection, displaySection, gamepadSection,
-                sensitivitySection, behaviorSection, configurationSection};
+        View[] sectionPages = new View[]{appearanceSection, displaySection,
+                gamepadSection, sensitivitySection, behaviorSection, configurationSection};
         sectionPageViews = splitContentIntoSectionPages(root, sectionPages);
         sectionPagerHost = createSectionPagerHost(sectionPageViews);
 
@@ -769,6 +818,27 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 enabled -> OverlayState.setKeyboardCatMouseMode(this, enabled));
         bindSimpleSwitch(keyboardCatGlobalReverseSwitch,
                 enabled -> OverlayState.setKeyboardCatGlobalReverse(this, enabled));
+        keyboardCatStyleSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (internalChange || position < 0 || position >= keyboardCatStyles.size()) return;
+                BongoCatStyleManager.StyleInfo style = keyboardCatStyles.get(position);
+                OverlayState.setKeyboardCatStyleId(MainActivity.this, style.id);
+                OverlayState.setKeyboardCatDebugExpression(MainActivity.this, "auto");
+                keyboardCatDeleteStyleButton.setEnabled(!style.builtin);
+                keyboardCatMouseModeSwitch.setEnabled(style.builtin);
+                syncKeyboardCatExpressionOptions(style);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        keyboardCatExpressionSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (internalChange) return;
+                String token = position <= 0 || position - 1 >= keyboardCatExpressions.size()
+                        ? "auto" : keyboardCatExpressions.get(position - 1).token;
+                OverlayState.setKeyboardCatDebugExpression(MainActivity.this, token);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
         bindFeatureSwitch(keyPromptSwitch, keyPromptDetails,
                 enabled -> OverlayState.setKeyPromptEnabled(this, enabled));
         bindFeatureSwitch(mouseTrajectorySwitch, mouseTrajectoryDetails,
@@ -789,6 +859,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 enabled -> OverlayState.setGamepadLeftShoulderEnabled(this, enabled));
         bindFeatureSwitch(gamepadRightShoulderSwitch, gamepadRightShoulderDetails,
                 enabled -> OverlayState.setGamepadRightShoulderEnabled(this, enabled));
+        bindFeatureSwitch(gamepadBackSwitch, gamepadBackDetails,
+                enabled -> OverlayState.setGamepadBackEnabled(this, enabled));
 
         keyboardSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 keyboardSizeLabel, R.string.keyboard_size_format,
@@ -857,6 +929,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadRightShoulderSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
                 gamepadRightShoulderSizeLabel, R.string.gamepad_right_shoulder_size_format,
                 value -> OverlayState.setGamepadDisplaySize(MainActivity.this, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER, value)));
+
+        gamepadBackSizeSeekBar.setOnSeekBarChangeListener(sizeListener(
+                gamepadBackSizeLabel, R.string.gamepad_back_size_format,
+                value -> OverlayState.setGamepadDisplaySize(MainActivity.this, GamepadOverlayView.DISPLAY_BACK, value)));
 
         gamepadLeftStickShapeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
@@ -1000,6 +1076,21 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 enabled -> OverlayState.setGamepadSwapSticks(this, enabled));
         bindSimpleSwitch(gamepadSwapTriggersSwitch,
                 enabled -> OverlayState.setGamepadSwapTriggers(this, enabled));
+        gamepadCustomSwapSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            if (!enabled) {
+                gamepadCustomSwapCaptureStep = 0;
+                gamepadCustomSwapFirstPending = 0;
+                OverlayState.setGamepadCustomSwapEnabled(MainActivity.this, false);
+                updateGamepadCustomSwapUi();
+                return;
+            }
+            // 每次开启都重新录入，避免错误映射残留。只有两个按键都录入完成后才真正生效。
+            OverlayState.setGamepadCustomSwapEnabled(MainActivity.this, false);
+            gamepadCustomSwapCaptureStep = 1;
+            gamepadCustomSwapFirstPending = 0;
+            updateGamepadCustomSwapUi();
+        });
         compatibilityResetButton.setOnClickListener(v -> {
             OverlayState.resetGamepadCompatibility(MainActivity.this);
             internalChange = true;
@@ -1008,7 +1099,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             gamepadSwapABSwitch.setChecked(false);
             gamepadSwapSticksSwitch.setChecked(false);
             gamepadSwapTriggersSwitch.setChecked(false);
+            gamepadCustomSwapSwitch.setChecked(false);
+            gamepadCustomSwapCaptureStep = 0;
+            gamepadCustomSwapFirstPending = 0;
             internalChange = false;
+            updateGamepadCustomSwapUi();
             Toast.makeText(MainActivity.this, R.string.gamepad_compat_reset_done, Toast.LENGTH_SHORT).show();
         });
 
@@ -1025,6 +1120,30 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (gamepadCustomSwapCaptureStep != 0 && event != null && event.getRepeatCount() == 0) {
+            int gamepadBit = GamepadButtons.fromAndroidEvent(event);
+            if (gamepadBit != 0) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    if (gamepadCustomSwapCaptureStep == 1) {
+                        gamepadCustomSwapFirstPending = gamepadBit;
+                        gamepadCustomSwapCaptureStep = 2;
+                        updateGamepadCustomSwapUi();
+                    } else if (gamepadBit == gamepadCustomSwapFirstPending) {
+                        Toast.makeText(this, R.string.gamepad_compat_custom_swap_same, Toast.LENGTH_SHORT).show();
+                    } else {
+                        OverlayState.setGamepadCustomSwapPair(this, gamepadCustomSwapFirstPending, gamepadBit);
+                        gamepadCustomSwapCaptureStep = 0;
+                        gamepadCustomSwapFirstPending = 0;
+                        internalChange = true;
+                        gamepadCustomSwapSwitch.setChecked(true);
+                        internalChange = false;
+                        updateGamepadCustomSwapUi();
+                    }
+                }
+                // 录入期间吞掉 DOWN/UP，避免按键顺带触发界面导航。
+                return true;
+            }
+        }
         if (dpsCaptureArmed
                 && dpsSwitch != null
                 && dpsSwitch.isChecked()
@@ -1139,6 +1258,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardCatSwitch.setChecked(OverlayState.isKeyboardCatEnabled(this));
         keyboardCatMouseModeSwitch.setChecked(OverlayState.isKeyboardCatMouseMode(this));
         keyboardCatGlobalReverseSwitch.setChecked(OverlayState.isKeyboardCatGlobalReverse(this));
+        syncKeyboardCatStyles();
         keyPromptSwitch.setChecked(OverlayState.isKeyPromptEnabled(this));
         mouseTrajectorySwitch.setChecked(OverlayState.isMouseTrajectoryEnabled(this));
         mouseTrajectoryLeftColorSwitch.setChecked(OverlayState.isMouseTrajectoryLeftColorEnabled(this));
@@ -1151,6 +1271,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadFaceSwitch.setChecked(OverlayState.isGamepadFaceEnabled(this));
         gamepadLeftShoulderSwitch.setChecked(OverlayState.isGamepadLeftShoulderEnabled(this));
         gamepadRightShoulderSwitch.setChecked(OverlayState.isGamepadRightShoulderEnabled(this));
+        gamepadBackSwitch.setChecked(OverlayState.isGamepadBackEnabled(this));
         gamepadFaceReverseSwitch.setChecked(OverlayState.isGamepadFaceReversed(this));
         gamepadFaceYDpsSwitch.setChecked(OverlayState.isGamepadFaceYDpsEnabled(this));
         gamepadFaceXDpsSwitch.setChecked(OverlayState.isGamepadFaceXDpsEnabled(this));
@@ -1167,6 +1288,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadSwapABSwitch.setChecked(OverlayState.isGamepadSwapAB(this));
         gamepadSwapSticksSwitch.setChecked(OverlayState.isGamepadSwapSticks(this));
         gamepadSwapTriggersSwitch.setChecked(OverlayState.isGamepadSwapTriggers(this));
+        gamepadCustomSwapSwitch.setChecked(OverlayState.isGamepadCustomSwapEnabled(this));
+        updateGamepadCustomSwapUi();
         captureSwitch.setChecked(OverlayState.isCustomCaptureEnabled(this));
         dpsSwitch.setChecked(OverlayState.isDpsEnabled(this));
         dpsCaptureArmed = OverlayState.isDpsEnabled(this)
@@ -1222,6 +1345,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         syncSizeControl(gamepadRightShoulderSizeSeekBar, gamepadRightShoulderSizeLabel,
                 OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER),
                 R.string.gamepad_right_shoulder_size_format);
+        syncSizeControl(gamepadBackSizeSeekBar, gamepadBackSizeLabel,
+                OverlayState.getGamepadDisplaySize(this, GamepadOverlayView.DISPLAY_BACK),
+                R.string.gamepad_back_size_format);
 
         int mouseSensitivity = OverlayState.getMouseSensitivity(this);
         syncValueControl(mouseSensitivitySeekBar, mouseSensitivityLabel,
@@ -1254,6 +1380,21 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
         Uri uri = data.getData();
+        if (requestCode == BONGOCAT_STYLE_IMPORT_REQUEST) {
+            try {
+                BongoCatStyleManager.StyleInfo imported = BongoCatStyleManager.importZip(
+                        this, uri, queryDisplayName(uri, "BongoCat-style.zip"));
+                OverlayState.setKeyboardCatStyleId(this, imported.id);
+                internalChange = true;
+                syncKeyboardCatStyles();
+                internalChange = false;
+                Toast.makeText(this, getString(R.string.keyboard_cat_style_import_success, imported.displayLabel()), Toast.LENGTH_SHORT).show();
+            } catch (Throwable error) {
+                internalChange = false;
+                Toast.makeText(this, getString(R.string.keyboard_cat_style_import_failed, error.getMessage() == null ? "" : error.getMessage()), Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
         if (requestCode == FONT_IMPORT_REQUEST) {
             try {
                 FontManager.importFont(this, uri, queryDisplayName(uri, "font.ttf"));
@@ -1334,12 +1475,15 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private void ensureAccessibility() {
         boolean sensitivity = OverlayState.isSensitivityEnabled(this);
-        boolean rootMode = sensitivity
+        // 键盘猫需要读取全局鼠标 REL_X / REL_Y。即使无障碍服务已经开启，
+        // 也必须保证当前选择的 Shizuku / Root 输入通道可用。
+        boolean keyboardCatMouseCapture = OverlayState.isKeyboardCatEnabled(this) && !sensitivity;
+        boolean rootMode = (sensitivity || keyboardCatMouseCapture)
                 && OverlayState.getSensitivityMode(this) == OverlayState.SENSITIVITY_MODE_ROOT;
 
         if (isAccessibilityServiceEnabled()) {
             AxonInputAccessibilityService.refreshActiveService();
-            if (sensitivity && !rootMode) ensureShizukuForSensitivity();
+            if ((sensitivity || keyboardCatMouseCapture) && !rootMode) ensureShizukuForSensitivity();
             return;
         }
 
@@ -1730,6 +1874,53 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         });
     }
 
+    private void updateGamepadCustomSwapUi() {
+        if (gamepadCustomSwapStatus == null || gamepadCustomSwapSwitch == null) return;
+        if (gamepadCustomSwapCaptureStep == 1) {
+            gamepadCustomSwapStatus.setText(R.string.gamepad_compat_custom_swap_first);
+            return;
+        }
+        if (gamepadCustomSwapCaptureStep == 2) {
+            gamepadCustomSwapStatus.setText(getString(
+                    R.string.gamepad_compat_custom_swap_second,
+                    gamepadButtonLabel(gamepadCustomSwapFirstPending)));
+            return;
+        }
+        int first = OverlayState.getGamepadCustomSwapFirst(this);
+        int second = OverlayState.getGamepadCustomSwapSecond(this);
+        if (OverlayState.isGamepadCustomSwapEnabled(this) && first != 0 && second != 0) {
+            gamepadCustomSwapStatus.setText(getString(
+                    R.string.gamepad_compat_custom_swap_active,
+                    gamepadButtonLabel(first), gamepadButtonLabel(second)));
+        } else {
+            gamepadCustomSwapStatus.setText(R.string.gamepad_compat_custom_swap_empty);
+        }
+    }
+
+    private String gamepadButtonLabel(int bit) {
+        return switch (bit) {
+            case GamepadOverlayView.BTN_SOUTH -> "A";
+            case GamepadOverlayView.BTN_EAST -> "B";
+            case GamepadOverlayView.BTN_WEST, GamepadOverlayView.BTN_C -> "X";
+            case GamepadOverlayView.BTN_NORTH -> "Y";
+            case GamepadOverlayView.BTN_Z -> "Z";
+            case GamepadOverlayView.BTN_L1 -> "L1";
+            case GamepadOverlayView.BTN_R1 -> "R1";
+            case GamepadOverlayView.BTN_L2 -> "L2";
+            case GamepadOverlayView.BTN_R2 -> "R2";
+            case GamepadOverlayView.BTN_L3 -> "L3";
+            case GamepadOverlayView.BTN_R3 -> "R3";
+            case GamepadOverlayView.BTN_SELECT -> "Select";
+            case GamepadOverlayView.BTN_START -> "Start";
+            case GamepadOverlayView.BTN_MODE -> "Mode";
+            case GamepadOverlayView.BTN_BACK_1 -> "P1/M1";
+            case GamepadOverlayView.BTN_BACK_2 -> "P2/M2";
+            case GamepadOverlayView.BTN_BACK_3 -> "P3/M3";
+            case GamepadOverlayView.BTN_BACK_4 -> "P4/M4";
+            default -> "Button";
+        };
+    }
+
     private void updateDpsTargetUi() {
         if (dpsTargetText == null) return;
         int target = OverlayState.getDpsTargetKeyCode(this);
@@ -1778,6 +1969,100 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 : mode == OverlayState.MOTION_RIPPLE ? 2
                 : mode == OverlayState.MOTION_NONE ? 3 : 0;
         spinner.setSelection(position, false);
+    }
+
+    private void openKeyboardCatStylePicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
+        startActivityForResult(intent, BONGOCAT_STYLE_IMPORT_REQUEST);
+    }
+
+    private void syncKeyboardCatStyles() {
+        if (keyboardCatStyleSpinner == null) return;
+        keyboardCatStyles.clear();
+        keyboardCatStyles.addAll(BongoCatStyleManager.list(this));
+        String[] labels = new String[keyboardCatStyles.size()];
+        int selected = 0;
+        String selectedId = OverlayState.getKeyboardCatStyleId(this);
+        for (int i = 0; i < keyboardCatStyles.size(); i++) {
+            BongoCatStyleManager.StyleInfo info = keyboardCatStyles.get(i);
+            labels[i] = info.displayLabel();
+            if (selectedId.equals(info.id)) selected = i;
+        }
+        if (selected >= keyboardCatStyles.size()) selected = 0;
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels) {
+            @Override public View getView(int position, View convertView, ViewGroup parent) {
+                return createSpinnerText(getItem(position), false);
+            }
+            @Override public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                return createSpinnerText(getItem(position), true);
+            }
+        };
+        keyboardCatStyleSpinner.setAdapter(adapter);
+        keyboardCatStyleSpinner.setSelection(selected, false);
+        BongoCatStyleManager.StyleInfo selectedInfo = keyboardCatStyles.get(selected);
+        keyboardCatDeleteStyleButton.setEnabled(!selectedInfo.builtin);
+        keyboardCatMouseModeSwitch.setEnabled(selectedInfo.builtin);
+        if (!selectedInfo.id.equals(selectedId)) OverlayState.setKeyboardCatStyleId(this, selectedInfo.id);
+        syncKeyboardCatExpressionOptions(selectedInfo);
+    }
+
+    private void syncKeyboardCatExpressionOptions(BongoCatStyleManager.StyleInfo style) {
+        if (keyboardCatExpressionSpinner == null) return;
+        keyboardCatExpressions.clear();
+        if (style != null && !style.builtin) {
+            keyboardCatExpressions.addAll(BongoCatStyleManager.expressionOptions(this, style.id));
+        }
+        String[] labels = new String[keyboardCatExpressions.size() + 1];
+        labels[0] = getString(R.string.keyboard_cat_expression_auto);
+        for (int i = 0; i < keyboardCatExpressions.size(); i++) labels[i + 1] = keyboardCatExpressions.get(i).label;
+
+        String selectedToken = OverlayState.getKeyboardCatDebugExpression(this);
+        int selected = 0;
+        for (int i = 0; i < keyboardCatExpressions.size(); i++) {
+            if (selectedToken.equals(keyboardCatExpressions.get(i).token)) { selected = i + 1; break; }
+        }
+        boolean valid = "auto".equals(selectedToken) || selected > 0;
+        boolean previousInternal = internalChange;
+        internalChange = true;
+        try {
+            ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels) {
+                @Override public View getView(int position, View convertView, ViewGroup parent) {
+                    return createSpinnerText(getItem(position), false);
+                }
+                @Override public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                    return createSpinnerText(getItem(position), true);
+                }
+            };
+            keyboardCatExpressionSpinner.setAdapter(adapter);
+            keyboardCatExpressionSpinner.setSelection(selected, false);
+            keyboardCatExpressionSpinner.setEnabled(!keyboardCatExpressions.isEmpty());
+        } finally {
+            internalChange = previousInternal;
+        }
+        if (!valid) OverlayState.setKeyboardCatDebugExpression(this, "auto");
+    }
+
+    private void confirmDeleteKeyboardCatStyle() {
+        int position = keyboardCatStyleSpinner == null ? -1 : keyboardCatStyleSpinner.getSelectedItemPosition();
+        if (position < 0 || position >= keyboardCatStyles.size()) return;
+        BongoCatStyleManager.StyleInfo style = keyboardCatStyles.get(position);
+        if (style.builtin) return;
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.keyboard_cat_style_delete)
+                .setMessage(getString(R.string.keyboard_cat_style_delete_confirm, style.displayLabel()))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.keyboard_cat_style_delete, (dialog, which) -> {
+                    BongoCatStyleManager.delete(MainActivity.this, style.id);
+                    OverlayState.setKeyboardCatStyleId(MainActivity.this, BongoCatStyleManager.BUILTIN_ID);
+                    internalChange = true;
+                    syncKeyboardCatStyles();
+                    internalChange = false;
+                    Toast.makeText(MainActivity.this, R.string.keyboard_cat_style_delete_success, Toast.LENGTH_SHORT).show();
+                })
+                .show();
     }
 
     private void openFontPicker() {
@@ -1959,6 +2244,16 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         dialog.show();
     }
 
+    private static final class CornerStrengthControl {
+        final TextView label;
+        final SeekBar seekBar;
+
+        CornerStrengthControl(TextView label, SeekBar seekBar) {
+            this.label = label;
+            this.seekBar = seekBar;
+        }
+    }
+
     private void addKeyAppearanceControls(LinearLayout parent, int displayType) {
         Spinner styleSpinner = createChoiceSpinner(new String[]{
                 getString(R.string.key_style_rounded),
@@ -1966,9 +2261,33 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 getString(R.string.key_style_circle)});
         keyStyleSpinners.put(displayType, styleSpinner);
         parent.addView(createInlineChoiceRow(R.string.key_style_label, styleSpinner), supportingParams(dp(4)));
+
+        TextView cornerLabel = createLabel();
+        SeekBar cornerSeekBar = new SeekBar(this);
+        cornerSeekBar.setMax(100);
+        cornerSeekBar.setPadding(0, 0, 0, 0);
+        styleSeekBar(cornerSeekBar);
+        keyCornerStrengthControls.put(displayType, new CornerStrengthControl(cornerLabel, cornerSeekBar));
+        parent.addView(cornerLabel, supportingParams(dp(2)));
+        parent.addView(cornerSeekBar, seekBarLayoutParams(dp(4)));
+
+        cornerSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                cornerLabel.setText(getString(R.string.key_corner_strength_format, progress));
+                if (fromUser && !internalChange && seekBar.isEnabled()) {
+                    OverlayState.setKeyCornerStrength(MainActivity.this, displayType, progress);
+                }
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+
         styleSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parentView, View view, int position, long id) {
+                updateCornerStrengthEnabled(displayType, position == KeyAppearance.STYLE_ROUNDED);
                 if (!internalChange) OverlayState.setKeyStyle(MainActivity.this, displayType, position);
             }
 
@@ -1994,6 +2313,14 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         UiMotion.bindPressFeedback(colorRow);
         dot.setOnClickListener(openColor);
         parent.addView(colorRow, supportingParams(dp(2)));
+    }
+
+    private void updateCornerStrengthEnabled(int displayType, boolean enabled) {
+        CornerStrengthControl control = keyCornerStrengthControls.get(displayType);
+        if (control == null) return;
+        control.seekBar.setEnabled(enabled);
+        control.seekBar.setAlpha(enabled ? 1f : 0.38f);
+        control.label.setAlpha(enabled ? 1f : 0.46f);
     }
 
     private void addKeyboardTextColorControl(LinearLayout parent) {
@@ -2035,8 +2362,18 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private void syncKeyAppearanceUi(int displayType) {
+        int style = OverlayState.getKeyStyle(this, displayType);
         Spinner spinner = keyStyleSpinners.get(displayType);
-        if (spinner != null) spinner.setSelection(OverlayState.getKeyStyle(this, displayType), false);
+        if (spinner != null) spinner.setSelection(style, false);
+
+        CornerStrengthControl corner = keyCornerStrengthControls.get(displayType);
+        if (corner != null) {
+            int strength = OverlayState.getKeyCornerStrength(this, displayType);
+            corner.seekBar.setProgress(strength);
+            corner.label.setText(getString(R.string.key_corner_strength_format, strength));
+            updateCornerStrengthEnabled(displayType, style == KeyAppearance.STYLE_ROUNDED);
+        }
+
         View dot = keyPressColorDots.get(displayType);
         if (dot != null) updateColorDot(dot, OverlayState.getKeyPressColor(this, displayType));
     }

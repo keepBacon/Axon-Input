@@ -99,6 +99,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
     private GlobalHtmlWebView htmlView;
     private boolean globalHtmlEnabled;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
+    private int cornerStrength = KeyAppearance.DEFAULT_CORNER_STRENGTH;
     private int pressColor;
 
     private final Runnable frameRunnable = new Runnable() {
@@ -133,6 +134,13 @@ public final class KeyPromptOverlayView extends FrameLayout {
     public void setKeyAppearance(int style, int color) {
         keyStyle = KeyAppearance.clampStyle(style);
         pressColor = 0xff000000 | (color & 0x00ffffff);
+        invalidate();
+    }
+
+    public void setCornerStrength(int strength) {
+        int resolved = KeyAppearance.clampCornerStrength(strength);
+        if (cornerStrength == resolved) return;
+        cornerStrength = resolved;
         invalidate();
     }
 
@@ -306,7 +314,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
             int alpha = Math.round(255f * eased);
             float flash = clamp01((entry.flashUntil - now) / (float) FLASH_MS);
             float pressedAmount = entry.pressed ? 1f : flash;
-            float cornerRadius = dp(10f) * uiScale;
+            float cornerRadius = KeyAppearance.roundedRadius(rect, cornerStrength);
 
             int save = canvas.save();
             canvas.scale(itemScale, itemScale, entry.centerX, centerY);

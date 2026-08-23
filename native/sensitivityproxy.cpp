@@ -123,7 +123,9 @@ bool isGamepadDevice(int fd) {
         BTN_GAMEPAD, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_C, BTN_Z,
         BTN_TL, BTN_TR, BTN_TL2, BTN_TR2, BTN_SELECT, BTN_START, BTN_MODE,
         BTN_THUMBL, BTN_THUMBR, BTN_TRIGGER, BTN_THUMB, BTN_THUMB2, BTN_TOP,
-        BTN_TOP2, BTN_PINKIE, BTN_BASE, BTN_BASE2
+        BTN_TOP2, BTN_PINKIE, BTN_BASE, BTN_BASE2, BTN_BASE3, BTN_BASE4, BTN_BASE5, BTN_BASE6,
+        BTN_TRIGGER_HAPPY1, BTN_TRIGGER_HAPPY2, BTN_TRIGGER_HAPPY3, BTN_TRIGGER_HAPPY4,
+        BTN_TRIGGER_HAPPY5, BTN_TRIGGER_HAPPY6, BTN_TRIGGER_HAPPY7, BTN_TRIGGER_HAPPY8
     };
     for (int code : gamepadKeys) if (bitTest(keyBits, code)) ++buttonCount;
 
@@ -610,6 +612,8 @@ struct GamepadProxy {
     int16_t viewY = 0;
 
     GamepadReport lastTelemetry{};
+    uint32_t extraTelemetryButtons = 0;
+    uint32_t lastExtraTelemetryButtons = 0;
     bool telemetryInitialized = false;
 };
 
@@ -786,6 +790,21 @@ int gamepadButtonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
         case BTN_MODE: return 12;
         case BTN_THUMBL: return 13;
         case BTN_THUMBR: return 14;
+        default: return -1;
+    }
+}
+
+int gamepadBackIndex(int code) {
+    switch (code) {
+        case BTN_BASE3: case BTN_TRIGGER_HAPPY1: return 0;
+        case BTN_BASE4: case BTN_TRIGGER_HAPPY2: return 1;
+        case BTN_BASE5: case BTN_TRIGGER_HAPPY3: return 2;
+        case BTN_BASE6: case BTN_TRIGGER_HAPPY4: return 3;
+        // Flydigi Vader 5 Pro exposes M1..M4 as the SDL paddle range on supported kernels/drivers.
+        case BTN_TRIGGER_HAPPY5: return 0;
+        case BTN_TRIGGER_HAPPY6: return 1;
+        case BTN_TRIGGER_HAPPY7: return 2;
+        case BTN_TRIGGER_HAPPY8: return 3;
         default: return -1;
     }
 }
@@ -1224,7 +1243,9 @@ void emitViewMotion(ViewPointer* view, const GamepadProxy* gamepads, int count,
 
 void emitGamepadTelemetry(GamepadProxy* p) {
     if (!p) return;
-    if (p->telemetryInitialized && memcmp(&p->report, &p->lastTelemetry, sizeof(GamepadReport)) == 0) return;
+    if (p->telemetryInitialized
+            && memcmp(&p->report, &p->lastTelemetry, sizeof(GamepadReport)) == 0
+            && p->extraTelemetryButtons == p->lastExtraTelemetryButtons) return;
     auto axis1000 = [](int16_t value) -> int {
         int out = static_cast<int>((static_cast<long long>(value) * 1000LL) / 32767LL);
         if (out > 1000) out = 1000;
@@ -1233,12 +1254,14 @@ void emitGamepadTelemetry(GamepadProxy* p) {
     };
     int lt = static_cast<int>((static_cast<unsigned>(p->report.lt) * 1000U) / 255U);
     int rt = static_cast<int>((static_cast<unsigned>(p->report.rt) * 1000U) / 255U);
+    uint32_t telemetryButtons = static_cast<uint32_t>(p->report.buttons) | p->extraTelemetryButtons;
     printf("GAMEPAD %d %d %d %d %d %d %u\n",
            axis1000(p->report.lx), axis1000(p->report.ly),
            axis1000(p->report.rx), axis1000(p->report.ry),
-           lt, rt, static_cast<unsigned>(p->report.buttons));
+           lt, rt, static_cast<unsigned>(telemetryButtons));
     fflush(stdout);
     p->lastTelemetry = p->report;
+    p->lastExtraTelemetryButtons = p->extraTelemetryButtons;
     p->telemetryInitialized = true;
 }
 
@@ -1257,6 +1280,10 @@ bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& ga
             else if (ev.code == BTN_TR2) p->digitalRt = pressed;
             p->report.lt = p->digitalLt ? 255 : p->analogLt;
             p->report.rt = p->digitalRt ? 255 : p->analogRt;
+        } else if (int back = gamepadBackIndex(ev.code); back >= 0) {
+            uint32_t bit = static_cast<uint32_t>(1u << (15 + back));
+            if (ev.value != 0) p->extraTelemetryButtons |= bit;
+            else p->extraTelemetryButtons &= ~bit;
         } else if (ev.code == BTN_DPAD_UP || ev.code == BTN_DPAD_DOWN
                 || ev.code == BTN_DPAD_LEFT || ev.code == BTN_DPAD_RIGHT) {
             setDpadButton(p, ev.code, ev.value != 0);
