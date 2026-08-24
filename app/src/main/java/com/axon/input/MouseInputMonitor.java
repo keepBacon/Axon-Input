@@ -8,7 +8,9 @@ import java.io.Closeable;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.StringTokenizer;
 
 /**
@@ -35,6 +37,9 @@ public final class MouseInputMonitor {
     private final Context context;
     private final Listener listener;
     private final Map<String, Integer> deviceButtonMasks = new HashMap<>();
+    /** getevent 运行期发现的 Axon uinput event 节点；只在 Java 解析层过滤，绝不改变物理 getevent 订阅。 */
+    private final Set<String> ignoredDevicePaths = new HashSet<>();
+    private String announcedDevicePath;
     private volatile boolean running;
     private volatile PrivilegedProcess process;
     private Thread worker;
@@ -81,6 +86,14 @@ public final class MouseInputMonitor {
             try {
                 // 每次重新连接都先清理上一次可能丢失的 UP 状态。
                 resetPressedButtons();
+                // getevent 的 device 参数是单设备语义，不能把一串 /dev/input/event* 直接拼在后面。
+                // 这里恢复稳定版本的全局监听；Axon 自己创建的 uinput 节点通过 getevent 的
+                // add-device/name 元数据在 parseLine() 内过滤。这样 REL_X/REL_Y、鼠标按键与 CPS
+                // 共用同一条连续硬件流，也不会因为过滤虚拟设备而把真实鼠标流一起断掉。
+                synchronized (this) {
+                    ignoredDevicePaths.clear();
+                    announcedDevicePath = null;
+                }
                 current = startPrivileged(mode, "/system/bin/getevent -lt");
                 process = current;
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(current.getInputStream()))) {
@@ -120,6 +133,18 @@ public final class MouseInputMonitor {
 
     private void parseLine(String line) {
         if (line == null || line.isEmpty()) return;
+
+        // getevent -lt 会在启动和热插拔时输出：
+        //   add device N: /dev/input/eventX
+        //     name:     "Device name"
+        // 先记录设备名，再只过滤 Axon 自己的 uinput。物理鼠标始终走原始 getevent 流。
+        if (parseDeviceAnnouncement(line)) return;
+
+        String device = deviceKey(line);
+        synchronized (this) {
+            if (device != null && ignoredDevicePaths.contains(device)) return;
+        }
+
         String payload = payload(line);
 
         int axis = detectRelativeAxis(payload);
@@ -138,14 +163,15 @@ public final class MouseInputMonitor {
         if (value < 0 || value == 2) return; // EV_KEY repeat 不是新的按下沿。
 
         boolean pressed = value != 0;
-        if (button == NativeKeyEngine.MOUSE_LEFT || button == NativeKeyEngine.MOUSE_RIGHT) {
-            updatePrimaryButton(deviceKey(line), button, pressed);
-        } else {
-            listener.onMousePromptButton(button, pressed);
-        }
+        updateButton(device, button, pressed);
     }
 
-    private synchronized void updatePrimaryButton(String device, int button, boolean pressed) {
+    /**
+     * All five mouse buttons are aggregated per physical event node.  This is important for
+     * devices exposing multiple event nodes and for hot-unplug while a button is held.
+     */
+    private synchronized void updateButton(String device, int button, boolean pressed) {
+        if (button < NativeKeyEngine.MOUSE_LEFT || button > BUTTON_FORWARD) return;
         String key = device == null ? "<unknown>" : device;
         int bit = 1 << button;
         int oldMask = deviceButtonMasks.getOrDefault(key, 0);
@@ -154,34 +180,119 @@ public final class MouseInputMonitor {
 
         if (nextMask == 0) deviceButtonMasks.remove(key);
         else deviceButtonMasks.put(key, nextMask);
+        dispatchAggregateTransitionLocked(computeAggregateButtonsLocked());
+    }
 
+    private int computeAggregateButtonsLocked() {
         int nextAggregate = 0;
         for (int mask : deviceButtonMasks.values()) nextAggregate |= mask;
-        nextAggregate &= 0x3;
-        int changed = aggregateButtons ^ nextAggregate;
-        if (changed == 0) return;
+        return nextAggregate & 0x1f;
+    }
 
+    private void dispatchAggregateTransitionLocked(int nextAggregate) {
+        int previous = aggregateButtons;
+        int changed = previous ^ nextAggregate;
+        if (changed == 0) return;
         aggregateButtons = nextAggregate;
+
         long now = SystemClock.uptimeMillis();
         long stats = NativeKeyEngine.nativeGetMouseStats(now);
+        boolean primaryChanged = false;
         if ((changed & 1) != 0) {
             stats = NativeKeyEngine.nativeUpdateMouseButton(
                     NativeKeyEngine.MOUSE_LEFT, (nextAggregate & 1) != 0, now);
+            primaryChanged = true;
         }
         if ((changed & 2) != 0) {
             stats = NativeKeyEngine.nativeUpdateMouseButton(
                     NativeKeyEngine.MOUSE_RIGHT, (nextAggregate & 2) != 0, now);
+            primaryChanged = true;
         }
-        listener.onMouseState(stats);
+        if (primaryChanged) listener.onMouseState(stats);
+
+        for (int button = BUTTON_MIDDLE; button <= BUTTON_FORWARD; button++) {
+            int bit = 1 << button;
+            if ((changed & bit) != 0) listener.onMousePromptButton(button, (nextAggregate & bit) != 0);
+        }
     }
 
     private synchronized void resetPressedButtons() {
+        int previous = aggregateButtons;
         deviceButtonMasks.clear();
         aggregateButtons = 0;
         long now = SystemClock.uptimeMillis();
         long stats = NativeKeyEngine.nativeUpdateMouseButton(NativeKeyEngine.MOUSE_LEFT, false, now);
         stats = NativeKeyEngine.nativeUpdateMouseButton(NativeKeyEngine.MOUSE_RIGHT, false, now);
         listener.onMouseState(stats);
+        for (int button = BUTTON_MIDDLE; button <= BUTTON_FORWARD; button++) {
+            if ((previous & (1 << button)) != 0) listener.onMousePromptButton(button, false);
+        }
+    }
+
+    /**
+     * 解析 getevent 的设备枚举/热插拔元数据。返回 true 表示该行不是输入事件。
+     * 不依赖 InputDevice id 与 eventX 的私有映射，因此 Root / Shizuku 两种模式行为一致。
+     */
+    private synchronized boolean parseDeviceAnnouncement(String line) {
+        String trimmed = line.trim();
+        if (trimmed.startsWith("add device ")) {
+            announcedDevicePath = extractEventPath(trimmed);
+            return true;
+        }
+        if (trimmed.startsWith("remove device ")) {
+            String removed = extractEventPath(trimmed);
+            if (removed != null) ignoredDevicePaths.remove(removed);
+            if (removed != null && removed.equals(announcedDevicePath)) announcedDevicePath = null;
+            if (removed != null && deviceButtonMasks.remove(removed) != null) {
+                // A physical mouse can disappear without sending EV_KEY UP. Recompute immediately
+                // so CPS, prompts, Bongo Cat and bindings never remain stuck in a pressed state.
+                dispatchAggregateTransitionLocked(computeAggregateButtonsLocked());
+            }
+            return true;
+        }
+        if (announcedDevicePath != null && trimmed.startsWith("name:")) {
+            String name = extractQuotedName(trimmed);
+            if (isAxonVirtualName(name)) ignoredDevicePaths.add(announcedDevicePath);
+            else ignoredDevicePaths.remove(announcedDevicePath);
+            announcedDevicePath = null;
+            return true;
+        }
+
+        // 设备描述块里的其它行都不是输入事件。直到 name 行出现前保持 announcedDevicePath。
+        if (announcedDevicePath != null
+                && !trimmed.startsWith("[")
+                && !trimmed.startsWith("/dev/input/")) {
+            return true;
+        }
+        return false;
+    }
+
+    private String extractEventPath(String text) {
+        int start = text.indexOf("/dev/input/event");
+        if (start < 0) return null;
+        int end = start;
+        while (end < text.length()) {
+            char c = text.charAt(end);
+            if (Character.isWhitespace(c)) break;
+            end++;
+        }
+        String path = text.substring(start, end);
+        while (path.endsWith(":")) path = path.substring(0, path.length() - 1);
+        return path;
+    }
+
+    private String extractQuotedName(String text) {
+        int first = text.indexOf('\"');
+        int last = text.lastIndexOf('\"');
+        if (first >= 0 && last > first) return text.substring(first + 1, last).trim();
+        int colon = text.indexOf(':');
+        return colon >= 0 ? text.substring(colon + 1).trim() : text.trim();
+    }
+
+    private boolean isAxonVirtualName(String name) {
+        if (name == null) return false;
+        return name.startsWith("Axon Input Virtual")
+                || "Axon Input Force Hold Keyboard".equals(name);
     }
 
     private String payload(String line) {

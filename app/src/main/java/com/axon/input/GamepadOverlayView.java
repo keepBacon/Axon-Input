@@ -41,6 +41,11 @@ public final class GamepadOverlayView extends FrameLayout {
     public static final int BTN_BACK_2 = 1 << 16;
     public static final int BTN_BACK_3 = 1 << 17;
     public static final int BTN_BACK_4 = 1 << 18;
+    // D-pad is also bindable input. Keep these bits outside the rendered button ranges.
+    public static final int BTN_DPAD_UP = 1 << 20;
+    public static final int BTN_DPAD_DOWN = 1 << 21;
+    public static final int BTN_DPAD_LEFT = 1 << 22;
+    public static final int BTN_DPAD_RIGHT = 1 << 23;
 
     private static final String[] FACE_LABELS_NORMAL = {"Y", "B", "A", "X"};
     private static final String[] FACE_LABELS_REVERSED = {"A", "X", "Y", "B"};
@@ -87,6 +92,7 @@ public final class GamepadOverlayView extends FrameLayout {
     private boolean globalHtmlEnabled;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
     private int cornerStrength = KeyAppearance.DEFAULT_CORNER_STRENGTH;
+    private int baseColor;
     private int pressColor;
 
     private float targetX;
@@ -136,7 +142,8 @@ public final class GamepadOverlayView extends FrameLayout {
         setLayerType(LAYER_TYPE_HARDWARE, null);
 
         fillPaint.setStyle(Paint.Style.FILL);
-        fillPaint.setColor(UiPalette.overlayShell(context));
+        baseColor = UiPalette.overlayShell(context);
+        fillPaint.setColor(baseColor);
         strokePaint.setStyle(Paint.Style.STROKE);
         strokePaint.setStrokeWidth(dp(1f));
         strokePaint.setColor(UiPalette.overlayStroke(context));
@@ -178,6 +185,14 @@ public final class GamepadOverlayView extends FrameLayout {
         keyStyle = KeyAppearance.clampStyle(style);
         pressColor = 0xff000000 | (color & 0x00ffffff);
         buttonPaint.setColor(pressColor);
+        invalidate();
+    }
+
+    public void setKeyBaseColor(int color) {
+        int resolved = 0xff000000 | (color & 0x00ffffff);
+        if (baseColor == resolved) return;
+        baseColor = resolved;
+        fillPaint.setColor(baseColor);
         invalidate();
     }
 

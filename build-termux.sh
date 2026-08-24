@@ -92,9 +92,11 @@ echo "[Axon Input] Android jar: $ANDROID_JAR"
 NATIVE_LIB="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyengine.so"
 PROXY_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libsensitivityproxy.so"
 GAMEPAD_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libgamepadmonitor.so"
+KEYHOLD_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyhold.so"
 [ -f "$NATIVE_LIB" ] || fail "C++ JNI 输出不存在"
 [ -f "$PROXY_BIN" ] || fail "灵敏度代理输出不存在"
 [ -f "$GAMEPAD_MONITOR_BIN" ] || fail "手柄监听输出不存在"
+[ -f "$KEYHOLD_BIN" ] || fail "强制长按代理输出不存在"
 
 # 2）编译资源
 # 编译完整 Android 资源，包括 PNG 图标。
@@ -151,6 +153,7 @@ cp "$DEX/classes.dex" "$APK_STAGE/classes.dex"
 cp "$NATIVE_LIB" "$APK_STAGE/lib/arm64-v8a/libkeyengine.so"
 cp "$PROXY_BIN" "$APK_STAGE/lib/arm64-v8a/libsensitivityproxy.so"
 cp "$GAMEPAD_MONITOR_BIN" "$APK_STAGE/lib/arm64-v8a/libgamepadmonitor.so"
+cp "$KEYHOLD_BIN" "$APK_STAGE/lib/arm64-v8a/libkeyhold.so"
 (
     cd "$APK_STAGE"
     zip -q -u "$UNSIGNED" classes.dex

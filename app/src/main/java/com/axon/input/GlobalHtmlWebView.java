@@ -583,7 +583,7 @@ public final class GlobalHtmlWebView extends WebView {
     private JSONObject keyObjectForCustom(int index) {
         return keyObject(
                 "key-" + customKeyCodes[index],
-                KeyLabel.fromKeyCode(customKeyCodes[index]),
+                InputBinding.label(customKeyCodes[index]),
                 customKeyCodes[index],
                 index,
                 customPressed[index],
@@ -620,6 +620,8 @@ public final class GlobalHtmlWebView extends WebView {
         out.put("opacityPercent", OverlayState.getDisplayOpacity(c, display));
         if (supportsKeyAppearance()) {
             out.put("keyStyle", keyStyleName(OverlayState.getKeyStyle(c, display)));
+            out.put("cornerStrength", OverlayState.getKeyCornerStrength(c, display));
+            out.put("baseColor", colorHex(OverlayState.getKeyBaseColor(c, display)));
             out.put("pressColor", colorHex(OverlayState.getKeyPressColor(c, display)));
         }
         int spacing = currentSpacingDp(c);
@@ -630,6 +632,8 @@ public final class GlobalHtmlWebView extends WebView {
         out.put("opacityPercent", OverlayState.getDisplayOpacity(c, display));
         if (supportsKeyAppearance(display)) {
             out.put("keyStyle", keyStyleName(OverlayState.getKeyStyle(c, display)));
+            out.put("cornerStrength", OverlayState.getKeyCornerStrength(c, display));
+            out.put("baseColor", colorHex(OverlayState.getKeyBaseColor(c, display)));
             out.put("pressColor", colorHex(OverlayState.getKeyPressColor(c, display)));
         }
     }
@@ -645,7 +649,8 @@ public final class GlobalHtmlWebView extends WebView {
                 || display == KeyPromptOverlayView.DISPLAY_KEY_PROMPT
                 || display == GamepadOverlayView.DISPLAY_FACE
                 || display == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
-                || display == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER;
+                || display == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
+                || display == GamepadOverlayView.DISPLAY_BACK;
     }
 
     private int currentSpacingDp(Context c) {
@@ -950,7 +955,7 @@ public final class GlobalHtmlWebView extends WebView {
                 + "const set=(k,v)=>{if(v!==undefined&&v!==null)d.setProperty(k,String(v))};"
                 + "set('--kd-size',s.sizePercent/100);set('--kd-width',s.viewport.width+'px');set('--kd-height',s.viewport.height+'px');set('--kd-density',s.viewport.density);"
                 + "set('--kd-dot-size',(c.dotSizePercent||100)/100);const op=c.opacityPercent==null?100:c.opacityPercent;set('--kd-opacity',op/100);set('--kd-opacity-percent',op);"
-                + "set('--kd-key-spacing',(c.spacingDp==null?0:c.spacingDp)+'px');set('--kd-press-color',c.pressColor||p.keyPressed);set('--kd-key-style',c.keyStyle||'rounded');"
+                + "set('--kd-key-spacing',(c.spacingDp==null?0:c.spacingDp)+'px');set('--kd-base-color',c.baseColor||p.keyIdle);set('--kd-press-color',c.pressColor||p.keyPressed);set('--kd-key-style',c.keyStyle||'rounded');set('--kd-corner-strength',c.cornerStrength==null?40:c.cornerStrength);set('--kd-corner-radius',(c.cornerStrength==null?40:c.cornerStrength)/100*0.5+'em');"
                 + "set('--kd-mouse-sensitivity',r.mouseSensitivity||100);set('--kd-gamepad-sensitivity',r.gamepadSensitivity||100);"
                 + "set('--kd-position-x',(r.positionXPercent||0)+'%');set('--kd-position-y',(r.positionYPercent||0)+'%');"
                 + "for(const k in p)set('--kd-'+k.replace(/[A-Z]/g,m=>'-'+m.toLowerCase()),p[k]);"

@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** 输入倍率代理。Shizuku 和 Root 共用 native evdev 接管与虚拟设备转发。 */
@@ -41,6 +42,7 @@ public final class SensitivityProxyController {
     private final AtomicInteger generation = new AtomicInteger();
 
     private volatile boolean desiredEnabled;
+    private volatile boolean destroyed;
     private volatile int desiredMouse = 100;
     private volatile int desiredGamepad = 100;
     private volatile int desiredMode = OverlayState.SENSITIVITY_MODE_SHIZUKU;
@@ -58,12 +60,12 @@ public final class SensitivityProxyController {
     private final String pidFileBase;
 
     private final Runnable gainFlush = () -> {
-        if (!desiredEnabled) return;
+        if (destroyed || !desiredEnabled) return;
         final int mode = desiredMode;
         final int mouse = desiredMouse;
         final int gamepad = desiredGamepad;
         if (!modeReady(mode) || process == null || activeMode != mode) return;
-        controlExecutor.execute(() -> writeGains(mode, mouse, gamepad));
+        enqueueControl(() -> writeGains(mode, mouse, gamepad));
     };
 
     public SensitivityProxyController(Context context, Listener listener) {
@@ -77,6 +79,7 @@ public final class SensitivityProxyController {
 
     /** 应用已保存状态。权限模式变化时才重启代理。 */
     public synchronized void apply(boolean enabled, int mousePercent, int gamepadPercent, int mode) {
+        if (destroyed) return;
         int previousMode = desiredMode;
         int resolvedMode = mode == OverlayState.SENSITIVITY_MODE_ROOT
                 ? OverlayState.SENSITIVITY_MODE_ROOT
@@ -99,7 +102,7 @@ public final class SensitivityProxyController {
         if (modeChanged) {
             fatalMode = -1;
             stopProcessOnly();
-            controlExecutor.execute(() -> cleanupMode(previousMode));
+            enqueueControl(() -> cleanupMode(previousMode));
         }
 
         if (!modeReady(resolvedMode)) {
@@ -123,24 +126,28 @@ public final class SensitivityProxyController {
     }
 
     public synchronized void onShizukuAvailable() {
-        if (desiredMode != OverlayState.SENSITIVITY_MODE_SHIZUKU) return;
+        if (destroyed || desiredMode != OverlayState.SENSITIVITY_MODE_SHIZUKU) return;
         if (fatalMode == OverlayState.SENSITIVITY_MODE_SHIZUKU) fatalMode = -1;
         if (desiredEnabled) apply(true, desiredMouse, desiredGamepad, desiredMode);
     }
 
     public synchronized void onShizukuDead() {
+        if (destroyed) return;
         if (desiredMode == OverlayState.SENSITIVITY_MODE_SHIZUKU) {
             stopInternal(context.getString(R.string.sensitivity_status_shizuku_lost));
         }
     }
 
     public synchronized void destroy() {
+        if (destroyed) return;
         desiredEnabled = false;
         stopInternal(context.getString(R.string.sensitivity_status_stopped));
+        destroyed = true;
         controlExecutor.shutdownNow();
     }
 
     private void startWorker() {
+        if (destroyed) return;
         final int token = generation.incrementAndGet();
         final int mode = desiredMode;
         Thread worker = new Thread(() -> runWorker(token, mode), "AxonInputSensitivityProxy");
@@ -240,7 +247,13 @@ public final class SensitivityProxyController {
             postStatus(prefix + context.getString(R.string.sensitivity_status_wait_device));
         } else if (status.startsWith("view-disconnected")) {
             postStatus(prefix + context.getString(R.string.sensitivity_status_view_restart));
-        } else if (status.startsWith("mouse-disconnected") || status.startsWith("gamepad-disconnected")) {
+        } else if (status.startsWith("mouse-disconnected")) {
+            int previous = lastButtons;
+            lastButtons = 0;
+            if (previous != 0) mainHandler.post(() -> listener.onSensitivityMouseButtons(0));
+            postStatus(prefix + context.getString(R.string.sensitivity_status_device_lost));
+        } else if (status.startsWith("gamepad-disconnected")) {
+            mainHandler.post(() -> listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0));
             postStatus(prefix + context.getString(R.string.sensitivity_status_device_lost));
         } else if (status.startsWith("starting")) {
             postStatus(prefix + context.getString(R.string.sensitivity_status_starting));
@@ -291,11 +304,16 @@ public final class SensitivityProxyController {
         generation.incrementAndGet();
         mainHandler.removeCallbacks(gainFlush);
         stopProcessOnly();
+        int previousButtons = lastButtons;
         lastButtons = 0;
+        if (previousButtons != 0) mainHandler.post(() -> listener.onSensitivityMouseButtons(0));
+        // The proxy may disappear while a trigger/stick is still active. Clear the logical
+        // gamepad state immediately instead of waiting for a replacement monitor sample.
+        mainHandler.post(() -> listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0));
         postStatus(status);
         if (modeA == OverlayState.SENSITIVITY_MODE_SHIZUKU
                 || modeA == OverlayState.SENSITIVITY_MODE_ROOT) {
-            controlExecutor.execute(() -> cleanupMode(modeA));
+            enqueueControl(() -> cleanupMode(modeA));
         }
     }
 
@@ -310,6 +328,15 @@ public final class SensitivityProxyController {
         Thread worker = readerThread;
         readerThread = null;
         if (worker != null) worker.interrupt();
+    }
+
+    private void enqueueControl(Runnable task) {
+        if (task == null || destroyed) return;
+        try {
+            controlExecutor.execute(task);
+        } catch (RejectedExecutionException ignored) {
+            // Teardown won the race.
+        }
     }
 
     private void cleanupMode(int mode) {

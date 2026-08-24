@@ -3,6 +3,7 @@ package com.axon.input;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Color;
+import android.net.Uri;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.SparseBooleanArray;
@@ -37,8 +38,10 @@ import java.util.LinkedHashSet;
 public final class KeyboardCatOverlayView extends FrameLayout {
     public static final int DISPLAY_KEYBOARD_CAT = 40;
     private static final String TAG = "AxonBongoCat";
-    private static final int RUNTIME_PROBE_MAX_ATTEMPTS = 180;
-    private static final long RUNTIME_PROBE_DELAY_MS = 16L;
+    // Large imported Live2D models can legitimately need several seconds on slower WebView/GPU
+    // implementations. The old ~2.9 s timeout marked a healthy runtime dead too early.
+    private static final int RUNTIME_PROBE_MAX_ATTEMPTS = 160;
+    private static final long RUNTIME_PROBE_DELAY_MS = 50L;
 
     public interface DragListener {
         void onDragStart(KeyboardCatOverlayView source, float rawX, float rawY);
@@ -59,6 +62,9 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     private boolean dragging;
     private boolean pageReady;
     private int runtimeGeneration;
+    private int runtimeRecoveryStage;
+    private BongoCatStyleManager.StyleInfo loadedStyle;
+    private boolean released;
     private boolean mouseMode;
     private boolean globalReverse;
     private String styleId;
@@ -76,6 +82,7 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     private boolean gamepadLtPressed;
     private boolean gamepadRtPressed;
     private int mouseButtons;
+    private int mouseAuxButtons;
     private int pendingMouseDx;
     private int pendingMouseDy;
     private int pendingMousePressPulses;
@@ -119,7 +126,10 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        // Keep WebView's default compositor mode. Forcing a hardware layer causes transparent
+        // accessibility overlays to render blank on several OEM WebView/GPU combinations. WebGL
+        // remains hardware accelerated by the application/window when available.
+        webView.setLayerType(View.LAYER_TYPE_NONE, null);
         webView.setClickable(false);
         webView.setLongClickable(false);
         webView.setFocusable(false);
@@ -168,6 +178,7 @@ public final class KeyboardCatOverlayView extends FrameLayout {
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request != null && request.isForMainFrame()) {
                     Log.e(TAG, "WebView load failed: " + (error == null ? "unknown" : error.toString()));
+                    recoverRuntime(runtimeGeneration, "main-frame-load");
                 }
             }
         });
@@ -232,6 +243,12 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     }
 
     private void loadCurrentMode() {
+        runtimeRecoveryStage = 0;
+        loadCurrentModeInternal(false, false);
+    }
+
+    private void loadCurrentModeInternal(boolean forceSpriteFallback, boolean forceBuiltin) {
+        if (released) return;
         runtimeGeneration++;
         pageReady = false;
         removeCallbacks(mouseFrameDrain);
@@ -245,47 +262,97 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         gamepadDirectionalMask = 0;
         gamepadLtPressed = false;
         gamepadRtPressed = false;
-        webView.stopLoading();
+        try { webView.stopLoading(); } catch (Throwable ignored) {}
 
-        BongoCatStyleManager.StyleInfo style = BongoCatStyleManager.get(getContext(), styleId);
-        styleId = style.id;
+        BongoCatStyleManager.StyleInfo style = forceBuiltin
+                ? BongoCatStyleManager.get(getContext(), BongoCatStyleManager.BUILTIN_ID)
+                : BongoCatStyleManager.get(getContext(), styleId);
+        loadedStyle = style;
+        if (!forceBuiltin) styleId = style.id;
         if (!style.builtin) {
             styleMode = style.mode;
             try {
-                JSONObject config = BongoCatStyleManager.runtimeConfig(style);
+                JSONObject config = BongoCatStyleManager.runtimeConfig(style, forceSpriteFallback);
                 String template = readAssetText("bongocat/custom/index.html");
                 String bootstrap = "window.__AXON_STYLE_CONFIG__=" + config.toString() + ";";
-                String html = template.replace("__AXON_STYLE_BOOTSTRAP__", bootstrap);
-                webView.loadDataWithBaseURL("file:///android_asset/bongocat/custom/", html, "text/html", "utf-8", null);
+                String core = escapeInlineScript(readAssetText("bongocat/live2dcubismcore.min.js"));
+                String runtime = escapeInlineScript(readAssetText("bongocat/custom/runtime.js"));
+                String html = template
+                        .replace("__AXON_STYLE_BOOTSTRAP__", bootstrap)
+                        .replace("__AXON_CUBISM_CORE__", core)
+                        .replace("__AXON_CUSTOM_RUNTIME__", runtime);
+
+                // Use the imported style directory itself as the document origin. On newer/OEM
+                // WebViews a file:///android_asset page may be denied access to file:///data/user
+                // textures even when setAllowFileAccessFromFileURLs(true). Same-origin style-root
+                // loading removes that fragile cross-file-origin dependency.
+                String baseUrl = Uri.fromFile(style.root).toString();
+                if (!baseUrl.endsWith("/")) baseUrl += "/";
+                webView.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", baseUrl);
                 return;
-            } catch (Throwable ignored) {
-                styleId = BongoCatStyleManager.BUILTIN_ID;
+            } catch (Throwable error) {
+                Log.e(TAG, "Imported style load preparation failed: " + style.id, error);
+                recoverRuntime(runtimeGeneration, "prepare");
+                return;
             }
         }
         styleMode = mouseMode ? BongoCatStyleManager.MODE_STANDARD : BongoCatStyleManager.MODE_KEYBOARD;
         webView.loadUrl(mouseMode ? MOUSE_PAGE_URL : KEYBOARD_PAGE_URL);
     }
 
+    private static String escapeInlineScript(String source) {
+        if (source == null || source.isEmpty()) return "";
+        return source.replace("</script", "<\\/script");
+    }
+
     private void probeRuntimeReady(int generation, int attempt) {
-        if (generation != runtimeGeneration || pageReady) return;
-        webView.evaluateJavascript(
-                "Boolean(window.AxonBongoCat&&typeof AxonBongoCat.key==='function')",
-                result -> {
-                    if (generation != runtimeGeneration || pageReady) return;
-                    if ("true".equals(result)) {
-                        pageReady = true;
-                        Log.i(TAG, "Runtime input bridge ready, generation=" + generation);
-                        flushInputState();
-                        logRuntimeState(generation);
-                        return;
-                    }
-                    if (attempt + 1 >= RUNTIME_PROBE_MAX_ATTEMPTS) {
-                        Log.e(TAG, "Runtime input bridge unavailable after "
-                                + RUNTIME_PROBE_MAX_ATTEMPTS + " probes");
-                        return;
-                    }
-                    postDelayed(() -> probeRuntimeReady(generation, attempt + 1), RUNTIME_PROBE_DELAY_MS);
-                });
+        if (released || generation != runtimeGeneration || pageReady) return;
+        try {
+            webView.evaluateJavascript(
+                    "Boolean(window.AxonBongoCat&&typeof AxonBongoCat.key==='function'"
+                            + "&&(!AxonBongoCat.isReady||AxonBongoCat.isReady()))",
+                    result -> {
+                        if (released || generation != runtimeGeneration || pageReady) return;
+                        if ("true".equals(result)) {
+                            pageReady = true;
+                            Log.i(TAG, "Runtime fully ready, generation=" + generation
+                                    + ", recoveryStage=" + runtimeRecoveryStage);
+                            flushInputState();
+                            logRuntimeState(generation);
+                            return;
+                        }
+                        if (attempt + 1 >= RUNTIME_PROBE_MAX_ATTEMPTS) {
+                            Log.e(TAG, "Runtime not ready after " + RUNTIME_PROBE_MAX_ATTEMPTS
+                                    + " probes, generation=" + generation);
+                            recoverRuntime(generation, "timeout");
+                            return;
+                        }
+                        postDelayed(() -> probeRuntimeReady(generation, attempt + 1), RUNTIME_PROBE_DELAY_MS);
+                    });
+        } catch (Throwable error) {
+            Log.e(TAG, "Runtime probe failed", error);
+            recoverRuntime(generation, "probe");
+        }
+    }
+
+    private void recoverRuntime(int generation, String reason) {
+        if (released || generation != runtimeGeneration) return;
+        BongoCatStyleManager.StyleInfo style = loadedStyle;
+        if (style != null && !style.builtin
+                && BongoCatStyleManager.isMverStyle(style)
+                && runtimeRecoveryStage == 0) {
+            runtimeRecoveryStage = 1;
+            Log.w(TAG, "Imported Mver Live2D failed (" + reason + "), retrying sprite renderer");
+            post(() -> loadCurrentModeInternal(true, false));
+            return;
+        }
+        if (style != null && !style.builtin && runtimeRecoveryStage < 2) {
+            runtimeRecoveryStage = 2;
+            Log.w(TAG, "Imported style failed (" + reason + "), falling back to built-in renderer");
+            post(() -> loadCurrentModeInternal(false, true));
+            return;
+        }
+        Log.e(TAG, "BongoCat runtime recovery exhausted: " + reason);
     }
 
     private void logRuntimeState(int generation) {
@@ -374,6 +441,9 @@ public final class KeyboardCatOverlayView extends FrameLayout {
             default -> null;
         };
         if (semantic == null) return;
+        int bit = 1 << button;
+        if (pressed) mouseAuxButtons |= bit;
+        else mouseAuxButtons &= ~bit;
         dispatch("window.AxonBongoCat&&AxonBongoCat.key(" + JSONObject.quote(semantic) + "," + pressed + ")");
     }
 
@@ -408,6 +478,10 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         dispatchGamepadTransition(GamepadOverlayView.BTN_SELECT, "Select", gamepadButtons, next);
         dispatchGamepadTransition(GamepadOverlayView.BTN_START, "Start", gamepadButtons, next);
         dispatchGamepadTransition(GamepadOverlayView.BTN_MODE, "Mode", gamepadButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_UP, "DPadUp", gamepadButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_DOWN, "DPadDown", gamepadButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_LEFT, "DPadLeft", gamepadButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_RIGHT, "DPadRight", gamepadButtons, next);
 
         boolean nextLt = (next & GamepadOverlayView.BTN_L2) != 0 || lt >= 80;
         boolean nextRt = (next & GamepadOverlayView.BTN_R2) != 0 || rt >= 80;
@@ -472,6 +546,7 @@ public final class KeyboardCatOverlayView extends FrameLayout {
             pressedKeyOrder.clear();
         }
         mouseButtons = 0;
+        mouseAuxButtons = 0;
         pendingMouseDx = 0;
         pendingMouseDy = 0;
         pendingMousePressPulses = 0;
@@ -557,6 +632,15 @@ public final class KeyboardCatOverlayView extends FrameLayout {
             dispatchRaw("window.AxonBongoCat&&AxonBongoCat.key(" + JSONObject.quote(key) + ",true)");
         }
         dispatchMouseFrame(mouseButtons, mouseButtons, 0, 0);
+        if ((mouseAuxButtons & (1 << MouseInputMonitor.BUTTON_MIDDLE)) != 0) {
+            dispatchRaw("window.AxonBongoCat&&AxonBongoCat.key('MouseMiddle',true)");
+        }
+        if ((mouseAuxButtons & (1 << MouseInputMonitor.BUTTON_BACK)) != 0) {
+            dispatchRaw("window.AxonBongoCat&&AxonBongoCat.key('MouseSide1',true)");
+        }
+        if ((mouseAuxButtons & (1 << MouseInputMonitor.BUTTON_FORWARD)) != 0) {
+            dispatchRaw("window.AxonBongoCat&&AxonBongoCat.key('MouseSide2',true)");
+        }
         dispatchDebugExpression();
     }
 
@@ -567,11 +651,14 @@ public final class KeyboardCatOverlayView extends FrameLayout {
                 GamepadOverlayView.BTN_WEST, GamepadOverlayView.BTN_Z,
                 GamepadOverlayView.BTN_L1, GamepadOverlayView.BTN_R1,
                 GamepadOverlayView.BTN_SELECT, GamepadOverlayView.BTN_START,
-                GamepadOverlayView.BTN_MODE
+                GamepadOverlayView.BTN_MODE,
+                GamepadOverlayView.BTN_DPAD_UP, GamepadOverlayView.BTN_DPAD_DOWN,
+                GamepadOverlayView.BTN_DPAD_LEFT, GamepadOverlayView.BTN_DPAD_RIGHT
         };
         String[] names = {
                 "South", "East", "C", "North", "West", "Z",
-                "LeftTrigger", "RightTrigger", "Select", "Start", "Mode"
+                "LeftTrigger", "RightTrigger", "Select", "Start", "Mode",
+                "DPadUp", "DPadDown", "DPadLeft", "DPadRight"
         };
         for (int i = 0; i < bits.length; i++) {
             if ((gamepadButtons & bits[i]) != 0) dispatchGamepadButton(names[i], true);
@@ -709,4 +796,29 @@ public final class KeyboardCatOverlayView extends FrameLayout {
             default -> null;
         };
     }
+    /** Explicit final cleanup. A WindowManager detach can be transient on some ROMs/rotations, so
+     * destroying WebView from onDetachedFromWindow() leaves a permanently blank overlay. */
+    public void release() {
+        if (released) return;
+        released = true;
+        runtimeGeneration++;
+        pageReady = false;
+        removeCallbacks(mouseFrameDrain);
+        mouseFrameScheduled = false;
+        pendingMouseDx = 0;
+        pendingMouseDy = 0;
+        try { webView.removeJavascriptInterface("AxonNativeInput"); } catch (Throwable ignored) {}
+        try { webView.stopLoading(); } catch (Throwable ignored) {}
+        try { webView.setWebChromeClient(null); } catch (Throwable ignored) {}
+        try { webView.setWebViewClient(null); } catch (Throwable ignored) {}
+        try { webView.destroy(); } catch (Throwable ignored) {}
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        removeCallbacks(mouseFrameDrain);
+        mouseFrameScheduled = false;
+        super.onDetachedFromWindow();
+    }
+
 }

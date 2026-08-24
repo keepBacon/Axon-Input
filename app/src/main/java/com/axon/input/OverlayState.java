@@ -2,14 +2,19 @@ package com.axon.input;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.util.AtomicFile;
 
 import java.io.File;
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -19,7 +24,9 @@ import java.util.Set;
 /** 运行配置入口。普通设置保留到任务退出，长期数据单独保存。 */
 public final class OverlayState {
     static final int MAX_GLOBAL_HTML_BYTES = 4 * 1024 * 1024;
+    static final long MAX_FLOATING_VIDEO_BYTES = 256L * 1024L * 1024L;
     private static final String GLOBAL_HTML_FILE = "global_display.html";
+    private static final String FLOATING_VIDEO_FILE = "floating_video_media";
     public static final int MOTION_SIZE = 0;
     public static final int MOTION_ALPHA = 1;
     public static final int MOTION_NONE = 2;
@@ -31,7 +38,11 @@ public final class OverlayState {
     public static final int DPS_TARGET_NONE = -1;
     public static final int DPS_TARGET_MOUSE_LEFT = 0x10000;
     public static final int DPS_TARGET_MOUSE_RIGHT = 0x10001;
-    public static final int DPS_TARGET_GAMEPAD_BASE = 0x20000;
+    public static final int DPS_TARGET_MOUSE_MIDDLE = 0x10002;
+    public static final int DPS_TARGET_MOUSE_BACK = 0x10003;
+    public static final int DPS_TARGET_MOUSE_FORWARD = 0x10004;
+    public static final int DPS_TARGET_GAMEPAD_BASE = 0x20000; // legacy v1.6 encoding
+    private static final int DPS_TARGET_GAMEPAD_EXT_BASE = 0x02000000;
     private static final String SESSION_PREFS = "axon_input_session";
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";
@@ -41,11 +52,27 @@ public final class OverlayState {
     private static final String KEY_KEYBOARD_CAT_GLOBAL_REVERSE = "keyboard_cat_global_reverse";
     private static final String KEY_KEYBOARD_CAT_STYLE_ID = "keyboard_cat_style_id";
     private static final String KEY_KEYBOARD_CAT_DEBUG_EXPRESSION = "keyboard_cat_debug_expression";
+    private static final String KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE = "keyboard_cat_expression_hotkey_key_code";
+    private static final String KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_SELECTION_PREFIX = "keyboard_cat_expression_hotkey_selection_";
     private static final String KEY_INPUT_FULL_KEYBOARD_ENABLED = "input_full_keyboard_enabled";
     private static final String KEY_KEY_PROMPT_ENABLED = "key_prompt_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_ENABLED = "mouse_trajectory_enabled";
     private static final String KEY_CUSTOM_ENABLED = "custom_enabled";
+    // v1.6fix introduces an explicit user-facing display switch. Use a new preference key so
+    // installs upgraded from the previous auto-display build start with this new switch OFF rather
+    // than inheriting the old hidden runtime flag that loadSlotIntoActive() used to force on.
+    private static final String KEY_SUPER_CUSTOM_ENABLED = "super_custom_display_enabled_v2";
     private static final String KEY_DRAG_ENABLED = "drag_enabled";
+    private static final String KEY_FLOATING_VIDEO_ENABLED = "floating_video_enabled";
+    private static final String KEY_FLOATING_VIDEO_NAME = "floating_video_name";
+    private static final String KEY_FLOATING_VIDEO_SOURCE_DURATION = "floating_video_source_duration";
+    private static final String KEY_FLOATING_VIDEO_LOOP_DURATION = "floating_video_loop_duration";
+    private static final String KEY_FLOATING_VIDEO_WIDTH = "floating_video_width";
+    private static final String KEY_FLOATING_VIDEO_HEIGHT = "floating_video_height";
+    private static final String KEY_FORCE_HOLD_ENABLED = "force_hold_enabled";
+    private static final String KEY_FORCE_HOLD_TARGET_KEY_CODE = "force_hold_target_key_code";
+    private static final String KEY_FORCE_HOLD_TARGET_SCAN_CODE = "force_hold_target_scan_code";
+    private static final String KEY_FORCE_HOLD_TRIGGER_KEY_CODE = "force_hold_trigger_key_code";
     private static final String KEY_DPS_ENABLED = "dps_enabled";
     private static final String KEY_DPS_TARGET_KEY_CODE = "dps_target_key_code";
     private static final String KEY_DPS_OPACITY = "dps_opacity";
@@ -88,17 +115,26 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_FACE_CORNER_STRENGTH = "gamepad_face_corner_strength";
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_CORNER_STRENGTH = "gamepad_left_shoulder_corner_strength";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_CORNER_STRENGTH = "gamepad_right_shoulder_corner_strength";
+    private static final String KEY_KEYBOARD_BASE_COLOR = "keyboard_base_color";
     private static final String KEY_KEYBOARD_PRESS_COLOR = "keyboard_press_color";
     private static final String KEY_KEYBOARD_TEXT_COLOR = "keyboard_text_color";
+    private static final String KEY_MOUSE_BASE_COLOR = "mouse_base_color";
     private static final String KEY_MOUSE_PRESS_COLOR = "mouse_press_color";
+    private static final String KEY_KEY_PROMPT_BASE_COLOR = "key_prompt_base_color";
     private static final String KEY_KEY_PROMPT_PRESS_COLOR = "key_prompt_press_color";
+    private static final String KEY_FULL_KEYBOARD_BASE_COLOR = "full_keyboard_base_color";
     private static final String KEY_FULL_KEYBOARD_PRESS_COLOR = "full_keyboard_press_color";
+    private static final String KEY_CUSTOM_BASE_COLOR = "custom_base_color";
     private static final String KEY_CUSTOM_PRESS_COLOR = "custom_press_color";
+    private static final String KEY_GAMEPAD_FACE_BASE_COLOR = "gamepad_face_base_color";
     private static final String KEY_GAMEPAD_FACE_PRESS_COLOR = "gamepad_face_press_color";
+    private static final String KEY_GAMEPAD_LEFT_SHOULDER_BASE_COLOR = "gamepad_left_shoulder_base_color";
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_PRESS_COLOR = "gamepad_left_shoulder_press_color";
+    private static final String KEY_GAMEPAD_RIGHT_SHOULDER_BASE_COLOR = "gamepad_right_shoulder_base_color";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_PRESS_COLOR = "gamepad_right_shoulder_press_color";
     private static final String KEY_GAMEPAD_BACK_KEY_STYLE = "gamepad_back_key_style";
     private static final String KEY_GAMEPAD_BACK_CORNER_STRENGTH = "gamepad_back_corner_strength";
+    private static final String KEY_GAMEPAD_BACK_BASE_COLOR = "gamepad_back_base_color";
     private static final String KEY_GAMEPAD_BACK_PRESS_COLOR = "gamepad_back_press_color";
     private static final String KEY_MOUSE_TRAJECTORY_LEFT_COLOR_ENABLED = "mouse_trajectory_left_color_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_RIGHT_COLOR_ENABLED = "mouse_trajectory_right_color_enabled";
@@ -116,6 +152,8 @@ public final class OverlayState {
     private static final String KEY_KEY_PROMPT_POSITION_Y = "key_prompt_position_y";
     private static final String KEY_MOUSE_TRAJECTORY_POSITION_X = "mouse_trajectory_position_x";
     private static final String KEY_MOUSE_TRAJECTORY_POSITION_Y = "mouse_trajectory_position_y";
+    private static final String KEY_FLOATING_VIDEO_POSITION_X = "floating_video_position_x";
+    private static final String KEY_FLOATING_VIDEO_POSITION_Y = "floating_video_position_y";
     private static final String KEY_AUTO_HIDE_BACKGROUND = "auto_hide_background";
     private static final String KEY_ENTRY_AUTHORIZED = "entry_authorized";
     private static final String KEY_LAST_CLOUD_NOTICE_ID = "last_cloud_notice_id";
@@ -195,6 +233,8 @@ public final class OverlayState {
     private static final int DEFAULT_KEY_PROMPT_Y = 14;
     private static final int DEFAULT_MOUSE_TRAJECTORY_X = 50;
     private static final int DEFAULT_MOUSE_TRAJECTORY_Y = 52;
+    private static final int DEFAULT_FLOATING_VIDEO_X = 50;
+    private static final int DEFAULT_FLOATING_VIDEO_Y = 50;
     private static final int DEFAULT_DPS_X = 50;
     private static final int DEFAULT_DPS_Y = 8;
     private static final int DEFAULT_GAMEPAD_LEFT_STICK_X = 14;
@@ -254,6 +294,14 @@ public final class OverlayState {
         setBooleanAndRefresh(context, KEY_INPUT_FULL_KEYBOARD_ENABLED, enabled);
     }
 
+    public static boolean isSuperCustomEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_SUPER_CUSTOM_ENABLED, false);
+    }
+
+    public static void setSuperCustomEnabled(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_SUPER_CUSTOM_ENABLED, enabled);
+    }
+
     public static boolean isMouseEnabled(Context context) {
         return prefs(context).getBoolean(KEY_MOUSE_ENABLED, false);
     }
@@ -311,6 +359,51 @@ public final class OverlayState {
         AxonInputAccessibilityService.refreshActiveService();
     }
 
+    /** Hotkey path: persist the expression without rebuilding every overlay window. */
+    static void setKeyboardCatDebugExpressionRuntime(Context context, String token) {
+        String value = token == null || token.isEmpty() ? "auto" : token;
+        prefs(context).edit().putString(KEY_KEYBOARD_CAT_DEBUG_EXPRESSION, value).apply();
+    }
+
+    public static int getKeyboardCatExpressionHotkeyKeyCode(Context context) {
+        return prefs(context).getInt(KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE, -1);
+    }
+
+    public static void setKeyboardCatExpressionHotkeyKeyCode(Context context, int keyCode) {
+        SharedPreferences.Editor editor = prefs(context).edit();
+        if (keyCode >= 0) editor.putInt(KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE, keyCode);
+        else editor.remove(KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE);
+        editor.apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static boolean hasKeyboardCatExpressionHotkeySelection(Context context, String styleId) {
+        return prefs(context).contains(keyboardCatExpressionSelectionKey(styleId));
+    }
+
+    public static Set<String> getKeyboardCatExpressionHotkeySelection(Context context, String styleId) {
+        Set<String> stored = prefs(context).getStringSet(keyboardCatExpressionSelectionKey(styleId), null);
+        return stored == null ? new LinkedHashSet<>() : new LinkedHashSet<>(stored);
+    }
+
+    public static void setKeyboardCatExpressionHotkeySelection(
+            Context context, String styleId, Set<String> tokens) {
+        LinkedHashSet<String> clean = new LinkedHashSet<>();
+        if (tokens != null) {
+            for (String token : tokens) {
+                if (token != null && !token.isEmpty()) clean.add(token);
+            }
+        }
+        prefs(context).edit()
+                .putStringSet(keyboardCatExpressionSelectionKey(styleId), clean)
+                .apply();
+    }
+
+    private static String keyboardCatExpressionSelectionKey(String styleId) {
+        String value = styleId == null || styleId.isEmpty() ? BongoCatStyleManager.BUILTIN_ID : styleId;
+        return KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_SELECTION_PREFIX + value;
+    }
+
     public static boolean isKeyPromptEnabled(Context context) {
         return prefs(context).getBoolean(KEY_KEY_PROMPT_ENABLED, false);
     }
@@ -343,6 +436,148 @@ public final class OverlayState {
         setBooleanAndRefresh(context, KEY_DRAG_ENABLED, enabled);
     }
 
+    public static boolean isFloatingVideoEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_FLOATING_VIDEO_ENABLED, false);
+    }
+
+    public static void setFloatingVideoEnabled(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_FLOATING_VIDEO_ENABLED, enabled && hasFloatingVideo(context));
+    }
+
+    public static boolean hasFloatingVideo(Context context) {
+        File file = floatingVideoFile(context);
+        return file.isFile() && file.length() > 0L;
+    }
+
+    public static File getFloatingVideoFile(Context context) {
+        return floatingVideoFile(context);
+    }
+
+    public static String getFloatingVideoName(Context context) {
+        String value = durablePrefs(context).getString(KEY_FLOATING_VIDEO_NAME, "");
+        return value == null ? "" : value;
+    }
+
+    public static long getFloatingVideoSourceDurationMs(Context context) {
+        return Math.max(0L, durablePrefs(context).getLong(KEY_FLOATING_VIDEO_SOURCE_DURATION, 0L));
+    }
+
+    public static long getFloatingVideoLoopDurationMs(Context context) {
+        long source = getFloatingVideoSourceDurationMs(context);
+        long loop = durablePrefs(context).getLong(KEY_FLOATING_VIDEO_LOOP_DURATION, source);
+        if (source <= 0L) return Math.max(0L, loop);
+        return Math.max(100L, Math.min(source, loop <= 0L ? source : loop));
+    }
+
+    public static int getFloatingVideoWidth(Context context) {
+        return Math.max(1, durablePrefs(context).getInt(KEY_FLOATING_VIDEO_WIDTH, 16));
+    }
+
+    public static int getFloatingVideoHeight(Context context) {
+        return Math.max(1, durablePrefs(context).getInt(KEY_FLOATING_VIDEO_HEIGHT, 9));
+    }
+
+    public static void importFloatingVideo(
+            Context context, Uri uri, String displayName, long sourceDurationMs, long loopDurationMs,
+            int sourceWidth, int sourceHeight) throws IOException {
+        if (uri == null) throw new IOException("Missing video Uri");
+        Context app = context.getApplicationContext();
+        File target = floatingVideoFile(app);
+        File temp = new File(target.getParentFile(), FLOATING_VIDEO_FILE + ".tmp");
+        if (temp.exists() && !temp.delete()) throw new IOException("Cannot replace temp video");
+
+        long total = 0L;
+        try (InputStream in = app.getContentResolver().openInputStream(uri);
+             FileOutputStream out = new FileOutputStream(temp, false)) {
+            if (in == null) throw new IOException("Cannot open video");
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) >= 0) {
+                if (read == 0) continue;
+                total += read;
+                if (total > MAX_FLOATING_VIDEO_BYTES) throw new IOException("Video is too large");
+                out.write(buffer, 0, read);
+            }
+            out.flush();
+            out.getFD().sync();
+        } catch (IOException error) {
+            temp.delete();
+            throw error;
+        }
+        if (total <= 0L) {
+            temp.delete();
+            throw new IOException("Empty video");
+        }
+        try {
+            try {
+                Files.move(temp.toPath(), target.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException error) {
+            temp.delete();
+            throw new IOException("Cannot commit video", error);
+        }
+
+        long source = Math.max(100L, sourceDurationMs);
+        long loop = Math.max(100L, Math.min(source, loopDurationMs <= 0L ? source : loopDurationMs));
+        durablePrefs(app).edit()
+                .putString(KEY_FLOATING_VIDEO_NAME, displayName == null ? "" : displayName)
+                .putLong(KEY_FLOATING_VIDEO_SOURCE_DURATION, source)
+                .putLong(KEY_FLOATING_VIDEO_LOOP_DURATION, loop)
+                .putInt(KEY_FLOATING_VIDEO_WIDTH, Math.max(1, sourceWidth))
+                .putInt(KEY_FLOATING_VIDEO_HEIGHT, Math.max(1, sourceHeight))
+                .apply();
+        prefs(app).edit().putBoolean(KEY_FLOATING_VIDEO_ENABLED, true).apply();
+        AxonInputAccessibilityService.refreshFloatingVideo();
+    }
+
+    public static boolean isForceHoldEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_FORCE_HOLD_ENABLED, false);
+    }
+
+    public static void setForceHoldEnabled(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_FORCE_HOLD_ENABLED, enabled);
+    }
+
+    public static int getForceHoldTargetKeyCode(Context context) {
+        return prefs(context).getInt(KEY_FORCE_HOLD_TARGET_KEY_CODE, -1);
+    }
+
+    public static int getForceHoldTargetScanCode(Context context) {
+        return prefs(context).getInt(KEY_FORCE_HOLD_TARGET_SCAN_CODE, -1);
+    }
+
+    public static int getForceHoldTriggerKeyCode(Context context) {
+        return prefs(context).getInt(KEY_FORCE_HOLD_TRIGGER_KEY_CODE, -1);
+    }
+
+    public static boolean hasForceHoldBinding(Context context) {
+        return getForceHoldTargetKeyCode(context) >= 0
+                && getForceHoldTargetScanCode(context) > 0
+                && getForceHoldTriggerKeyCode(context) >= 0;
+    }
+
+    public static void setForceHoldBinding(
+            Context context, int targetKeyCode, int targetScanCode, int triggerKeyCode) {
+        prefs(context).edit()
+                .putInt(KEY_FORCE_HOLD_TARGET_KEY_CODE, targetKeyCode)
+                .putInt(KEY_FORCE_HOLD_TARGET_SCAN_CODE, targetScanCode)
+                .putInt(KEY_FORCE_HOLD_TRIGGER_KEY_CODE, triggerKeyCode)
+                .apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static void clearForceHoldBinding(Context context) {
+        prefs(context).edit()
+                .remove(KEY_FORCE_HOLD_TARGET_KEY_CODE)
+                .remove(KEY_FORCE_HOLD_TARGET_SCAN_CODE)
+                .remove(KEY_FORCE_HOLD_TRIGGER_KEY_CODE)
+                .apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
     public static boolean isDpsEnabled(Context context) {
         return prefs(context).getBoolean(KEY_DPS_ENABLED, false);
     }
@@ -360,16 +595,61 @@ public final class OverlayState {
         setIntAndRefresh(context, KEY_DPS_TARGET_KEY_CODE, resolved);
     }
 
+
+    public static int mouseDpsTarget(int button) {
+        return switch (button) {
+            case NativeKeyEngine.MOUSE_LEFT -> DPS_TARGET_MOUSE_LEFT;
+            case NativeKeyEngine.MOUSE_RIGHT -> DPS_TARGET_MOUSE_RIGHT;
+            case MouseInputMonitor.BUTTON_MIDDLE -> DPS_TARGET_MOUSE_MIDDLE;
+            case MouseInputMonitor.BUTTON_BACK -> DPS_TARGET_MOUSE_BACK;
+            case MouseInputMonitor.BUTTON_FORWARD -> DPS_TARGET_MOUSE_FORWARD;
+            default -> DPS_TARGET_NONE;
+        };
+    }
+
+    public static boolean isMouseDpsTarget(int target) {
+        return target >= DPS_TARGET_MOUSE_LEFT && target <= DPS_TARGET_MOUSE_FORWARD;
+    }
+
+    public static int getMouseDpsTargetButton(int target) {
+        return switch (target) {
+            case DPS_TARGET_MOUSE_LEFT -> NativeKeyEngine.MOUSE_LEFT;
+            case DPS_TARGET_MOUSE_RIGHT -> NativeKeyEngine.MOUSE_RIGHT;
+            case DPS_TARGET_MOUSE_MIDDLE -> MouseInputMonitor.BUTTON_MIDDLE;
+            case DPS_TARGET_MOUSE_BACK -> MouseInputMonitor.BUTTON_BACK;
+            case DPS_TARGET_MOUSE_FORWARD -> MouseInputMonitor.BUTTON_FORWARD;
+            default -> -1;
+        };
+    }
+
+    public static int dpsTargetFromBinding(int bindingCode) {
+        if (InputBinding.isMouse(bindingCode)) return mouseDpsTarget(InputBinding.payload(bindingCode));
+        if (InputBinding.isGamepad(bindingCode)) return gamepadDpsTarget(InputBinding.payload(bindingCode));
+        return bindingCode;
+    }
+
+    public static int bindingFromDpsTarget(int target) {
+        if (isMouseDpsTarget(target)) return InputBinding.mouse(getMouseDpsTargetButton(target));
+        if (isGamepadDpsTarget(target)) return InputBinding.gamepad(getGamepadDpsTargetBit(target));
+        return target;
+    }
+
     public static int gamepadDpsTarget(int buttonBit) {
-        return DPS_TARGET_GAMEPAD_BASE | (buttonBit & 0xffff);
+        return DPS_TARGET_GAMEPAD_EXT_BASE | (buttonBit & 0x00ffffff);
     }
 
     public static boolean isGamepadDpsTarget(int target) {
-        return (target & 0xf0000) == DPS_TARGET_GAMEPAD_BASE && (target & 0xffff) != 0;
+        boolean extended = (target & 0xff000000) == DPS_TARGET_GAMEPAD_EXT_BASE
+                && (target & 0x00ffffff) != 0;
+        boolean legacy = (target & 0xf0000) == DPS_TARGET_GAMEPAD_BASE
+                && (target & 0xffff) != 0;
+        return extended || legacy;
     }
 
     public static int getGamepadDpsTargetBit(int target) {
-        return isGamepadDpsTarget(target) ? (target & 0xffff) : 0;
+        if ((target & 0xff000000) == DPS_TARGET_GAMEPAD_EXT_BASE) return target & 0x00ffffff;
+        if ((target & 0xf0000) == DPS_TARGET_GAMEPAD_BASE) return target & 0xffff;
+        return 0;
     }
 
     public static boolean isGamepadLeftStickEnabled(Context context) {
@@ -441,7 +721,9 @@ public final class OverlayState {
     public static boolean isAnyDisplayEnabled(Context context) {
         return isEnabled(context) || isInputFullKeyboardEnabled(context) || isMouseEnabled(context)
                 || isKeyboardCatEnabled(context) || isKeyPromptEnabled(context)
-                || isCustomEnabled(context) || isMouseTrajectoryEnabled(context)
+                || isCustomEnabled(context) || isSuperCustomEnabled(context)
+                || isMouseTrajectoryEnabled(context)
+                || isFloatingVideoEnabled(context)
                 || isDpsEnabled(context) || isAnyGamepadDisplayEnabled(context);
     }
 
@@ -555,6 +837,7 @@ public final class OverlayState {
                 .putBoolean(KEY_CUSTOM_CAPTURE, true)
                 .putString(KEY_CUSTOM_DRAFT, "")
                 .apply();
+        AxonInputAccessibilityService.refreshActiveService();
     }
 
     /** 保存录入结果并结束录入。 */
@@ -570,6 +853,7 @@ public final class OverlayState {
 
     public static void cancelCustomCapture(Context context) {
         prefs(context).edit().putBoolean(KEY_CUSTOM_CAPTURE, false).apply();
+        AxonInputAccessibilityService.refreshActiveService();
     }
 
     /** 向当前录入结果加入唯一按键码。 */
@@ -876,7 +1160,9 @@ public final class OverlayState {
                 | GamepadOverlayView.BTN_MODE | GamepadOverlayView.BTN_L3
                 | GamepadOverlayView.BTN_R3 | GamepadOverlayView.BTN_BACK_1
                 | GamepadOverlayView.BTN_BACK_2 | GamepadOverlayView.BTN_BACK_3
-                | GamepadOverlayView.BTN_BACK_4;
+                | GamepadOverlayView.BTN_BACK_4 | GamepadOverlayView.BTN_DPAD_UP
+                | GamepadOverlayView.BTN_DPAD_DOWN | GamepadOverlayView.BTN_DPAD_LEFT
+                | GamepadOverlayView.BTN_DPAD_RIGHT;
         return (bit & allowed) != 0 ? bit : 0;
     }
 
@@ -967,6 +1253,61 @@ public final class OverlayState {
         setIntAndRefresh(context, key, clampOpacity(percent));
     }
 
+    /** Independent alpha channels for native regular key-display surfaces. */
+    public static int getKeyBackgroundOpacity(Context context, int displayType) {
+        return getKeyLayerOpacity(context, displayType, "background");
+    }
+
+    public static int getKeyStrokeOpacity(Context context, int displayType) {
+        return getKeyLayerOpacity(context, displayType, "stroke");
+    }
+
+    public static int getKeyTextOpacity(Context context, int displayType) {
+        return getKeyLayerOpacity(context, displayType, "text");
+    }
+
+    public static void setKeyBackgroundOpacity(Context context, int displayType, int percent) {
+        setKeyLayerOpacity(context, displayType, "background", percent);
+    }
+
+    public static void setKeyStrokeOpacity(Context context, int displayType, int percent) {
+        setKeyLayerOpacity(context, displayType, "stroke", percent);
+    }
+
+    public static void setKeyTextOpacity(Context context, int displayType, int percent) {
+        setKeyLayerOpacity(context, displayType, "text", percent);
+    }
+
+    private static int getKeyLayerOpacity(Context context, int displayType, String layer) {
+        String key = keyLayerOpacityKey(displayType, layer);
+        if (key == null) return DEFAULT_OPACITY;
+        SharedPreferences preferences = prefs(context);
+        if (preferences.contains(key)) return clampOpacity(preferences.getInt(key, DEFAULT_OPACITY));
+        // Migrate the old whole-view opacity into all three channels on first use.
+        String legacyKey = opacityKey(displayType);
+        return legacyKey == null ? DEFAULT_OPACITY
+                : clampOpacity(preferences.getInt(legacyKey, DEFAULT_OPACITY));
+    }
+
+    private static void setKeyLayerOpacity(Context context, int displayType, String layer, int percent) {
+        String key = keyLayerOpacityKey(displayType, layer);
+        if (key == null) return;
+        setIntAndRefresh(context, key, clampOpacity(percent));
+    }
+
+    private static String keyLayerOpacityKey(int displayType, String layer) {
+        String prefix;
+        switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD: prefix = "keyboard"; break;
+            case KeyOverlayView.DISPLAY_MOUSE: prefix = "mouse"; break;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: prefix = "key_prompt"; break;
+            case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: prefix = "full_keyboard"; break;
+            case KeyOverlayView.DISPLAY_CUSTOM: prefix = "custom"; break;
+            default: return null;
+        }
+        return prefix + "_" + layer + "_opacity";
+    }
+
     public static int getKeyStyle(Context context, int displayType) {
         String key = keyStyleKey(displayType);
         if (key == null) return KeyAppearance.STYLE_ROUNDED;
@@ -990,6 +1331,29 @@ public final class OverlayState {
         String key = keyCornerStrengthKey(displayType);
         if (key == null) return;
         setIntAndRefresh(context, key, KeyAppearance.clampCornerStrength(strength));
+    }
+
+    public static int getKeyBaseColor(Context context, int displayType) {
+        String key = keyBaseColorKey(displayType);
+        int fallback = defaultKeyBaseColor(context, displayType);
+        if (key == null) return fallback;
+        return 0xff000000 | (prefs(context).getInt(key, fallback) & 0x00ffffff);
+    }
+
+    private static int defaultKeyBaseColor(Context context, int displayType) {
+        if (displayType == GamepadOverlayView.DISPLAY_FACE
+                || displayType == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
+                || displayType == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
+                || displayType == GamepadOverlayView.DISPLAY_BACK) {
+            return UiPalette.overlayShell(context);
+        }
+        return UiPalette.overlayKeyIdle(context);
+    }
+
+    public static void setKeyBaseColor(Context context, int displayType, int color) {
+        String key = keyBaseColorKey(displayType);
+        if (key == null) return;
+        setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
     }
 
     public static int getKeyPressColor(Context context, int displayType) {
@@ -1040,6 +1404,21 @@ public final class OverlayState {
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_CORNER_STRENGTH;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_CORNER_STRENGTH;
             case GamepadOverlayView.DISPLAY_BACK: return KEY_GAMEPAD_BACK_CORNER_STRENGTH;
+            default: return null;
+        }
+    }
+
+    private static String keyBaseColorKey(int displayType) {
+        switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD: return KEY_KEYBOARD_BASE_COLOR;
+            case KeyOverlayView.DISPLAY_MOUSE: return KEY_MOUSE_BASE_COLOR;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: return KEY_KEY_PROMPT_BASE_COLOR;
+            case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: return KEY_FULL_KEYBOARD_BASE_COLOR;
+            case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_BASE_COLOR;
+            case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_BASE_COLOR;
+            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_BASE_COLOR;
+            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_BASE_COLOR;
+            case GamepadOverlayView.DISPLAY_BACK: return KEY_GAMEPAD_BACK_BASE_COLOR;
             default: return null;
         }
     }
@@ -1163,6 +1542,10 @@ public final class OverlayState {
         return new File(context.getApplicationContext().getFilesDir(), GLOBAL_HTML_FILE);
     }
 
+    private static File floatingVideoFile(Context context) {
+        return new File(context.getApplicationContext().getFilesDir(), FLOATING_VIDEO_FILE);
+    }
+
     public static int getPositionX(Context context, int displayType) {
         return getPosition(context, displayType, true);
     }
@@ -1197,6 +1580,7 @@ public final class OverlayState {
             case KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT -> xAxis ? KEY_KEYBOARD_CAT_POSITION_X : KEY_KEYBOARD_CAT_POSITION_Y;
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT -> xAxis ? KEY_KEY_PROMPT_POSITION_X : KEY_KEY_PROMPT_POSITION_Y;
             case MouseTrajectoryView.DISPLAY_TRAJECTORY -> xAxis ? KEY_MOUSE_TRAJECTORY_POSITION_X : KEY_MOUSE_TRAJECTORY_POSITION_Y;
+            case FloatingVideoOverlayView.DISPLAY_FLOATING_VIDEO -> xAxis ? KEY_FLOATING_VIDEO_POSITION_X : KEY_FLOATING_VIDEO_POSITION_Y;
             case DpsOverlayView.DISPLAY_DPS -> xAxis ? KEY_DPS_POSITION_X : KEY_DPS_POSITION_Y;
             case GamepadOverlayView.DISPLAY_LEFT_STICK -> xAxis ? KEY_GAMEPAD_LEFT_STICK_POSITION_X : KEY_GAMEPAD_LEFT_STICK_POSITION_Y;
             case GamepadOverlayView.DISPLAY_RIGHT_STICK -> xAxis ? KEY_GAMEPAD_RIGHT_STICK_POSITION_X : KEY_GAMEPAD_RIGHT_STICK_POSITION_Y;
@@ -1216,6 +1600,7 @@ public final class OverlayState {
             case KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT -> xAxis ? DEFAULT_KEYBOARD_CAT_X : DEFAULT_KEYBOARD_CAT_Y;
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT -> xAxis ? DEFAULT_KEY_PROMPT_X : DEFAULT_KEY_PROMPT_Y;
             case MouseTrajectoryView.DISPLAY_TRAJECTORY -> xAxis ? DEFAULT_MOUSE_TRAJECTORY_X : DEFAULT_MOUSE_TRAJECTORY_Y;
+            case FloatingVideoOverlayView.DISPLAY_FLOATING_VIDEO -> xAxis ? DEFAULT_FLOATING_VIDEO_X : DEFAULT_FLOATING_VIDEO_Y;
             case DpsOverlayView.DISPLAY_DPS -> xAxis ? DEFAULT_DPS_X : DEFAULT_DPS_Y;
             case GamepadOverlayView.DISPLAY_LEFT_STICK -> xAxis ? DEFAULT_GAMEPAD_LEFT_STICK_X : DEFAULT_GAMEPAD_LEFT_STICK_Y;
             case GamepadOverlayView.DISPLAY_RIGHT_STICK -> xAxis ? DEFAULT_GAMEPAD_RIGHT_STICK_X : DEFAULT_GAMEPAD_RIGHT_STICK_Y;

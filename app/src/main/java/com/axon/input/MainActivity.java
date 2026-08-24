@@ -11,6 +11,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -51,7 +52,9 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.IdentityHashMap;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /** 应用主界面。负责设置、用户操作和权限流程。 */
 public final class MainActivity extends Activity implements ShizukuBridge.Listener {
@@ -61,6 +64,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private static final int CONFIG_IMPORT_REQUEST = 6202;
     private static final int FONT_IMPORT_REQUEST = 6203;
     private static final int BONGOCAT_STYLE_IMPORT_REQUEST = 6204;
+    private static final int SUPER_CUSTOM_IMPORT_REQUEST = 6205;
+    private static final int FLOATING_VIDEO_IMPORT_REQUEST = 6206;
     private static final int SIZE_MIN = 50;
     private static final int SIZE_MAX = 150;
     private static final int OPACITY_MAX = 100;
@@ -76,18 +81,21 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             KeyOverlayView.DISPLAY_CUSTOM
     };
     private static final int[] OPACITY_DISPLAY_TYPES = {
-            KeyOverlayView.DISPLAY_KEYBOARD,
-            KeyOverlayView.DISPLAY_MOUSE,
             KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT,
-            KeyPromptOverlayView.DISPLAY_KEY_PROMPT,
             MouseTrajectoryView.DISPLAY_TRAJECTORY,
-            KeyOverlayView.DISPLAY_CUSTOM,
             GamepadOverlayView.DISPLAY_LEFT_STICK,
             GamepadOverlayView.DISPLAY_RIGHT_STICK,
             GamepadOverlayView.DISPLAY_FACE,
             GamepadOverlayView.DISPLAY_LEFT_SHOULDER,
             GamepadOverlayView.DISPLAY_RIGHT_SHOULDER,
             GamepadOverlayView.DISPLAY_BACK
+    };
+    private static final int[] KEY_LAYER_OPACITY_DISPLAY_TYPES = {
+            KeyOverlayView.DISPLAY_KEYBOARD,
+            FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD,
+            KeyOverlayView.DISPLAY_MOUSE,
+            KeyPromptOverlayView.DISPLAY_KEY_PROMPT,
+            KeyOverlayView.DISPLAY_CUSTOM
     };
     private static final int[] KEY_APPEARANCE_DISPLAY_TYPES = {
             KeyOverlayView.DISPLAY_KEYBOARD,
@@ -131,6 +139,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private Switch keyboardCatGlobalReverseSwitch;
     private Spinner keyboardCatStyleSpinner;
     private Spinner keyboardCatExpressionSpinner;
+    private Button keyboardCatExpressionHotkeyButton;
+    private Button keyboardCatExpressionHotkeySelectionButton;
     private Button keyboardCatDeleteStyleButton;
     private final List<BongoCatStyleManager.StyleInfo> keyboardCatStyles = new ArrayList<>();
     private final List<BongoCatStyleManager.ExpressionOption> keyboardCatExpressions = new ArrayList<>();
@@ -152,12 +162,36 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private View mouseTrajectoryLeftColorDot;
     private View mouseTrajectoryRightColorDot;
     private Switch customDisplaySwitch;
+    private Switch superCustomDisplaySwitch;
+    private final TextView[] superCustomSlotStatusViews = new TextView[SuperCustomConfigStore.SLOT_COUNT];
+    private int pendingSuperCustomImportSlot;
     private TextView customSizeLabel;
     private SeekBar customSizeSeekBar;
     private TextView customSpacingLabel;
     private SeekBar customSpacingSeekBar;
     private Switch captureSwitch;
     private Switch dragSwitch;
+    private Switch floatingVideoSwitch;
+    private LinearLayout floatingVideoDetails;
+    private Button floatingVideoImportButton;
+    private TextView floatingVideoStatusText;
+    private Switch forceHoldSwitch;
+    private LinearLayout forceHoldDetails;
+    private TextView forceHoldStatusText;
+    private int forceHoldCaptureStep;
+    private int forceHoldTargetKeyPending = -1;
+    private int forceHoldTargetScanPending = -1;
+    private boolean keyboardCatExpressionHotkeyCaptureArmed;
+    private int keyboardCatExpressionHotkeyPreviousKeyCode = -1;
+    private int keyboardCatExpressionHotkeyCapturedKeyCode = -1;
+    private static volatile MainActivity activeBindingActivity;
+    private int bindableMouseButtonsDown;
+    private long bindableMouseLastEventTime = -1L;
+    private int bindableMouseLastActionButton;
+    private int lastBindableMouseInputCode = -1;
+    private long lastBindableMouseInputAt = -1L;
+    private int bindableGamepadKeyButtonsDown;
+    private int bindableGamepadMotionButtonsDown;
     private Switch inputFullKeyboardSwitch;
     private LinearLayout inputFullKeyboardDetails;
     private Switch dpsSwitch;
@@ -224,8 +258,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private SeekBar columnsSeekBar;
     private final Spinner[] motionSpinners = new Spinner[4];
     private final SparseArray<OpacityControl> opacityControls = new SparseArray<>();
+    private final SparseArray<KeyLayerOpacityControl> keyLayerOpacityControls = new SparseArray<>();
     private final SparseArray<Spinner> keyStyleSpinners = new SparseArray<>();
     private final SparseArray<CornerStrengthControl> keyCornerStrengthControls = new SparseArray<>();
+    private final SparseArray<View> keyBaseColorDots = new SparseArray<>();
     private final SparseArray<View> keyPressColorDots = new SparseArray<>();
     private View keyboardTextColorDot;
     private Switch globalHtmlSwitch;
@@ -244,6 +280,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private boolean internalChange;
     private boolean waitingForShizuku;
+    private boolean shizukuPermissionRequestInFlight;
+    private boolean accessibilityGrantInFlight;
+    private boolean accessibilityVerificationInFlight;
+    private int accessibilityVerificationGeneration;
     private boolean dpsCaptureArmed;
     private int gamepadCustomSwapCaptureStep;
     private int gamepadCustomSwapFirstPending;
@@ -338,7 +378,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardDetails.addView(keyboardSpacingLabel, supportingParams(dp(2)));
         keyboardSpacingSeekBar = createKeySpacingSeekBar();
         keyboardDetails.addView(keyboardSpacingSeekBar, seekBarLayoutParams(dp(4)));
-        addOpacityControl(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD);
+        addKeyLayerOpacityControls(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD);
         addKeyAppearanceControls(keyboardDetails, KeyOverlayView.DISPLAY_KEYBOARD);
         addKeyboardTextColorControl(keyboardDetails);
         spaceDisplaySwitch = createSwitch(R.string.space_display_switch);
@@ -352,6 +392,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         inputFullKeyboardSwitch = createSwitch(R.string.input_full_keyboard_switch_label);
         inputFullKeyboardDetails = createDetailsContainer();
+        addKeyLayerOpacityControls(inputFullKeyboardDetails, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD);
         addKeyAppearanceControls(inputFullKeyboardDetails, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD);
         root.addView(createFeatureGroup(inputFullKeyboardSwitch, inputFullKeyboardDetails), contentParams(dp(10)));
 
@@ -361,7 +402,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         mouseDetails.addView(mouseSizeLabel, supportingParams(0));
         mouseSizeSeekBar = createSizeSeekBar();
         mouseDetails.addView(mouseSizeSeekBar, seekBarLayoutParams(dp(4)));
-        addOpacityControl(mouseDetails, KeyOverlayView.DISPLAY_MOUSE);
+        addKeyLayerOpacityControls(mouseDetails, KeyOverlayView.DISPLAY_MOUSE);
         addKeyAppearanceControls(mouseDetails, KeyOverlayView.DISPLAY_MOUSE);
         addMotionControls(mouseDetails, KeyOverlayView.DISPLAY_MOUSE, R.string.mouse_motion_label);
         root.addView(createFeatureGroup(mouseSwitch, mouseDetails), contentParams(dp(10)));
@@ -388,6 +429,25 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardCatDetails.addView(keyboardCatExpressionLabel, supportingParams(dp(6)));
         keyboardCatExpressionSpinner = createChoiceSpinner(new String[]{getString(R.string.keyboard_cat_expression_auto)});
         keyboardCatDetails.addView(keyboardCatExpressionSpinner, seekBarLayoutParams(dp(4)));
+
+        TextView keyboardCatExpressionHotkeyLabel = createLabel();
+        keyboardCatExpressionHotkeyLabel.setText(R.string.keyboard_cat_expression_hotkey_label);
+        keyboardCatDetails.addView(keyboardCatExpressionHotkeyLabel, supportingParams(dp(6)));
+        keyboardCatExpressionHotkeyButton = createConfigButton(
+                R.string.keyboard_cat_expression_hotkey_unbound,
+                v -> toggleKeyboardCatExpressionHotkeyCapture());
+        keyboardCatDetails.addView(keyboardCatExpressionHotkeyButton,
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+
+        TextView keyboardCatExpressionHotkeySelectionLabel = createLabel();
+        keyboardCatExpressionHotkeySelectionLabel.setText(R.string.keyboard_cat_expression_hotkey_selection_label);
+        keyboardCatDetails.addView(keyboardCatExpressionHotkeySelectionLabel, supportingParams(dp(6)));
+        keyboardCatExpressionHotkeySelectionButton = createConfigButton(
+                R.string.keyboard_cat_expression_hotkey_selection_empty,
+                v -> showKeyboardCatExpressionHotkeySelectionDialog());
+        keyboardCatDetails.addView(keyboardCatExpressionHotkeySelectionButton,
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+
         keyboardCatMouseModeSwitch = createSwitch(R.string.keyboard_cat_mouse_mode_switch_label);
         keyboardCatMouseModeSwitch.setTextSize(14f);
         keyboardCatDetails.addView(keyboardCatMouseModeSwitch, switchParams(dp(4)));
@@ -402,7 +462,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyPromptDetails.addView(keyPromptSizeLabel, supportingParams(0));
         keyPromptSizeSeekBar = createSizeSeekBar();
         keyPromptDetails.addView(keyPromptSizeSeekBar, seekBarLayoutParams(dp(4)));
-        addOpacityControl(keyPromptDetails, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
+        addKeyLayerOpacityControls(keyPromptDetails, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
         addKeyAppearanceControls(keyPromptDetails, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
         TextView keyPromptHint = createSupportingText();
         keyPromptHint.setText(R.string.key_prompt_hint);
@@ -444,7 +504,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         customDetails.addView(customSpacingLabel, supportingParams(dp(2)));
         customSpacingSeekBar = createKeySpacingSeekBar();
         customDetails.addView(customSpacingSeekBar, seekBarLayoutParams(dp(4)));
-        addOpacityControl(customDetails, KeyOverlayView.DISPLAY_CUSTOM);
+        addKeyLayerOpacityControls(customDetails, KeyOverlayView.DISPLAY_CUSTOM);
         addKeyAppearanceControls(customDetails, KeyOverlayView.DISPLAY_CUSTOM);
         addMotionControls(customDetails, KeyOverlayView.DISPLAY_CUSTOM, R.string.custom_motion_label);
 
@@ -463,6 +523,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         styleSeekBar(columnsSeekBar);
         customDetails.addView(columnsSeekBar, seekBarLayoutParams(dp(4)));
         root.addView(createFeatureGroup(customDisplaySwitch, customDetails), contentParams(dp(14)));
+
+        TextView superCustomSection = createSectionLabel();
+        superCustomSection.setText(R.string.section_super_custom);
+        root.addView(superCustomSection, contentParams(dp(8)));
+        root.addView(createSuperCustomGroup(), contentParams(dp(14)));
 
         TextView gamepadSection = createSectionLabel();
         gamepadSection.setText(R.string.section_gamepad);
@@ -624,6 +689,15 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         sensitivityDetails.addView(sensitivityStatusText, supportingParams(0));
         root.addView(createFeatureGroup(sensitivitySwitch, sensitivityDetails), contentParams(dp(14)));
 
+        forceHoldSwitch = createSwitch(R.string.force_hold_switch_label);
+        forceHoldDetails = createDetailsContainer();
+        forceHoldStatusText = createSupportingText();
+        forceHoldDetails.addView(forceHoldStatusText, supportingParams(dp(2)));
+        TextView forceHoldHint = createSupportingText();
+        forceHoldHint.setText(R.string.force_hold_hint);
+        forceHoldDetails.addView(forceHoldHint, supportingParams(0));
+        root.addView(createFeatureGroup(forceHoldSwitch, forceHoldDetails), contentParams(dp(10)));
+
         TextView behaviorSection = createSectionLabel();
 
         behaviorSection.setText(R.string.section_behavior);
@@ -641,6 +715,23 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         dragSwitch = createSwitch(R.string.drag_switch_label);
         root.addView(createSwitchGroup(dragSwitch), contentParams(dp(10)));
+
+        floatingVideoSwitch = createSwitch(R.string.floating_video_switch_label);
+        floatingVideoDetails = createDetailsContainer();
+        floatingVideoImportButton = new Button(this);
+        floatingVideoImportButton.setText(R.string.floating_video_import_button);
+        floatingVideoImportButton.setAllCaps(false);
+        floatingVideoImportButton.setTextSize(13f);
+        floatingVideoImportButton.setMinHeight(dp(38));
+        floatingVideoImportButton.setMinimumHeight(dp(40));
+        styleActionButton(floatingVideoImportButton);
+        floatingVideoDetails.addView(floatingVideoImportButton, supportingParams(dp(4)));
+        floatingVideoStatusText = createSupportingText();
+        floatingVideoDetails.addView(floatingVideoStatusText, supportingParams(dp(2)));
+        TextView floatingVideoHint = createSupportingText();
+        floatingVideoHint.setText(R.string.floating_video_hint);
+        floatingVideoDetails.addView(floatingVideoHint, supportingParams(0));
+        root.addView(createFeatureGroup(floatingVideoSwitch, floatingVideoDetails), contentParams(dp(10)));
 
         LinearLayout fontGroup = new LinearLayout(this);
         fontGroup.setOrientation(LinearLayout.VERTICAL);
@@ -763,15 +854,16 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         UiMotion.bindPressFeedback(kookJoinLink);
         root.addView(kookJoinLink, contentParams(0));
 
-        View[] sectionPages = new View[]{appearanceSection, displaySection,
+        View[] sectionPages = new View[]{appearanceSection, displaySection, superCustomSection,
                 gamepadSection, sensitivitySection, behaviorSection, configurationSection};
         sectionPageViews = splitContentIntoSectionPages(root, sectionPages);
         sectionPagerHost = createSectionPagerHost(sectionPageViews);
 
         HorizontalScrollView sectionNav = createSectionNavigation(
                 new int[]{R.string.section_appearance, R.string.section_keyboard_mouse,
-                        R.string.section_gamepad, R.string.section_sensitivity,
-                        R.string.section_behavior, R.string.section_configuration},
+                        R.string.section_super_custom, R.string.section_gamepad,
+                        R.string.section_sensitivity, R.string.section_behavior,
+                        R.string.section_configuration},
                 sectionPages.length);
         sectionNavigationView = sectionNav;
         selectSectionPage(0, false);
@@ -821,6 +913,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         keyboardCatStyleSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 if (internalChange || position < 0 || position >= keyboardCatStyles.size()) return;
+                cancelKeyboardCatExpressionHotkeyCapture(true);
                 BongoCatStyleManager.StyleInfo style = keyboardCatStyles.get(position);
                 OverlayState.setKeyboardCatStyleId(MainActivity.this, style.id);
                 OverlayState.setKeyboardCatDebugExpression(MainActivity.this, "auto");
@@ -849,6 +942,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 enabled -> OverlayState.setMouseTrajectoryRightColorEnabled(this, enabled));
         bindFeatureSwitch(customDisplaySwitch, customDetails,
                 enabled -> OverlayState.setCustomEnabled(this, enabled));
+        superCustomDisplaySwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            OverlayState.setSuperCustomEnabled(MainActivity.this, enabled);
+            handleDisplayModeChanged();
+        });
         bindFeatureSwitch(gamepadLeftStickSwitch, gamepadLeftStickDetails,
                 enabled -> OverlayState.setGamepadLeftStickEnabled(this, enabled));
         bindFeatureSwitch(gamepadRightStickSwitch, gamepadRightStickDetails,
@@ -1045,8 +1143,45 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             handleDisplayModeChanged();
         });
 
+        forceHoldSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            if (!enabled) {
+                forceHoldCaptureStep = 0;
+                forceHoldTargetKeyPending = -1;
+                forceHoldTargetScanPending = -1;
+                OverlayState.setForceHoldEnabled(MainActivity.this, false);
+                updateForceHoldUi();
+                handleDisplayModeChanged();
+                return;
+            }
+
+            // 每次开启都重新录入两颗键，避免旧绑定被误触发。
+            OverlayState.setForceHoldEnabled(MainActivity.this, false);
+            OverlayState.clearForceHoldBinding(MainActivity.this);
+            forceHoldCaptureStep = 1;
+            forceHoldTargetKeyPending = -1;
+            forceHoldTargetScanPending = -1;
+            updateForceHoldUi();
+            setDetailsVisible(forceHoldDetails, true);
+        });
+
         bindSimpleSwitch(dragSwitch,
                 enabled -> OverlayState.setDragEnabled(this, enabled));
+
+        floatingVideoSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            if (enabled && !OverlayState.hasFloatingVideo(MainActivity.this)) {
+                internalChange = true;
+                floatingVideoSwitch.setChecked(false);
+                internalChange = false;
+                openFloatingVideoPicker();
+                return;
+            }
+            OverlayState.setFloatingVideoEnabled(MainActivity.this, enabled);
+            syncFloatingVideoUi();
+            if (enabled) ensureAccessibility();
+        });
+        floatingVideoImportButton.setOnClickListener(v -> openFloatingVideoPicker());
 
         globalHtmlSwitch.setOnCheckedChangeListener((button, enabled) -> {
             if (internalChange) return;
@@ -1120,61 +1255,239 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (gamepadCustomSwapCaptureStep != 0 && event != null && event.getRepeatCount() == 0) {
-            int gamepadBit = GamepadButtons.fromAndroidEvent(event);
-            if (gamepadBit != 0) {
-                if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                    if (gamepadCustomSwapCaptureStep == 1) {
-                        gamepadCustomSwapFirstPending = gamepadBit;
-                        gamepadCustomSwapCaptureStep = 2;
-                        updateGamepadCustomSwapUi();
-                    } else if (gamepadBit == gamepadCustomSwapFirstPending) {
-                        Toast.makeText(this, R.string.gamepad_compat_custom_swap_same, Toast.LENGTH_SHORT).show();
-                    } else {
-                        OverlayState.setGamepadCustomSwapPair(this, gamepadCustomSwapFirstPending, gamepadBit);
-                        gamepadCustomSwapCaptureStep = 0;
-                        gamepadCustomSwapFirstPending = 0;
-                        internalChange = true;
-                        gamepadCustomSwapSwitch.setChecked(true);
-                        internalChange = false;
-                        updateGamepadCustomSwapUi();
-                    }
-                }
-                // 录入期间吞掉 DOWN/UP，避免按键顺带触发界面导航。
-                return true;
-            }
+        if (event == null) return false;
+
+        boolean firstDown = event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0;
+        if (isPhysicalGamepadEvent(event)) {
+            updateBindableGamepadKeyEvent(event);
+            return super.dispatchKeyEvent(event);
         }
-        if (dpsCaptureArmed
-                && dpsSwitch != null
-                && dpsSwitch.isChecked()
-                && isPhysicalKeyboardEvent(event)) {
+
+        if (isPhysicalKeyboardEvent(event) && firstDown) {
+            int inputCode = InputBinding.keyboard(event.getKeyCode());
+            handleBindableInputPressed(inputCode, InputBinding.evdevCode(inputCode, event.getScanCode()));
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        captureBindableMousePress(event);
+        updateBindableGamepadMotionEvent(event);
+        return super.dispatchGenericMotionEvent(event);
+    }
+
+    private int bindableGamepadButtonsDown() {
+        return bindableGamepadKeyButtonsDown | bindableGamepadMotionButtonsDown;
+    }
+
+    private void updateBindableGamepadKeyEvent(KeyEvent event) {
+        int inputCode = InputBinding.fromGamepadEvent(event);
+        if (inputCode < 0) return;
+        int bit = InputBinding.payload(inputCode);
+        int before = bindableGamepadButtonsDown();
+        if (event.getAction() == KeyEvent.ACTION_DOWN) bindableGamepadKeyButtonsDown |= bit;
+        else if (event.getAction() == KeyEvent.ACTION_UP) bindableGamepadKeyButtonsDown &= ~bit;
+        int after = bindableGamepadButtonsDown();
+        int rising = after & ~before;
+        if ((rising & bit) != 0) {
+            handleBindableGamepadPressed(bit, InputBinding.evdevCode(inputCode, event.getScanCode()));
+        }
+    }
+
+    private void updateBindableGamepadMotionEvent(MotionEvent event) {
+        if (!InputBinding.isPhysicalGamepadMotionEvent(event)) return;
+        int before = bindableGamepadButtonsDown();
+        bindableGamepadMotionButtonsDown = InputBinding.gamepadButtonsFromMotionEvent(event);
+        int after = bindableGamepadButtonsDown();
+        int rising = after & ~before;
+        while (rising != 0) {
+            int bit = Integer.lowestOneBit(rising);
+            rising &= ~bit;
+            int inputCode = InputBinding.gamepad(bit);
+            handleBindableGamepadPressed(bit, InputBinding.evdevCode(inputCode, -1));
+        }
+    }
+
+    private void handleBindableGamepadPressed(int gamepadBit, int evdevCode) {
+        if (gamepadBit == 0) return;
+
+        // 自定义交换本身就是一个独立录入流程，录入时不要让同一颗手柄键
+        // 同时写入强制长按 / CPS / 表情快捷键。
+        if (gamepadCustomSwapCaptureStep == 0) {
+            handleBindableInputPressed(InputBinding.gamepad(gamepadBit), evdevCode);
+            return;
+        }
+
+        // “手柄自定义交换”语义上仍是手柄键 ↔ 手柄键，但现在也能录入
+        // 只通过轴事件上报的 L2/R2 和十字键。
+        if (gamepadCustomSwapCaptureStep == 1) {
+            gamepadCustomSwapFirstPending = gamepadBit;
+            gamepadCustomSwapCaptureStep = 2;
+            updateGamepadCustomSwapUi();
+        } else if (gamepadBit == gamepadCustomSwapFirstPending) {
+            Toast.makeText(this, R.string.gamepad_compat_custom_swap_same, Toast.LENGTH_SHORT).show();
+        } else {
+            OverlayState.setGamepadCustomSwapPair(this, gamepadCustomSwapFirstPending, gamepadBit);
+            gamepadCustomSwapCaptureStep = 0;
+            gamepadCustomSwapFirstPending = 0;
+            internalChange = true;
+            gamepadCustomSwapSwitch.setChecked(true);
+            internalChange = false;
+            updateGamepadCustomSwapUi();
+        }
+    }
+
+    private void captureBindableMousePress(MotionEvent event) {
+        if (!InputBinding.isPhysicalMouseEvent(event)) return;
+
+        int currentButtons = event.getButtonState();
+        int rising = currentButtons & ~bindableMouseButtonsDown;
+        bindableMouseButtonsDown = currentButtons;
+
+        // Primary mouse clicks may arrive as ACTION_DOWN rather than ACTION_BUTTON_PRESS,
+        // so detect rising button-state bits first. dispatchTouchEvent and
+        // dispatchGenericMotionEvent may both receive the same MotionEvent; state + event-time
+        // dedupe prevents one physical click from being recorded twice.
+        if (rising != 0) {
+            captureMouseButtonMask(rising, event.getEventTime());
+            return;
+        }
+
+        if (event.getActionMasked() != MotionEvent.ACTION_BUTTON_PRESS) return;
+        int actionButton = event.getActionButton();
+        if (actionButton == 0) return;
+        if (event.getEventTime() == bindableMouseLastEventTime
+                && actionButton == bindableMouseLastActionButton) return;
+        captureMouseButtonMask(actionButton, event.getEventTime());
+    }
+
+    private void captureMouseButtonMask(int buttonMask, long eventTime) {
+        final int[] buttons = {
+                MotionEvent.BUTTON_PRIMARY, MotionEvent.BUTTON_SECONDARY,
+                MotionEvent.BUTTON_TERTIARY, MotionEvent.BUTTON_BACK, MotionEvent.BUTTON_FORWARD
+        };
+        for (int button : buttons) {
+            if ((buttonMask & button) == 0) continue;
+            int inputCode = InputBinding.mouseFromAndroidButton(button);
+            if (inputCode < 0) continue;
+            bindableMouseLastEventTime = eventTime;
+            bindableMouseLastActionButton = button;
+            handleBindableMouseInputPressed(inputCode, InputBinding.evdevCode(inputCode, -1), eventTime);
+        }
+    }
+
+    private void handleBindableMouseInputPressed(int inputCode, int evdevCode, long eventTime) {
+        if (!InputBinding.isMouse(inputCode)) return;
+        long when = eventTime > 0L ? eventTime : SystemClock.uptimeMillis();
+        if (lastBindableMouseInputCode == inputCode
+                && lastBindableMouseInputAt > 0L
+                && Math.abs(when - lastBindableMouseInputAt) <= 80L) {
+            return;
+        }
+        lastBindableMouseInputCode = inputCode;
+        lastBindableMouseInputAt = when;
+        handleBindableInputPressed(inputCode, evdevCode);
+    }
+
+    /**
+     * 低层 getevent 鼠标监听转发到前台设置页。Android 对中键/侧键的 MotionEvent 分发
+     * 在不同厂商系统上并不稳定，因此所有录入功能同时接收这条旁路输入。
+     * 只用于录入，不消费系统原始鼠标事件。
+     */
+    static boolean isBindingActivityActive() {
+        MainActivity activity = activeBindingActivity;
+        return activity != null && !activity.isFinishing() && !activity.isDestroyed();
+    }
+
+    /** True while the foreground settings page is recording a non-CPS one-shot binding. */
+    static boolean isNonDpsBindingCaptureActive() {
+        MainActivity activity = activeBindingActivity;
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return false;
+        return activity.keyboardCatExpressionHotkeyCaptureArmed
+                || activity.forceHoldCaptureStep != 0
+                || activity.gamepadCustomSwapCaptureStep != 0;
+    }
+
+    static void notifyPhysicalMouseButtonForBinding(int button, boolean pressed, long eventTime) {
+        if (!pressed) return;
+        MainActivity activity = activeBindingActivity;
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        int inputCode = InputBinding.mouse(button);
+        int evdevCode = InputBinding.evdevCode(inputCode, -1);
+        activity.mainHandler.post(() -> {
+            if (activeBindingActivity != activity || activity.isFinishing() || activity.isDestroyed()) return;
+            activity.handleBindableMouseInputPressed(inputCode, evdevCode, eventTime);
+        });
+    }
+
+    /**
+     * 主界面所有“录入按键”入口共用这一条路径。
+     * inputCode 可同时表示键盘、鼠标和手柄；这里只监听，不消费系统输入。
+     */
+    private void handleBindableInputPressed(int inputCode, int evdevCode) {
+        if (inputCode < 0) return;
+
+        if (keyboardCatExpressionHotkeyCaptureArmed) {
+            if (OverlayState.isForceHoldEnabled(this)
+                    && inputCode == OverlayState.getForceHoldTriggerKeyCode(this)) {
+                Toast.makeText(this, R.string.keyboard_cat_expression_hotkey_force_hold_conflict,
+                        Toast.LENGTH_SHORT).show();
+            } else {
+                OverlayState.setKeyboardCatExpressionHotkeyKeyCode(this, inputCode);
+                keyboardCatExpressionHotkeyCaptureArmed = false;
+                keyboardCatExpressionHotkeyPreviousKeyCode = -1;
+                keyboardCatExpressionHotkeyCapturedKeyCode = inputCode;
+                updateKeyboardCatExpressionHotkeyUi();
+            }
+            return;
+        }
+
+        if (forceHoldCaptureStep != 0) {
+            if (forceHoldCaptureStep == 1) {
+                if (evdevCode <= 0) {
+                    Toast.makeText(this, R.string.force_hold_scan_unsupported, Toast.LENGTH_SHORT).show();
+                } else {
+                    forceHoldTargetKeyPending = inputCode;
+                    forceHoldTargetScanPending = evdevCode;
+                    forceHoldCaptureStep = 2;
+                    updateForceHoldUi();
+                }
+            } else if (inputCode == forceHoldTargetKeyPending) {
+                Toast.makeText(this, R.string.force_hold_same_key, Toast.LENGTH_SHORT).show();
+            } else if (inputCode == OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this)) {
+                Toast.makeText(this, R.string.force_hold_expression_hotkey_conflict, Toast.LENGTH_SHORT).show();
+            } else {
+                OverlayState.setForceHoldBinding(
+                        this, forceHoldTargetKeyPending, forceHoldTargetScanPending, inputCode);
+                OverlayState.setForceHoldEnabled(this, true);
+                forceHoldCaptureStep = 0;
+                forceHoldTargetKeyPending = -1;
+                forceHoldTargetScanPending = -1;
+                updateForceHoldUi();
+                handleDisplayModeChanged();
+            }
+            return;
+        }
+
+        if (dpsCaptureArmed && dpsSwitch != null && dpsSwitch.isChecked()) {
             int currentTarget = OverlayState.getDpsTargetKeyCode(this);
-            if (currentTarget != OverlayState.DPS_TARGET_NONE) {
+            if (currentTarget == OverlayState.DPS_TARGET_NONE) {
+                OverlayState.setDpsTargetKeyCode(this, OverlayState.dpsTargetFromBinding(inputCode));
                 dpsCaptureArmed = false;
                 mainHandler.removeCallbacks(cpsBindingPoll);
                 updateDpsTargetUi();
             } else {
-                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                    OverlayState.setDpsTargetKeyCode(this, event.getKeyCode());
-                    dpsCaptureArmed = false;
-                    mainHandler.removeCallbacks(cpsBindingPoll);
-                    updateDpsTargetUi();
-                }
-                return true;
+                dpsCaptureArmed = false;
+                mainHandler.removeCallbacks(cpsBindingPoll);
+                updateDpsTargetUi();
             }
+            return;
         }
-        if (captureSwitch != null
-                && OverlayState.isCustomCaptureEnabled(this)
-                && isPhysicalKeyboardEvent(event)) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                if (OverlayState.addDraftKey(this, event.getKeyCode())) {
-                    updateRecordedKeys(true);
-                }
-            }
-            // 录入模式会在设置页消费按键，避免控件误触。
-            return true;
+
+        if (captureSwitch != null && OverlayState.isCustomCaptureEnabled(this)) {
+            if (OverlayState.addDraftKey(this, inputCode)) updateRecordedKeys(true);
         }
-        return super.dispatchKeyEvent(event);
     }
 
     static void openExternalUrl(Activity activity, String url) {
@@ -1207,13 +1520,18 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private void handleDisplayModeChanged() {
         if (!needsAccessibility()) {
             waitingForShizuku = false;
+            shizukuPermissionRequestInFlight = false;
+            accessibilityVerificationGeneration++;
+            accessibilityVerificationInFlight = false;
             return;
         }
         ensureAccessibility();
     }
 
     private boolean needsAccessibility() {
-        return OverlayState.isAnyDisplayEnabled(this) || OverlayState.isSensitivityEnabled(this);
+        return OverlayState.isAnyDisplayEnabled(this)
+                || OverlayState.isSensitivityEnabled(this)
+                || OverlayState.isForceHoldEnabled(this);
     }
 
     @Override
@@ -1237,14 +1555,28 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     protected void onPause() {
+        if (activeBindingActivity == this) activeBindingActivity = null;
+        AxonInputAccessibilityService.refreshActiveService();
         mainHandler.removeCallbacks(sensitivityStatusTicker);
         mainHandler.removeCallbacks(cpsBindingPoll);
+        cancelKeyboardCatExpressionHotkeyCapture(true);
+        keyboardCatExpressionHotkeyCapturedKeyCode = -1;
+
+        // Binding prompts are foreground-only.  Without this reset, leaving the app halfway through
+        // recording (especially Force Hold step 2) makes a later unrelated key silently become the binding.
+        forceHoldCaptureStep = 0;
+        forceHoldTargetKeyPending = -1;
+        forceHoldTargetScanPending = -1;
+        gamepadCustomSwapCaptureStep = 0;
+        gamepadCustomSwapFirstPending = 0;
         super.onPause();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        activeBindingActivity = this;
+        AxonInputAccessibilityService.refreshActiveService();
         AxonApplication.syncTaskVisibility(this, false);
 
         internalChange = true;
@@ -1266,6 +1598,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         updateColorDot(mouseTrajectoryLeftColorDot, OverlayState.getMouseTrajectoryLeftColor(this));
         updateColorDot(mouseTrajectoryRightColorDot, OverlayState.getMouseTrajectoryRightColor(this));
         customDisplaySwitch.setChecked(OverlayState.isCustomEnabled(this));
+        superCustomDisplaySwitch.setChecked(OverlayState.isSuperCustomEnabled(this));
         gamepadLeftStickSwitch.setChecked(OverlayState.isGamepadLeftStickEnabled(this));
         gamepadRightStickSwitch.setChecked(OverlayState.isGamepadRightStickEnabled(this));
         gamepadFaceSwitch.setChecked(OverlayState.isGamepadFaceEnabled(this));
@@ -1292,12 +1625,16 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         updateGamepadCustomSwapUi();
         captureSwitch.setChecked(OverlayState.isCustomCaptureEnabled(this));
         dpsSwitch.setChecked(OverlayState.isDpsEnabled(this));
+        forceHoldSwitch.setChecked(forceHoldCaptureStep != 0 || OverlayState.isForceHoldEnabled(this));
+        updateForceHoldUi();
         dpsCaptureArmed = OverlayState.isDpsEnabled(this)
                 && OverlayState.getDpsTargetKeyCode(this) == OverlayState.DPS_TARGET_NONE;
         updateDpsTargetUi();
         mainHandler.removeCallbacks(cpsBindingPoll);
         if (dpsCaptureArmed) mainHandler.post(cpsBindingPoll);
         dragSwitch.setChecked(OverlayState.isDragEnabled(this));
+        floatingVideoSwitch.setChecked(OverlayState.isFloatingVideoEnabled(this) && OverlayState.hasFloatingVideo(this));
+        syncFloatingVideoUi();
         globalHtmlSwitch.setChecked(OverlayState.isGlobalHtmlEnabled(this));
         autoHideSwitch.setChecked(OverlayState.isAutoHideBackground(this));
         sensitivitySwitch.setChecked(OverlayState.isSensitivityEnabled(this));
@@ -1364,13 +1701,19 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         updateRecordedKeys(OverlayState.isCustomCaptureEnabled(this));
         for (int type : MOTION_DISPLAY_TYPES) syncMotionUi(type);
         for (int type : OPACITY_DISPLAY_TYPES) syncOpacityUi(type);
+        for (int type : KEY_LAYER_OPACITY_DISPLAY_TYPES) syncKeyLayerOpacityUi(type);
         for (int type : KEY_APPEARANCE_DISPLAY_TYPES) syncKeyAppearanceUi(type);
         syncKeyboardTextColorUi();
         syncGlobalHtmlUi();
         syncFontUi();
+        syncSuperCustomConfigRows();
         internalChange = false;
         mainHandler.removeCallbacks(sensitivityStatusTicker);
         if (sensitivitySwitch.isChecked()) mainHandler.post(sensitivityStatusTicker);
+        // Re-check the real service connection after returning from Shizuku/accessibility settings.
+        // This is also the recovery entry for ROMs that persisted the secure setting but failed to
+        // bind the AccessibilityService on the first attempt.
+        if (needsAccessibility()) mainHandler.post(this::ensureAccessibility);
 
     }
 
@@ -1380,6 +1723,23 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
         Uri uri = data.getData();
+        if (requestCode == FLOATING_VIDEO_IMPORT_REQUEST) {
+            showFloatingVideoImportDialog(uri);
+            return;
+        }
+        if (requestCode == SUPER_CUSTOM_IMPORT_REQUEST) {
+            int slot = pendingSuperCustomImportSlot;
+            pendingSuperCustomImportSlot = 0;
+            if (slot < 1 || slot > SuperCustomConfigStore.SLOT_COUNT) return;
+            try {
+                SuperCustomConfigStore.importSlot(this, slot, readText(uri, SuperCustomConfigStore.MAX_CONFIG_BYTES));
+                syncSuperCustomConfigRows();
+                Toast.makeText(this, getString(R.string.super_custom_import_slot_success, slot), Toast.LENGTH_SHORT).show();
+            } catch (Throwable error) {
+                Toast.makeText(this, R.string.super_custom_config_import_failed, Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
         if (requestCode == BONGOCAT_STYLE_IMPORT_REQUEST) {
             try {
                 BongoCatStyleManager.StyleInfo imported = BongoCatStyleManager.importZip(
@@ -1389,6 +1749,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 syncKeyboardCatStyles();
                 internalChange = false;
                 Toast.makeText(this, getString(R.string.keyboard_cat_style_import_success, imported.displayLabel()), Toast.LENGTH_SHORT).show();
+                if (OverlayState.isKeyboardCatEnabled(this)) ensureAccessibility();
             } catch (Throwable error) {
                 internalChange = false;
                 Toast.makeText(this, getString(R.string.keyboard_cat_style_import_failed, error.getMessage() == null ? "" : error.getMessage()), Toast.LENGTH_LONG).show();
@@ -1450,18 +1811,20 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     @Override
     public void onShizukuReady(boolean permissionGranted) {
-        if (!waitingForShizuku) return;
+        if (!waitingForShizuku && !shizukuPermissionRequestInFlight) return;
+        if (permissionGranted) shizukuPermissionRequestInFlight = false;
         waitingForShizuku = false;
-        ensureAccessibility();
+        if (needsAccessibility()) ensureAccessibility();
     }
 
     @Override
     public void onShizukuPermissionResult(int requestCode, boolean granted) {
         if (requestCode != SHIZUKU_REQUEST_CODE) return;
         waitingForShizuku = false;
+        shizukuPermissionRequestInFlight = false;
+        if (!needsAccessibility()) return;
         if (granted) {
-            if (isAccessibilityServiceEnabled()) AxonInputAccessibilityService.refreshActiveService();
-            else grantAccessibilityWithShizuku();
+            ensureAccessibility();
         } else {
             Toast.makeText(this, R.string.shizuku_denied, Toast.LENGTH_SHORT).show();
             if (!isAccessibilityServiceEnabled()) openAccessibilitySettings();
@@ -1471,26 +1834,38 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     @Override
     public void onShizukuDead() {
         waitingForShizuku = false;
+        shizukuPermissionRequestInFlight = false;
     }
 
     private void ensureAccessibility() {
         boolean sensitivity = OverlayState.isSensitivityEnabled(this);
-        // 键盘猫需要读取全局鼠标 REL_X / REL_Y。即使无障碍服务已经开启，
-        // 也必须保证当前选择的 Shizuku / Root 输入通道可用。
+        // The overlay itself depends only on a live AccessibilityService. Shizuku/Root is an input
+        // channel for global REL_X/REL_Y and must never gate creation of the keyboard-cat window.
         boolean keyboardCatMouseCapture = OverlayState.isKeyboardCatEnabled(this) && !sensitivity;
-        boolean rootMode = (sensitivity || keyboardCatMouseCapture)
+        boolean superCustomMouseCapture = OverlayState.isSuperCustomEnabled(this)
+                && SuperCustomConfigStore.activeContainsMouse(this) && !sensitivity;
+        boolean rootMode = (sensitivity || keyboardCatMouseCapture || superCustomMouseCapture)
                 && OverlayState.getSensitivityMode(this) == OverlayState.SENSITIVITY_MODE_ROOT;
 
-        if (isAccessibilityServiceEnabled()) {
+        if (AxonInputAccessibilityService.isServiceConnected()) {
+            accessibilityVerificationGeneration++;
+            accessibilityVerificationInFlight = false;
             AxonInputAccessibilityService.refreshActiveService();
-            if ((sensitivity || keyboardCatMouseCapture) && !rootMode) ensureShizukuForSensitivity();
+            if ((sensitivity || keyboardCatMouseCapture || superCustomMouseCapture) && !rootMode) {
+                ensureShizukuForSensitivity();
+            }
             return;
         }
 
-        // Root 倍率模式不依赖 Shizuku。
-        // Root 模式可直接启用无障碍服务。
+        // Secure settings can say "enabled" while the service process is not bound. Verify the
+        // real connection before claiming success; if needed we rebind only our own component.
+        if (isAccessibilityServiceEnabled()) {
+            verifyAccessibilityConnection(false, true, rootMode);
+            return;
+        }
+
         if (rootMode) {
-            grantAccessibilityWithRoot();
+            grantAccessibilityWithRoot(false);
             return;
         }
 
@@ -1508,14 +1883,19 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         if (!ShizukuBridge.hasPermission()) {
             waitingForShizuku = true;
-            if (!ShizukuBridge.requestPermission(SHIZUKU_REQUEST_CODE)) {
-                waitingForShizuku = false;
-                openAccessibilitySettings();
+            if (!shizukuPermissionRequestInFlight) {
+                shizukuPermissionRequestInFlight = true;
+                if (!ShizukuBridge.requestPermission(SHIZUKU_REQUEST_CODE)) {
+                    waitingForShizuku = false;
+                    shizukuPermissionRequestInFlight = false;
+                    openAccessibilitySettings();
+                }
             }
             return;
         }
 
-        grantAccessibilityWithShizuku();
+        shizukuPermissionRequestInFlight = false;
+        grantAccessibilityWithShizuku(false);
     }
 
     private void ensureShizukuForSensitivity() {
@@ -1529,24 +1909,50 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         }
         if (!ShizukuBridge.hasPermission()) {
             waitingForShizuku = true;
-            if (!ShizukuBridge.requestPermission(SHIZUKU_REQUEST_CODE)) {
-                waitingForShizuku = false;
+            if (!shizukuPermissionRequestInFlight) {
+                shizukuPermissionRequestInFlight = true;
+                if (!ShizukuBridge.requestPermission(SHIZUKU_REQUEST_CODE)) {
+                    waitingForShizuku = false;
+                    shizukuPermissionRequestInFlight = false;
+                }
             }
             return;
         }
+        shizukuPermissionRequestInFlight = false;
         AxonInputAccessibilityService.refreshActiveService();
     }
 
-    private void grantAccessibilityWithShizuku() {
+    private String accessibilityGrantCommand(boolean forceRebind) {
         final String component = new ComponentName(this, AxonInputAccessibilityService.class).flattenToString();
-        final String command =
-                "SERVICE='" + component + "'; "
-                + "CURRENT=\"$(settings get secure enabled_accessibility_services)\"; "
-                + "if [ \"$CURRENT\" = null ] || [ -z \"$CURRENT\" ]; then NEW=\"$SERVICE\"; "
-                + "else case \":$CURRENT:\" in *\":$SERVICE:\"*) NEW=\"$CURRENT\";; *) NEW=\"$CURRENT:$SERVICE\";; esac; fi; "
-                + "settings put secure enabled_accessibility_services \"$NEW\" && "
-                + "settings put secure accessibility_enabled 1";
+        StringBuilder command = new StringBuilder();
+        command.append("SERVICE='").append(component).append("'; ")
+                .append("CURRENT=\"$(settings get secure enabled_accessibility_services)\"; ")
+                .append("if [ \"$CURRENT\" = null ]; then CURRENT=''; fi; ");
+        if (forceRebind) {
+            // Remove only Axon's component, preserving every other enabled accessibility service.
+            command.append("NEW=''; OLDIFS=\"$IFS\"; IFS=':'; ")
+                    .append("for ITEM in $CURRENT; do [ -z \"$ITEM\" ] && continue; ")
+                    .append("[ \"$ITEM\" = \"$SERVICE\" ] && continue; ")
+                    .append("if [ -z \"$NEW\" ]; then NEW=\"$ITEM\"; else NEW=\"$NEW:$ITEM\"; fi; done; ")
+                    .append("IFS=\"$OLDIFS\"; ")
+                    .append("if [ -n \"$NEW\" ]; then settings put secure enabled_accessibility_services \"$NEW\"; ")
+                    .append("else settings delete secure enabled_accessibility_services; fi; sleep 0.25; CURRENT=\"$NEW\"; ");
+        }
+        command.append("if [ -z \"$CURRENT\" ]; then NEW=\"$SERVICE\"; ")
+                .append("else case \":$CURRENT:\" in *\":$SERVICE:\"*) NEW=\"$CURRENT\";; *) NEW=\"$CURRENT:$SERVICE\";; esac; fi; ")
+                .append("settings put secure enabled_accessibility_services \"$NEW\" && ")
+                .append("settings put secure accessibility_enabled 1");
+        return command.toString();
+    }
 
+    private void grantAccessibilityWithShizuku() {
+        grantAccessibilityWithShizuku(false);
+    }
+
+    private void grantAccessibilityWithShizuku(boolean forceRebind) {
+        if (accessibilityGrantInFlight) return;
+        accessibilityGrantInFlight = true;
+        final String command = accessibilityGrantCommand(forceRebind);
         new Thread(() -> {
             boolean success;
             try {
@@ -1554,30 +1960,30 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             } catch (Throwable ignored) {
                 success = false;
             }
-
             final boolean result = success;
             mainHandler.post(() -> {
+                accessibilityGrantInFlight = false;
                 if (isFinishing()) return;
                 if (result) {
-                    Toast.makeText(this, R.string.shizuku_grant_success, Toast.LENGTH_SHORT).show();
-                    AxonInputAccessibilityService.refreshActiveService();
+                    // Do not show the old false-positive "success" toast yet. The service must
+                    // actually connect; a successful settings write alone is insufficient.
+                    verifyAccessibilityConnection(true, !forceRebind, false);
                 } else {
                     Toast.makeText(this, R.string.shizuku_grant_failed, Toast.LENGTH_SHORT).show();
                     openAccessibilitySettings();
                 }
             });
-        }, "ShizukuAccessibilityGrant").start();
+        }, forceRebind ? "ShizukuAccessibilityRebind" : "ShizukuAccessibilityGrant").start();
     }
 
     private void grantAccessibilityWithRoot() {
-        final String component = new ComponentName(this, AxonInputAccessibilityService.class).flattenToString();
-        final String command =
-                "SERVICE='" + component + "'; "
-                + "CURRENT=\"$(settings get secure enabled_accessibility_services)\"; "
-                + "if [ \"$CURRENT\" = null ] || [ -z \"$CURRENT\" ]; then NEW=\"$SERVICE\"; "
-                + "else case \":$CURRENT:\" in *\":$SERVICE:\"*) NEW=\"$CURRENT\";; *) NEW=\"$CURRENT:$SERVICE\";; esac; fi; "
-                + "settings put secure enabled_accessibility_services \"$NEW\" && "
-                + "settings put secure accessibility_enabled 1";
+        grantAccessibilityWithRoot(false);
+    }
+
+    private void grantAccessibilityWithRoot(boolean forceRebind) {
+        if (accessibilityGrantInFlight) return;
+        accessibilityGrantInFlight = true;
+        final String command = accessibilityGrantCommand(forceRebind);
         new Thread(() -> {
             boolean success;
             try {
@@ -1587,16 +1993,164 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             }
             final boolean result = success;
             mainHandler.post(() -> {
+                accessibilityGrantInFlight = false;
                 if (isFinishing()) return;
                 if (result) {
-                    AxonInputAccessibilityService.refreshActiveService();
-                    Toast.makeText(this, R.string.root_granted, Toast.LENGTH_SHORT).show();
+                    verifyAccessibilityConnection(true, !forceRebind, true);
                 } else {
                     Toast.makeText(this, R.string.root_denied_open_accessibility, Toast.LENGTH_SHORT).show();
                     openAccessibilitySettings();
                 }
             });
-        }, "RootAccessibilityGrant").start();
+        }, forceRebind ? "RootAccessibilityRebind" : "RootAccessibilityGrant").start();
+    }
+
+    private void verifyAccessibilityConnection(boolean showSuccess, boolean allowRepair, boolean rootMode) {
+        if (AxonInputAccessibilityService.isServiceConnected()) {
+            accessibilityVerificationGeneration++;
+            accessibilityVerificationInFlight = false;
+            AxonInputAccessibilityService.refreshActiveService();
+            if (showSuccess) Toast.makeText(this,
+                    rootMode ? R.string.root_granted : R.string.shizuku_grant_success,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (accessibilityVerificationInFlight) return;
+        accessibilityVerificationInFlight = true;
+        final int generation = ++accessibilityVerificationGeneration;
+        pollAccessibilityConnection(generation, 0, showSuccess, allowRepair, rootMode);
+    }
+
+    private void pollAccessibilityConnection(int generation, int attempt, boolean showSuccess,
+                                             boolean allowRepair, boolean rootMode) {
+        if (generation != accessibilityVerificationGeneration || isFinishing()) return;
+        if (AxonInputAccessibilityService.isServiceConnected()) {
+            accessibilityVerificationInFlight = false;
+            AxonInputAccessibilityService.refreshActiveService();
+            if (showSuccess) Toast.makeText(this,
+                    rootMode ? R.string.root_granted : R.string.shizuku_grant_success,
+                    Toast.LENGTH_SHORT).show();
+            // Once the overlay is alive, independently bring up the global mouse input channel.
+            boolean needsInput = OverlayState.isSensitivityEnabled(this)
+                    || OverlayState.isKeyboardCatEnabled(this)
+                    || (OverlayState.isSuperCustomEnabled(this)
+                    && SuperCustomConfigStore.activeContainsMouse(this));
+            if (needsInput && !rootMode) ensureShizukuForSensitivity();
+            return;
+        }
+        if (attempt < 19) {
+            mainHandler.postDelayed(() -> pollAccessibilityConnection(generation, attempt + 1,
+                    showSuccess, allowRepair, rootMode), 200L);
+            return;
+        }
+        accessibilityVerificationInFlight = false;
+        if (allowRepair) {
+            if (rootMode) {
+                grantAccessibilityWithRoot(true);
+                return;
+            }
+            if (ShizukuBridge.isReady() && ShizukuBridge.hasPermission()) {
+                grantAccessibilityWithShizuku(true);
+                return;
+            }
+        }
+        Toast.makeText(this, R.string.accessibility_service_not_running, Toast.LENGTH_LONG).show();
+        openAccessibilitySettings();
+    }
+
+    private LinearLayout createSuperCustomGroup() {
+        LinearLayout group = new LinearLayout(this);
+        group.setOrientation(LinearLayout.VERTICAL);
+        group.setPadding(dp(14), dp(12), dp(14), dp(12));
+        group.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 12f));
+
+        TextView hint = createSupportingText();
+        hint.setText(R.string.super_custom_home_hint);
+        hint.setTextSize(12f);
+        group.addView(hint, supportingParams(dp(10)));
+
+        Button enter = createConfigButton(R.string.super_custom_enter, v ->
+                startActivity(new Intent(MainActivity.this, SuperCustomDisplayActivity.class)));
+        group.addView(enter, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+
+        superCustomDisplaySwitch = createSwitch(R.string.super_custom_display_switch);
+        LinearLayout.LayoutParams displayLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        displayLp.topMargin = dp(6);
+        group.addView(superCustomDisplaySwitch, displayLp);
+
+        LinearLayout slots = new LinearLayout(this);
+        slots.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams slotsLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        slotsLp.topMargin = dp(10);
+        group.addView(slots, slotsLp);
+
+        for (int slot = 1; slot <= SuperCustomConfigStore.SLOT_COUNT; slot++) {
+            final int configSlot = slot;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(3), 0, dp(3));
+
+            TextView label = createSupportingText();
+            label.setTextSize(12f);
+            label.setTextColor(UiPalette.textPrimary(this));
+            superCustomSlotStatusViews[slot - 1] = label;
+            row.addView(label, new LinearLayout.LayoutParams(0, dp(40), 1f));
+            label.setGravity(Gravity.CENTER_VERTICAL);
+
+            Button load = createConfigButton(R.string.super_custom_load, v -> loadSuperCustomSlot(configSlot));
+            Button importButton = createConfigButton(R.string.super_custom_import, v -> openSuperCustomImportPicker(configSlot));
+            LinearLayout.LayoutParams loadLp = new LinearLayout.LayoutParams(dp(68), dp(40));
+            loadLp.leftMargin = dp(8);
+            LinearLayout.LayoutParams importLp = new LinearLayout.LayoutParams(dp(68), dp(40));
+            importLp.leftMargin = dp(6);
+            row.addView(load, loadLp);
+            row.addView(importButton, importLp);
+            slots.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        syncSuperCustomConfigRows();
+        return group;
+    }
+
+    private void syncSuperCustomConfigRows() {
+        for (int i = 0; i < superCustomSlotStatusViews.length; i++) {
+            TextView view = superCustomSlotStatusViews[i];
+            if (view == null) continue;
+            int slot = i + 1;
+            boolean saved = SuperCustomConfigStore.hasSlot(this, slot);
+            view.setText(getString(R.string.super_custom_config_slot_status, slot,
+                    getString(saved ? R.string.super_custom_config_saved : R.string.super_custom_config_empty)));
+        }
+    }
+
+    private void loadSuperCustomSlot(int slot) {
+        if (!SuperCustomConfigStore.hasSlot(this, slot)) {
+            Toast.makeText(this, R.string.super_custom_config_slot_empty, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            SuperCustomConfigStore.loadSlotIntoActive(this, slot);
+            // Loading changes only the active workspace. Visibility is controlled exclusively by
+            // the dedicated Super Custom display switch and must never be auto-enabled here.
+            AxonInputAccessibilityService.refreshActiveService();
+            if (OverlayState.isSuperCustomEnabled(this)) ensureAccessibility();
+            Toast.makeText(this, getString(R.string.super_custom_load_slot_success, slot), Toast.LENGTH_SHORT).show();
+        } catch (Throwable error) {
+            Toast.makeText(this, R.string.super_custom_config_load_failed, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void openSuperCustomImportPicker(int slot) {
+        pendingSuperCustomImportSlot = slot;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/plain", "application/octet-stream"});
+        startActivityForResult(intent, SUPER_CUSTOM_IMPORT_REQUEST);
     }
 
     private LinearLayout createConfig1Group() {
@@ -1828,15 +2382,37 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             return;
         }
         StringBuilder text = new StringBuilder(draft ? getString(R.string.custom_recording_prefix) : getString(R.string.custom_saved_prefix));
-        for (int key : keys) text.append(' ').append(KeyLabel.fromKeyCode(key));
+        for (int key : keys) text.append(' ').append(InputBinding.label(key));
         recordedKeysText.setText(text.toString());
     }
 
     private boolean isPhysicalKeyboardEvent(KeyEvent event) {
-        InputDevice device = event.getDevice();
-        if (device == null || device.isVirtual()) return false;
-        int sources = event.getSource();
-        return (sources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD;
+        return InputBinding.isPhysicalKeyboardEvent(event);
+    }
+
+    private boolean isPhysicalGamepadEvent(KeyEvent event) {
+        return InputBinding.isPhysicalGamepadEvent(event);
+    }
+
+    private void updateForceHoldUi() {
+        if (forceHoldStatusText == null) return;
+        if (forceHoldCaptureStep == 1) {
+            forceHoldStatusText.setText(R.string.force_hold_wait_target);
+            return;
+        }
+        if (forceHoldCaptureStep == 2 && forceHoldTargetKeyPending >= 0) {
+            forceHoldStatusText.setText(getString(
+                    R.string.force_hold_wait_trigger, InputBinding.label(forceHoldTargetKeyPending)));
+            return;
+        }
+        if (OverlayState.isForceHoldEnabled(this) && OverlayState.hasForceHoldBinding(this)) {
+            forceHoldStatusText.setText(getString(
+                    R.string.force_hold_ready,
+                    InputBinding.label(OverlayState.getForceHoldTargetKeyCode(this)),
+                    InputBinding.label(OverlayState.getForceHoldTriggerKeyCode(this))));
+            return;
+        }
+        forceHoldStatusText.setText(R.string.force_hold_wait_target);
     }
 
     private void addMotionControls(LinearLayout root, int displayType, int labelRes) {
@@ -1917,6 +2493,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             case GamepadOverlayView.BTN_BACK_2 -> "P2/M2";
             case GamepadOverlayView.BTN_BACK_3 -> "P3/M3";
             case GamepadOverlayView.BTN_BACK_4 -> "P4/M4";
+            case GamepadOverlayView.BTN_DPAD_UP -> "D-pad ↑";
+            case GamepadOverlayView.BTN_DPAD_DOWN -> "D-pad ↓";
+            case GamepadOverlayView.BTN_DPAD_LEFT -> "D-pad ←";
+            case GamepadOverlayView.BTN_DPAD_RIGHT -> "D-pad →";
             default -> "Button";
         };
     }
@@ -1928,16 +2508,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             dpsTargetText.setText(R.string.dps_target_waiting);
             return;
         }
-        String label;
-        if (target == OverlayState.DPS_TARGET_MOUSE_LEFT) {
-            label = getString(R.string.cps_target_mouse_left);
-        } else if (target == OverlayState.DPS_TARGET_MOUSE_RIGHT) {
-            label = getString(R.string.cps_target_mouse_right);
-        } else if (OverlayState.isGamepadDpsTarget(target)) {
-            label = gamepadCpsLabel(OverlayState.getGamepadDpsTargetBit(target));
-        } else {
-            label = KeyLabel.fromKeyCode(target);
-        }
+        String label = InputBinding.label(OverlayState.bindingFromDpsTarget(target));
         dpsTargetText.setText(getString(R.string.dps_target_selected, label));
     }
 
@@ -2012,7 +2583,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private void syncKeyboardCatExpressionOptions(BongoCatStyleManager.StyleInfo style) {
         if (keyboardCatExpressionSpinner == null) return;
         keyboardCatExpressions.clear();
-        if (style != null && !style.builtin) {
+        if (style != null) {
             keyboardCatExpressions.addAll(BongoCatStyleManager.expressionOptions(this, style.id));
         }
         String[] labels = new String[keyboardCatExpressions.size() + 1];
@@ -2043,6 +2614,104 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             internalChange = previousInternal;
         }
         if (!valid) OverlayState.setKeyboardCatDebugExpression(this, "auto");
+        if (keyboardCatExpressions.isEmpty()) cancelKeyboardCatExpressionHotkeyCapture(true);
+        updateKeyboardCatExpressionHotkeyUi();
+    }
+
+    private void toggleKeyboardCatExpressionHotkeyCapture() {
+        if (keyboardCatExpressions.isEmpty()) {
+            Toast.makeText(this, R.string.keyboard_cat_expression_hotkey_no_expressions, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (keyboardCatExpressionHotkeyCaptureArmed) {
+            cancelKeyboardCatExpressionHotkeyCapture(true);
+            return;
+        }
+        keyboardCatExpressionHotkeyPreviousKeyCode =
+                OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this);
+        if (keyboardCatExpressionHotkeyPreviousKeyCode >= 0) {
+            // 绑定期间先停用旧快捷键，避免重绑按键同时触发旧动作。
+            OverlayState.setKeyboardCatExpressionHotkeyKeyCode(this, -1);
+        }
+        keyboardCatExpressionHotkeyCaptureArmed = true;
+        keyboardCatExpressionHotkeyCapturedKeyCode = -1;
+        updateKeyboardCatExpressionHotkeyUi();
+    }
+
+    private void cancelKeyboardCatExpressionHotkeyCapture(boolean restorePrevious) {
+        if (!keyboardCatExpressionHotkeyCaptureArmed) return;
+        keyboardCatExpressionHotkeyCaptureArmed = false;
+        keyboardCatExpressionHotkeyCapturedKeyCode = -1;
+        if (restorePrevious && keyboardCatExpressionHotkeyPreviousKeyCode >= 0) {
+            OverlayState.setKeyboardCatExpressionHotkeyKeyCode(
+                    this, keyboardCatExpressionHotkeyPreviousKeyCode);
+        }
+        keyboardCatExpressionHotkeyPreviousKeyCode = -1;
+        updateKeyboardCatExpressionHotkeyUi();
+    }
+
+    private void updateKeyboardCatExpressionHotkeyUi() {
+        if (keyboardCatExpressionHotkeyButton == null
+                || keyboardCatExpressionHotkeySelectionButton == null) return;
+        boolean hasExpressions = !keyboardCatExpressions.isEmpty();
+        keyboardCatExpressionHotkeyButton.setEnabled(hasExpressions);
+        keyboardCatExpressionHotkeySelectionButton.setEnabled(hasExpressions);
+
+        if (!hasExpressions) {
+            keyboardCatExpressionHotkeyButton.setText(R.string.keyboard_cat_expression_hotkey_unavailable);
+            keyboardCatExpressionHotkeySelectionButton.setText(
+                    R.string.keyboard_cat_expression_hotkey_selection_empty);
+            return;
+        }
+        if (keyboardCatExpressionHotkeyCaptureArmed) {
+            keyboardCatExpressionHotkeyButton.setText(R.string.keyboard_cat_expression_hotkey_recording);
+        } else {
+            int keyCode = OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this);
+            keyboardCatExpressionHotkeyButton.setText(keyCode >= 0
+                    ? getString(R.string.keyboard_cat_expression_hotkey_bound, InputBinding.label(keyCode))
+                    : getString(R.string.keyboard_cat_expression_hotkey_unbound));
+        }
+
+        String styleId = OverlayState.getKeyboardCatStyleId(this);
+        boolean explicit = OverlayState.hasKeyboardCatExpressionHotkeySelection(this, styleId);
+        Set<String> selected = OverlayState.getKeyboardCatExpressionHotkeySelection(this, styleId);
+        int count = 0;
+        for (BongoCatStyleManager.ExpressionOption option : keyboardCatExpressions) {
+            if (!explicit || selected.contains(option.token)) count++;
+        }
+        keyboardCatExpressionHotkeySelectionButton.setText(getString(
+                R.string.keyboard_cat_expression_hotkey_selection_count,
+                count, keyboardCatExpressions.size()));
+    }
+
+    private void showKeyboardCatExpressionHotkeySelectionDialog() {
+        if (keyboardCatExpressions.isEmpty()) {
+            Toast.makeText(this, R.string.keyboard_cat_expression_hotkey_no_expressions, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String styleId = OverlayState.getKeyboardCatStyleId(this);
+        boolean explicit = OverlayState.hasKeyboardCatExpressionHotkeySelection(this, styleId);
+        Set<String> selected = OverlayState.getKeyboardCatExpressionHotkeySelection(this, styleId);
+        String[] labels = new String[keyboardCatExpressions.size()];
+        boolean[] checked = new boolean[keyboardCatExpressions.size()];
+        for (int i = 0; i < keyboardCatExpressions.size(); i++) {
+            BongoCatStyleManager.ExpressionOption option = keyboardCatExpressions.get(i);
+            labels[i] = option.label;
+            checked[i] = !explicit || selected.contains(option.token);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.keyboard_cat_expression_hotkey_selection_dialog_title)
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                    LinkedHashSet<String> tokens = new LinkedHashSet<>();
+                    for (int i = 0; i < checked.length; i++) {
+                        if (checked[i]) tokens.add(keyboardCatExpressions.get(i).token);
+                    }
+                    OverlayState.setKeyboardCatExpressionHotkeySelection(this, styleId, tokens);
+                    updateKeyboardCatExpressionHotkeyUi();
+                })
+                .show();
     }
 
     private void confirmDeleteKeyboardCatStyle() {
@@ -2084,6 +2753,127 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         String name = FontManager.getImportedFontName(this);
         if (name == null || name.isEmpty()) name = getString(R.string.font_custom_name);
         fontStatusText.setText(getString(R.string.font_imported_format, name));
+    }
+
+    private void openFloatingVideoPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("video/*");
+        try {
+            startActivityForResult(intent, FLOATING_VIDEO_IMPORT_REQUEST);
+        } catch (ActivityNotFoundException error) {
+            Toast.makeText(this, R.string.floating_video_picker_failed, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showFloatingVideoImportDialog(Uri uri) {
+        long durationMs;
+        int videoWidth;
+        int videoHeight;
+        MediaMetadataRetriever metadata = new MediaMetadataRetriever();
+        try {
+            metadata.setDataSource(this, uri);
+            String duration = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            durationMs = duration == null ? 0L : Long.parseLong(duration);
+            String width = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+            String height = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+            videoWidth = width == null ? 16 : Integer.parseInt(width);
+            videoHeight = height == null ? 9 : Integer.parseInt(height);
+            String rotationValue = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+            int rotation = rotationValue == null ? 0 : Integer.parseInt(rotationValue);
+            if (rotation == 90 || rotation == 270) {
+                int swap = videoWidth;
+                videoWidth = videoHeight;
+                videoHeight = swap;
+            }
+        } catch (Throwable error) {
+            Toast.makeText(this, R.string.floating_video_invalid, Toast.LENGTH_SHORT).show();
+            try { metadata.release(); } catch (Throwable ignored) {}
+            return;
+        }
+        try { metadata.release(); } catch (Throwable ignored) {}
+        if (durationMs < 100L) {
+            Toast.makeText(this, R.string.floating_video_invalid, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        long safeDuration = Math.max(100L, durationMs);
+        int steps = Math.max(1, Math.min(6000, (int) Math.ceil(safeDuration / 100.0)));
+        final long[] selectedLoopMs = {safeDuration};
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(18), dp(4), dp(18), dp(8));
+
+        FloatingVideoOverlayView preview = new FloatingVideoOverlayView(this);
+        content.addView(preview, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
+        preview.setVideoUri(uri, safeDuration);
+
+        TextView durationLabel = createLabel();
+        durationLabel.setText(getString(R.string.floating_video_duration_format, safeDuration / 1000f));
+        content.addView(durationLabel, supportingParams(dp(12)));
+
+        SeekBar durationSeek = new SeekBar(this);
+        durationSeek.setMax(steps - 1);
+        durationSeek.setProgress(steps - 1);
+        content.addView(durationSeek, seekBarLayoutParams(dp(2)));
+
+        TextView durationHint = createSupportingText();
+        durationHint.setText(R.string.floating_video_duration_hint);
+        content.addView(durationHint, supportingParams(dp(2)));
+
+        durationSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                float fraction = steps <= 1 ? 1f : (progress + 1f) / steps;
+                long value = Math.max(100L, Math.min(safeDuration, Math.round(safeDuration * fraction)));
+                selectedLoopMs[0] = value;
+                durationLabel.setText(getString(R.string.floating_video_duration_format, value / 1000f));
+                preview.setLoopDurationMs(value);
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+
+        String displayName = queryDisplayName(uri, "floating-video");
+        int finalVideoWidth = Math.max(1, videoWidth);
+        int finalVideoHeight = Math.max(1, videoHeight);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.floating_video_import_title)
+                .setView(content)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.floating_video_import_confirm, (d, which) -> {
+                    try {
+                        OverlayState.importFloatingVideo(MainActivity.this, uri, displayName,
+                                safeDuration, selectedLoopMs[0], finalVideoWidth, finalVideoHeight);
+                        internalChange = true;
+                        floatingVideoSwitch.setChecked(true);
+                        internalChange = false;
+                        syncFloatingVideoUi();
+                        ensureAccessibility();
+                        Toast.makeText(MainActivity.this, R.string.floating_video_import_success, Toast.LENGTH_SHORT).show();
+                    } catch (Throwable error) {
+                        Toast.makeText(MainActivity.this, R.string.floating_video_import_failed, Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .create();
+        dialog.setOnDismissListener(d -> preview.release());
+        dialog.show();
+    }
+
+    private void syncFloatingVideoUi() {
+        if (floatingVideoStatusText == null || floatingVideoSwitch == null) return;
+        boolean hasVideo = OverlayState.hasFloatingVideo(this);
+        if (!hasVideo) {
+            floatingVideoStatusText.setText(R.string.floating_video_status_empty);
+            if (floatingVideoDetails != null) setDetailsVisible(floatingVideoDetails, floatingVideoSwitch.isChecked());
+            return;
+        }
+        String name = OverlayState.getFloatingVideoName(this);
+        float seconds = OverlayState.getFloatingVideoLoopDurationMs(this) / 1000f;
+        floatingVideoStatusText.setText(getString(R.string.floating_video_status_ready,
+                TextUtils.isEmpty(name) ? getString(R.string.floating_video_default_name) : name, seconds));
+        if (floatingVideoDetails != null) setDetailsVisible(floatingVideoDetails, floatingVideoSwitch.isChecked());
     }
 
     private void openGlobalHtmlPicker() {
@@ -2294,6 +3084,26 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             @Override public void onNothingSelected(AdapterView<?> parentView) {}
         });
 
+        LinearLayout baseColorRow = new LinearLayout(this);
+        baseColorRow.setOrientation(LinearLayout.HORIZONTAL);
+        baseColorRow.setGravity(Gravity.CENTER_VERTICAL);
+        baseColorRow.setMinimumHeight(dp(44));
+        TextView baseColorLabel = createLabel();
+        baseColorLabel.setText(R.string.key_base_color);
+        baseColorRow.addView(baseColorLabel, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        View baseDot = createColorDot(OverlayState.getKeyBaseColor(this, displayType));
+        keyBaseColorDots.put(displayType, baseDot);
+        LinearLayout.LayoutParams baseDotParams = new LinearLayout.LayoutParams(dp(22), dp(22));
+        baseDotParams.leftMargin = dp(12);
+        baseColorRow.addView(baseDot, baseDotParams);
+        View.OnClickListener openBaseColor = v -> showKeyBaseColorDialog(displayType, baseDot);
+        baseColorRow.setOnClickListener(openBaseColor);
+        baseColorRow.setBackground(createRippleBackground(UiPalette.debugSurface(this), 8f));
+        UiMotion.bindPressFeedback(baseColorRow);
+        baseDot.setOnClickListener(openBaseColor);
+        parent.addView(baseColorRow, supportingParams(dp(2)));
+
         LinearLayout colorRow = new LinearLayout(this);
         colorRow.setOrientation(LinearLayout.HORIZONTAL);
         colorRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -2374,12 +3184,23 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             updateCornerStrengthEnabled(displayType, style == KeyAppearance.STYLE_ROUNDED);
         }
 
+        View baseDot = keyBaseColorDots.get(displayType);
+        if (baseDot != null) updateColorDot(baseDot, OverlayState.getKeyBaseColor(this, displayType));
+
         View dot = keyPressColorDots.get(displayType);
         if (dot != null) updateColorDot(dot, OverlayState.getKeyPressColor(this, displayType));
     }
 
     private interface ColorCommit {
         void apply(int color);
+    }
+
+    private void showKeyBaseColorDialog(int displayType, View sourceDot) {
+        showRgbColorDialog(
+                R.string.key_base_color_title,
+                OverlayState.getKeyBaseColor(this, displayType),
+                sourceDot,
+                color -> OverlayState.setKeyBaseColor(MainActivity.this, displayType, color));
     }
 
     private void showKeyPressColorDialog(int displayType, View sourceDot) {
@@ -2491,6 +3312,90 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         int opacity = OverlayState.getDisplayOpacity(this, displayType);
         control.seekBar.setProgress(opacity);
         control.label.setText(getString(R.string.display_opacity_format, opacity));
+    }
+
+    private static final class KeyLayerOpacityControl {
+        final TextView backgroundLabel;
+        final SeekBar backgroundSeek;
+        final TextView strokeLabel;
+        final SeekBar strokeSeek;
+        final TextView textLabel;
+        final SeekBar textSeek;
+
+        KeyLayerOpacityControl(TextView backgroundLabel, SeekBar backgroundSeek,
+                               TextView strokeLabel, SeekBar strokeSeek,
+                               TextView textLabel, SeekBar textSeek) {
+            this.backgroundLabel = backgroundLabel;
+            this.backgroundSeek = backgroundSeek;
+            this.strokeLabel = strokeLabel;
+            this.strokeSeek = strokeSeek;
+            this.textLabel = textLabel;
+            this.textSeek = textSeek;
+        }
+    }
+
+    private void addKeyLayerOpacityControls(LinearLayout parent, int displayType) {
+        TextView backgroundLabel = createLabel();
+        SeekBar backgroundSeek = createOpacitySeekBar();
+        TextView strokeLabel = createLabel();
+        SeekBar strokeSeek = createOpacitySeekBar();
+        TextView textLabel = createLabel();
+        SeekBar textSeek = createOpacitySeekBar();
+
+        parent.addView(backgroundLabel, supportingParams(dp(2)));
+        parent.addView(backgroundSeek, seekBarLayoutParams(dp(3)));
+        parent.addView(strokeLabel, supportingParams(dp(2)));
+        parent.addView(strokeSeek, seekBarLayoutParams(dp(3)));
+        parent.addView(textLabel, supportingParams(dp(2)));
+        parent.addView(textSeek, seekBarLayoutParams(dp(4)));
+
+        keyLayerOpacityControls.put(displayType, new KeyLayerOpacityControl(
+                backgroundLabel, backgroundSeek, strokeLabel, strokeSeek, textLabel, textSeek));
+
+        bindKeyLayerOpacity(backgroundSeek, backgroundLabel, displayType, 0);
+        bindKeyLayerOpacity(strokeSeek, strokeLabel, displayType, 1);
+        bindKeyLayerOpacity(textSeek, textLabel, displayType, 2);
+    }
+
+    private SeekBar createOpacitySeekBar() {
+        SeekBar seekBar = new SeekBar(this);
+        seekBar.setMax(OPACITY_MAX);
+        seekBar.setPadding(0, 0, 0, 0);
+        styleSeekBar(seekBar);
+        return seekBar;
+    }
+
+    private void bindKeyLayerOpacity(SeekBar seek, TextView label, int displayType, int layer) {
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                int format = layer == 0 ? R.string.key_background_opacity_format
+                        : layer == 1 ? R.string.key_stroke_opacity_format
+                        : R.string.key_text_opacity_format;
+                label.setText(getString(format, progress));
+                if (!fromUser || internalChange) return;
+                if (layer == 0) OverlayState.setKeyBackgroundOpacity(MainActivity.this, displayType, progress);
+                else if (layer == 1) OverlayState.setKeyStrokeOpacity(MainActivity.this, displayType, progress);
+                else OverlayState.setKeyTextOpacity(MainActivity.this, displayType, progress);
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+    }
+
+    private void syncKeyLayerOpacityUi(int displayType) {
+        KeyLayerOpacityControl control = keyLayerOpacityControls.get(displayType);
+        if (control == null) return;
+        int background = OverlayState.getKeyBackgroundOpacity(this, displayType);
+        int stroke = OverlayState.getKeyStrokeOpacity(this, displayType);
+        int text = OverlayState.getKeyTextOpacity(this, displayType);
+        control.backgroundSeek.setProgress(background);
+        control.strokeSeek.setProgress(stroke);
+        control.textSeek.setProgress(text);
+        control.backgroundLabel.setText(getString(R.string.key_background_opacity_format, background));
+        control.strokeLabel.setText(getString(R.string.key_stroke_opacity_format, stroke));
+        control.textLabel.setText(getString(R.string.key_text_opacity_format, text));
     }
 
     private TextView createTitle() {
@@ -2905,6 +3810,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
      */
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
+        captureBindableMousePress(event);
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             pageSwipeDownX = event.getRawX();
@@ -3196,6 +4102,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         splitter.setString(enabled);
         for (String service : splitter) {
             if (expected.equalsIgnoreCase(service)) return true;
+            // Some ROMs persist the class as package/.ShortClass while ComponentName#flattenToString
+            // returns the expanded form. Normalize both before deciding the service is disabled.
+            ComponentName parsed = ComponentName.unflattenFromString(service);
+            if (parsed != null && component.equals(parsed)) return true;
         }
         return false;
     }

@@ -27,6 +27,10 @@ constexpr int kScanIntervalMs = 900;
 constexpr uint16_t kFlydigiVendor = 0x37d7;
 constexpr uint16_t kVader5ProProduct = 0x2401;
 constexpr uint32_t kBackButtonMask = (1u << 15) | (1u << 16) | (1u << 17) | (1u << 18);
+constexpr uint32_t kDpadUp = 1u << 20;
+constexpr uint32_t kDpadDown = 1u << 21;
+constexpr uint32_t kDpadLeft = 1u << 22;
+constexpr uint32_t kDpadRight = 1u << 23;
 constexpr const char* kVirtualPrefix = "Axon Input Virtual";
 volatile sig_atomic_t gStop = 0;
 
@@ -70,7 +74,8 @@ int gamepadDeviceScore(int fd) {
         BTN_TOP2, BTN_PINKIE, BTN_BASE, BTN_BASE2, BTN_BASE3, BTN_BASE4, BTN_BASE5, BTN_BASE6,
         BTN_TRIGGER_HAPPY1, BTN_TRIGGER_HAPPY2, BTN_TRIGGER_HAPPY3, BTN_TRIGGER_HAPPY4,
         BTN_TRIGGER_HAPPY5, BTN_TRIGGER_HAPPY6, BTN_TRIGGER_HAPPY7, BTN_TRIGGER_HAPPY8,
-        BTN_TRIGGER_HAPPY9, BTN_TRIGGER_HAPPY10, BTN_TRIGGER_HAPPY11, BTN_TRIGGER_HAPPY12, BTN_TRIGGER_HAPPY13
+        BTN_TRIGGER_HAPPY9, BTN_TRIGGER_HAPPY10, BTN_TRIGGER_HAPPY11, BTN_TRIGGER_HAPPY12, BTN_TRIGGER_HAPPY13,
+        BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT
     };
     for (int code : gamepadKeys) if (bitTest(keyBits, code)) ++buttonCount;
 
@@ -206,6 +211,10 @@ int buttonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
         case BTN_TRIGGER_HAPPY6: return 16;
         case BTN_TRIGGER_HAPPY7: return 17;
         case BTN_TRIGGER_HAPPY8: return 18;
+        case BTN_DPAD_UP: return 20;
+        case BTN_DPAD_DOWN: return 21;
+        case BTN_DPAD_LEFT: return 22;
+        case BTN_DPAD_RIGHT: return 23;
         default: return -1;
     }
 }
@@ -625,6 +634,14 @@ bool process(Device* d, const input_event& ev) {
         } else if (ev.code == d->triggerRCode) {
             d->analogRt = mapTrigger1000(d->triggerR, ev.value, d->triggerRRestAtMax);
             d->state.rt = d->digitalRt ? 1000 : d->analogRt;
+        } else if (ev.code == ABS_HAT0X) {
+            d->state.buttons &= ~(kDpadLeft | kDpadRight);
+            if (ev.value < 0) d->state.buttons |= kDpadLeft;
+            else if (ev.value > 0) d->state.buttons |= kDpadRight;
+        } else if (ev.code == ABS_HAT0Y) {
+            d->state.buttons &= ~(kDpadUp | kDpadDown);
+            if (ev.value < 0) d->state.buttons |= kDpadUp;
+            else if (ev.value > 0) d->state.buttons |= kDpadDown;
         }
         return true;
     }

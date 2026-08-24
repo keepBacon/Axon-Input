@@ -21,6 +21,10 @@ public final class GamepadButtons {
             case KeyEvent.KEYCODE_BUTTON_SELECT -> GamepadOverlayView.BTN_SELECT;
             case KeyEvent.KEYCODE_BUTTON_START -> GamepadOverlayView.BTN_START;
             case KeyEvent.KEYCODE_BUTTON_MODE -> GamepadOverlayView.BTN_MODE;
+            case KeyEvent.KEYCODE_DPAD_UP -> GamepadOverlayView.BTN_DPAD_UP;
+            case KeyEvent.KEYCODE_DPAD_DOWN -> GamepadOverlayView.BTN_DPAD_DOWN;
+            case KeyEvent.KEYCODE_DPAD_LEFT -> GamepadOverlayView.BTN_DPAD_LEFT;
+            case KeyEvent.KEYCODE_DPAD_RIGHT -> GamepadOverlayView.BTN_DPAD_RIGHT;
             // 部分蓝牙手柄只上报通用 BUTTON_1..16。
             case KeyEvent.KEYCODE_BUTTON_1 -> GamepadOverlayView.BTN_SOUTH;
             case KeyEvent.KEYCODE_BUTTON_2 -> GamepadOverlayView.BTN_EAST;
@@ -65,6 +69,10 @@ public final class GamepadButtons {
             case 316 -> GamepadOverlayView.BTN_MODE;   // BTN_MODE
             case 317 -> GamepadOverlayView.BTN_L3;    // BTN_THUMBL
             case 318 -> GamepadOverlayView.BTN_R3;    // BTN_THUMBR
+            case 0x220 -> GamepadOverlayView.BTN_DPAD_UP;
+            case 0x221 -> GamepadOverlayView.BTN_DPAD_DOWN;
+            case 0x222 -> GamepadOverlayView.BTN_DPAD_LEFT;
+            case 0x223 -> GamepadOverlayView.BTN_DPAD_RIGHT;
             case 296, 704 -> GamepadOverlayView.BTN_BACK_1; // BTN_BASE3 / TRIGGER_HAPPY1
             case 297, 705 -> GamepadOverlayView.BTN_BACK_2; // BTN_BASE4 / TRIGGER_HAPPY2
             case 298, 706 -> GamepadOverlayView.BTN_BACK_3; // BTN_BASE5 / TRIGGER_HAPPY3
@@ -102,7 +110,11 @@ public final class GamepadButtons {
                 || bit == GamepadOverlayView.BTN_BACK_1
                 || bit == GamepadOverlayView.BTN_BACK_2
                 || bit == GamepadOverlayView.BTN_BACK_3
-                || bit == GamepadOverlayView.BTN_BACK_4;
+                || bit == GamepadOverlayView.BTN_BACK_4
+                || bit == GamepadOverlayView.BTN_DPAD_UP
+                || bit == GamepadOverlayView.BTN_DPAD_DOWN
+                || bit == GamepadOverlayView.BTN_DPAD_LEFT
+                || bit == GamepadOverlayView.BTN_DPAD_RIGHT;
     }
 
     private static int resolveAndroidEventBit(KeyEvent event) {

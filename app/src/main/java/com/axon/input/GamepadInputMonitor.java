@@ -88,6 +88,9 @@ public final class GamepadInputMonitor {
                 if (current != null) {
                     try { current.close(); } catch (Throwable ignored) {}
                 }
+                // EOF can happen on unplug, permission loss or helper crash without a final zero state.
+                listener.onGamepadState(0, 0, 0, 0, 0, 0, 0);
+                listener.onGamepadProfile(false);
             }
             if (running) sleep(700L);
         }
@@ -97,6 +100,11 @@ public final class GamepadInputMonitor {
         if (line == null) return;
         if (line.startsWith("STATUS gamepad-ready ")) {
             listener.onGamepadProfile(line.contains("vader5-pro"));
+            return;
+        }
+        if (line.startsWith("STATUS gamepad-disconnected") || line.startsWith("STATUS waiting-gamepad")) {
+            listener.onGamepadState(0, 0, 0, 0, 0, 0, 0);
+            listener.onGamepadProfile(false);
             return;
         }
         if (line.startsWith("STATUS vader5-pro-raw-ready")) {

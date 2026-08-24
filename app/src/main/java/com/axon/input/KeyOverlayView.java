@@ -89,8 +89,16 @@ public final class KeyOverlayView extends FrameLayout {
         nativeView.setKeyAppearance(style, color);
     }
 
+    public void setKeyBaseColor(int color) {
+        nativeView.setKeyBaseColor(color);
+    }
+
     public void setCornerStrength(int strength) {
         nativeView.setCornerStrength(strength);
+    }
+
+    public void setLayerOpacities(int backgroundPercent, int strokePercent, int textPercent) {
+        nativeView.setLayerOpacities(backgroundPercent, strokePercent, textPercent);
     }
 
     public void setTextColor(int color) {

@@ -27,6 +27,10 @@
 #endif
 
 namespace {
+constexpr uint32_t kTelemetryDpadUp = 1u << 20;
+constexpr uint32_t kTelemetryDpadDown = 1u << 21;
+constexpr uint32_t kTelemetryDpadLeft = 1u << 22;
+constexpr uint32_t kTelemetryDpadRight = 1u << 23;
 
 constexpr int kMaxEvents = 256;
 constexpr int kMaxGamepads = 8;
@@ -1255,6 +1259,16 @@ void emitGamepadTelemetry(GamepadProxy* p) {
     int lt = static_cast<int>((static_cast<unsigned>(p->report.lt) * 1000U) / 255U);
     int rt = static_cast<int>((static_cast<unsigned>(p->report.rt) * 1000U) / 255U);
     uint32_t telemetryButtons = static_cast<uint32_t>(p->report.buttons) | p->extraTelemetryButtons;
+    int hatX = p->hatX;
+    int hatY = p->hatY;
+    if (p->dpadLeft) hatX = -1;
+    else if (p->dpadRight) hatX = 1;
+    if (p->dpadUp) hatY = -1;
+    else if (p->dpadDown) hatY = 1;
+    if (hatX < 0) telemetryButtons |= kTelemetryDpadLeft;
+    else if (hatX > 0) telemetryButtons |= kTelemetryDpadRight;
+    if (hatY < 0) telemetryButtons |= kTelemetryDpadUp;
+    else if (hatY > 0) telemetryButtons |= kTelemetryDpadDown;
     printf("GAMEPAD %d %d %d %d %d %d %u\n",
            axis1000(p->report.lx), axis1000(p->report.ly),
            axis1000(p->report.rx), axis1000(p->report.ry),

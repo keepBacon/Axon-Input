@@ -221,6 +221,10 @@ public final class BongoCatStyleManager {
         return !info.builtin && MODE_GAMEPAD.equals(info.mode);
     }
 
+    public static boolean isMverStyle(StyleInfo info) {
+        return info != null && !info.builtin && FORMAT_MVER_016.equals(info.format);
+    }
+
     public static StyleInfo importZip(Context context, Uri uri, String displayName) throws Exception {
         File base = baseDir(context);
         if (!base.exists() && !base.mkdirs()) throw new IOException("Cannot create style directory");
@@ -375,8 +379,17 @@ public final class BongoCatStyleManager {
 
     /** 生成通用 WebView runtime 所需配置。 */
     public static JSONObject runtimeConfig(StyleInfo info) throws Exception {
+        return runtimeConfig(info, false);
+    }
+
+    /**
+     * forceSpriteFallback is used only as a recovery path for imported Mver packs when WebGL /
+     * Cubism cannot initialize on a particular Android WebView/GPU. Modern packs have no complete
+     * raster fallback and therefore keep their authored Live2D renderer.
+     */
+    public static JSONObject runtimeConfig(StyleInfo info, boolean forceSpriteFallback) throws Exception {
         if (info == null || info.builtin || info.root == null) throw new IOException("Not an imported style");
-        if (FORMAT_MVER_016.equals(info.format)) return runtimeConfigMver(info);
+        if (FORMAT_MVER_016.equals(info.format)) return runtimeConfigMver(info, forceSpriteFallback);
         return runtimeConfigModern(info);
     }
 
@@ -403,7 +416,7 @@ public final class BongoCatStyleManager {
         return config;
     }
 
-    private static JSONObject runtimeConfigMver(StyleInfo info) throws Exception {
+    private static JSONObject runtimeConfigMver(StyleInfo info, boolean forceSpriteFallback) throws Exception {
         if (!MODE_STANDARD.equals(info.mode)) throw new IOException("Axon 仅支持导入 Mver standard 模式");
         File metaFile = new File(info.root, META_FILE);
         JSONObject meta = new JSONObject(readText(metaFile));
@@ -424,7 +437,7 @@ public final class BongoCatStyleManager {
         if (workarea == null) workarea = new JSONObject();
 
         boolean standardMode = MODE_STANDARD.equals(info.mode);
-        boolean useLive2d = RENDERER_LIVE2D.equals(info.renderer)
+        boolean useLive2d = !forceSpriteFallback && RENDERER_LIVE2D.equals(info.renderer)
                 && info.modelFile != null && !info.modelFile.isEmpty();
         boolean useMouse;
         Object mouseFlag = valueIgnoreCase(modeConfig, "mouse", "is_mouse", "useMouse");

@@ -710,8 +710,11 @@
     }
     return {
       points,
-      deviceX: (a + x) / 2 - 67 - 38 + MVER_MOUSE_OFFSET_X + MVER_HAND_OFFSET_X,
-      deviceY: (b + y) / 2 - 29 - 50 + MVER_MOUSE_OFFSET_Y + MVER_HAND_OFFSET_Y,
+      // Upstream Mver applies decoration.offsetX/offsetY to the mouse/tablet device itself.
+      // hand_offset belongs to hand/arm geometry; adding it here shifts the whole device and can
+      // place the mouse directly over the keyboard on community 0.1.6 packs.
+      deviceX: (a + x) / 2 - 67 - 38 + MVER_MOUSE_OFFSET_X,
+      deviceY: (b + y) / 2 - 29 - 50 + MVER_MOUSE_OFFSET_Y,
     };
   }
 
@@ -1049,14 +1052,9 @@
   function applyMouseDelta(dx, dy, screenWidth, screenHeight) {
     let width = Math.max(1, Number(screenWidth) || DESIGN_WIDTH);
     let height = Math.max(1, Number(screenHeight) || DESIGN_HEIGHT);
-    if (IS_MVER && MVER_WORKAREA_ENABLED) {
-      const left = Number(MVER_WORKAREA_TOP_LEFT[0]);
-      const top = Number(MVER_WORKAREA_TOP_LEFT[1]);
-      const right = Number(MVER_WORKAREA_RIGHT_BOTTOM[0]);
-      const bottom = Number(MVER_WORKAREA_RIGHT_BOTTOM[1]);
-      if (Number.isFinite(left) && Number.isFinite(right) && right > left) width = right - left;
-      if (Number.isFinite(top) && Number.isFinite(bottom) && bottom > top) height = bottom - top;
-    }
+    // Mver workarea stores the Windows desktop capture rectangle. On Android we receive relative
+    // hardware motion (REL_X / REL_Y) and the actual Android display size from Java, so applying a
+    // foreign Windows workarea here makes cursor movement collapse or jump on imported packs.
     const moveX = (Number(dx) || 0) * (IS_MVER ? MVER_MOUSE_SPEED : 1);
     const moveY = (Number(dy) || 0) * (IS_MVER ? MVER_MOUSE_SPEED : 1);
     if (moveX === 0 && moveY === 0) return;

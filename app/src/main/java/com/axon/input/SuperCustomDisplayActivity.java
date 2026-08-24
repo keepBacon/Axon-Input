@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
@@ -13,9 +14,11 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.InputDevice;
@@ -39,6 +42,9 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -47,9 +53,11 @@ import java.util.List;
  * Supports live style editing, CPS templates, free dragging and selection guides.
  */
 public final class SuperCustomDisplayActivity extends Activity {
+    private static volatile SuperCustomDisplayActivity activeBindingActivity;
     private static final int CAPTURE_NONE = 0;
     private static final int CAPTURE_NEW_CONTROL = 1;
     private static final int CAPTURE_REBIND = 2;
+    private static final int SUPER_CONFIG_EXPORT_REQUEST = 7301;
 
     private final List<ControlBinding> controls = new ArrayList<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -59,14 +67,25 @@ public final class SuperCustomDisplayActivity extends Activity {
     private TextView capturePrompt;
     private SelectionGuideView selectionGuide;
     private LinearLayout selectionPanel;
+    private LinearLayout idleActionPanel;
     private TextView selectedKeyValue;
     private TextView selectedXValue;
     private TextView selectedYValue;
     private Dialog controlEditorDialog;
+    private int pendingExportSlot;
 
     private ControlBinding selectedBinding;
     private ControlBinding rebindTarget;
     private int captureMode = CAPTURE_NONE;
+    private int editorMouseButtonsDown;
+    private long editorMouseLastEventTime = -1L;
+    private int editorMouseLastActionButton;
+    private int editorMouseLastAction = -1;
+    private int editorMouseLastUnifiedCode = -1;
+    private boolean editorMouseLastUnifiedPressed;
+    private long editorMouseLastUnifiedAt = -1L;
+    private int editorGamepadKeyButtonsDown;
+    private int editorGamepadMotionButtonsDown;
 
     private final Runnable rebindTimeout = () -> {
         if (captureMode != CAPTURE_REBIND) return;
@@ -96,9 +115,48 @@ public final class SuperCustomDisplayActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        activeBindingActivity = this;
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    @Override
+    protected void onPause() {
+        if (activeBindingActivity == this) activeBindingActivity = null;
+        // Never leave a visual key pressed or an invisible capture prompt after the editor loses focus.
+        finishCapture();
+        editorMouseButtonsDown = 0;
+        editorGamepadKeyButtonsDown = 0;
+        editorGamepadMotionButtonsDown = 0;
+        for (ControlBinding binding : controls) binding.view.onBoundKeyEvent(false);
+        persistActiveWorkspace();
+        // If a loaded super-custom display is currently running, reflect the edited active workspace.
+        AxonInputAccessibilityService.refreshActiveService();
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
-        mainHandler.removeCallbacks(rebindTimeout);
+        if (activeBindingActivity == this) activeBindingActivity = null;
+        mainHandler.removeCallbacksAndMessages(null);
+        persistActiveWorkspace();
         super.onDestroy();
+    }
+
+    static boolean isBindingActivityActive() {
+        SuperCustomDisplayActivity activity = activeBindingActivity;
+        return activity != null && !activity.isFinishing() && !activity.isDestroyed();
+    }
+
+    static void notifyPhysicalMouseButtonForBinding(int button, boolean pressed, long eventTime) {
+        SuperCustomDisplayActivity activity = activeBindingActivity;
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        int inputCode = InputBinding.mouse(button);
+        activity.mainHandler.post(() -> {
+            if (activeBindingActivity != activity || activity.isFinishing() || activity.isDestroyed()) return;
+            activity.dispatchUnifiedMouseBinding(inputCode, pressed, eventTime);
+        });
     }
 
     private void buildCanvas() {
@@ -122,7 +180,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         FrameLayout.LayoutParams addLp = new FrameLayout.LayoutParams(dp(48), dp(48));
         addLp.gravity = Gravity.TOP | Gravity.START;
         addLp.leftMargin = dp(16);
-        addLp.topMargin = dp(16);
+        addLp.topMargin = dp(82);
         canvas.addView(addButton, addLp);
 
         selectionGuide = new SelectionGuideView(this);
@@ -133,6 +191,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         buildSelectionPanel();
+        buildIdleActionPanel();
 
         capturePrompt = new TextView(this);
         capturePrompt.setText(R.string.super_custom_capture_prompt);
@@ -146,6 +205,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         promptLp.gravity = Gravity.CENTER;
         canvas.addView(capturePrompt, promptLp);
+        restoreActiveWorkspace();
     }
 
     private void buildSelectionPanel() {
@@ -170,11 +230,25 @@ public final class SuperCustomDisplayActivity extends Activity {
         selectedYValue = addSelectionInfoRow(infoColumn,
                 getString(R.string.super_custom_selected_y), () -> editSelectedCoordinate(false));
 
+        LinearLayout actionColumn = new LinearLayout(this);
+        actionColumn.setOrientation(LinearLayout.VERTICAL);
+        actionColumn.setGravity(Gravity.CENTER);
+
         Button edit = actionButton(R.string.super_custom_edit);
         edit.setOnClickListener(v -> editSelectedControl());
-        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(92), dp(44));
-        editLp.leftMargin = dp(12);
-        selectionPanel.addView(edit, editLp);
+        Button delete = actionButton(R.string.super_custom_delete_key);
+        delete.setOnClickListener(v -> deleteSelectedControl());
+
+        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(98), dp(36));
+        LinearLayout.LayoutParams deleteLp = new LinearLayout.LayoutParams(dp(98), dp(36));
+        deleteLp.topMargin = dp(4);
+        actionColumn.addView(edit, editLp);
+        actionColumn.addView(delete, deleteLp);
+
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        actionsLp.leftMargin = dp(10);
+        selectionPanel.addView(actionColumn, actionsLp);
 
         FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -183,6 +257,44 @@ public final class SuperCustomDisplayActivity extends Activity {
         panelLp.rightMargin = dp(12);
         panelLp.topMargin = dp(10);
         canvas.addView(selectionPanel, panelLp);
+    }
+
+    private void buildIdleActionPanel() {
+        idleActionPanel = new LinearLayout(this);
+        idleActionPanel.setOrientation(LinearLayout.HORIZONTAL);
+        idleActionPanel.setGravity(Gravity.CENTER_VERTICAL);
+        idleActionPanel.setPadding(dp(10), dp(10), dp(10), dp(10));
+        idleActionPanel.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 14f));
+        idleActionPanel.setClickable(true);
+
+        Button save = actionButton(R.string.super_custom_save_config);
+        Button export = actionButton(R.string.super_custom_export_config);
+        Button exit = actionButton(R.string.super_custom_exit);
+        save.setOnClickListener(v -> showSaveConfigDialog());
+        export.setOnClickListener(v -> showExportConfigDialog());
+        exit.setOnClickListener(v -> {
+            persistActiveWorkspace();
+            finish();
+        });
+
+        LinearLayout.LayoutParams p1 = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        p1.rightMargin = dp(6);
+        LinearLayout.LayoutParams p2 = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        p2.leftMargin = dp(3);
+        p2.rightMargin = dp(3);
+        LinearLayout.LayoutParams p3 = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        p3.leftMargin = dp(6);
+        idleActionPanel.addView(save, p1);
+        idleActionPanel.addView(export, p2);
+        idleActionPanel.addView(exit, p3);
+
+        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        panelLp.gravity = Gravity.TOP;
+        panelLp.leftMargin = dp(12);
+        panelLp.rightMargin = dp(12);
+        panelLp.topMargin = dp(10);
+        canvas.addView(idleActionPanel, panelLp);
     }
 
     private TextView addSelectionInfoRow(LinearLayout root, String label, Runnable action) {
@@ -213,6 +325,89 @@ public final class SuperCustomDisplayActivity extends Activity {
         root.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(26)));
         return value;
+    }
+
+    private void restoreActiveWorkspace() {
+        List<SuperCustomControlSpec> saved = SuperCustomConfigStore.loadActive(this);
+        if (saved.isEmpty()) return;
+        for (SuperCustomControlSpec spec : saved) createControl(spec.copy());
+        canvas.post(this::clearSelection);
+    }
+
+    private List<SuperCustomControlSpec> snapshotControls() {
+        List<SuperCustomControlSpec> out = new ArrayList<>();
+        for (ControlBinding binding : controls) out.add(binding.spec.copy());
+        return out;
+    }
+
+    private void persistActiveWorkspace() {
+        SuperCustomConfigStore.saveActive(this, snapshotControls());
+    }
+
+    private String[] configSlotLabels() {
+        String[] labels = new String[SuperCustomConfigStore.SLOT_COUNT];
+        for (int i = 0; i < labels.length; i++) {
+            int slot = i + 1;
+            boolean saved = SuperCustomConfigStore.hasSlot(this, slot);
+            labels[i] = getString(R.string.super_custom_config_slot_status, slot,
+                    getString(saved ? R.string.super_custom_config_saved : R.string.super_custom_config_empty));
+        }
+        return labels;
+    }
+
+    private void showSaveConfigDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.super_custom_save_config)
+                .setItems(configSlotLabels(), (dialog, which) -> {
+                    int slot = which + 1;
+                    try {
+                        SuperCustomConfigStore.saveSlot(this, slot, snapshotControls());
+                        persistActiveWorkspace();
+                        Toast.makeText(this, getString(R.string.super_custom_save_slot_success, slot), Toast.LENGTH_SHORT).show();
+                    } catch (Throwable error) {
+                        Toast.makeText(this, R.string.super_custom_config_save_failed, Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showExportConfigDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.super_custom_export_config)
+                .setItems(configSlotLabels(), (dialog, which) -> {
+                    int slot = which + 1;
+                    if (!SuperCustomConfigStore.hasSlot(this, slot)) {
+                        Toast.makeText(this, R.string.super_custom_config_slot_empty, Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    pendingExportSlot = slot;
+                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("application/json");
+                    intent.putExtra(Intent.EXTRA_TITLE, "AxonInput_SuperCustom_Config" + slot + ".json");
+                    startActivityForResult(intent, SUPER_CONFIG_EXPORT_REQUEST);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != SUPER_CONFIG_EXPORT_REQUEST || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        int slot = pendingExportSlot;
+        pendingExportSlot = 0;
+        if (slot < 1) return;
+        Uri uri = data.getData();
+        try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+            if (out == null) throw new IOException("Cannot open export target");
+            out.write(SuperCustomConfigStore.exportSlot(this, slot).getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            Toast.makeText(this, getString(R.string.super_custom_export_slot_success, slot), Toast.LENGTH_SHORT).show();
+        } catch (Throwable error) {
+            Toast.makeText(this, R.string.super_custom_config_export_failed, Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void beginKeyCapture() {
@@ -251,44 +446,150 @@ public final class SuperCustomDisplayActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (captureMode != CAPTURE_NONE && isPhysicalKeyboardEvent(event)) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                if (captureMode == CAPTURE_REBIND && rebindTarget != null) {
-                    ControlBinding target = rebindTarget;
-                    target.spec.keyCode = event.getKeyCode();
-                    finishCapture();
-                    if (selectedBinding == target) updateSelectionPanel();
-                } else if (captureMode == CAPTURE_NEW_CONTROL) {
-                    int keyCode = event.getKeyCode();
-                    finishCapture();
-                    showControlEditor(keyCode);
-                }
-            }
-            return true;
-        }
-
-        boolean handled = false;
-        if (isPhysicalKeyboardEvent(event)) {
+        if (event == null) return false;
+        boolean keyboard = InputBinding.isPhysicalKeyboardEvent(event);
+        boolean gamepad = InputBinding.isPhysicalGamepadEvent(event);
+        if (keyboard) {
+            int inputCode = InputBinding.keyboard(event.getKeyCode());
             boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
             boolean up = event.getAction() == KeyEvent.ACTION_UP;
-            if (down || up) {
-                for (ControlBinding binding : controls) {
-                    if (binding.spec.keyCode == event.getKeyCode()) {
-                        if (!down || event.getRepeatCount() == 0) {
-                            binding.view.onBoundKeyEvent(down);
-                        }
-                        handled = true;
-                    }
-                }
+            if (down || up) handleEditorBindingEvent(inputCode, down, down && event.getRepeatCount() == 0);
+        } else if (gamepad) {
+            updateEditorGamepadKeyEvent(event);
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        handleEditorMouseEvent(event);
+        updateEditorGamepadMotionEvent(event);
+        return super.dispatchGenericMotionEvent(event);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        handleEditorMouseEvent(event);
+        return super.dispatchTouchEvent(event);
+    }
+
+    private int editorGamepadButtonsDown() {
+        return editorGamepadKeyButtonsDown | editorGamepadMotionButtonsDown;
+    }
+
+    private void updateEditorGamepadKeyEvent(KeyEvent event) {
+        int inputCode = InputBinding.fromGamepadEvent(event);
+        if (inputCode < 0) return;
+        int bit = InputBinding.payload(inputCode);
+        int before = editorGamepadButtonsDown();
+        if (event.getAction() == KeyEvent.ACTION_DOWN) editorGamepadKeyButtonsDown |= bit;
+        else if (event.getAction() == KeyEvent.ACTION_UP) editorGamepadKeyButtonsDown &= ~bit;
+        dispatchEditorGamepadTransitions(before, editorGamepadButtonsDown());
+    }
+
+    private void updateEditorGamepadMotionEvent(MotionEvent event) {
+        if (!InputBinding.isPhysicalGamepadMotionEvent(event)) return;
+        int before = editorGamepadButtonsDown();
+        editorGamepadMotionButtonsDown = InputBinding.gamepadButtonsFromMotionEvent(event);
+        dispatchEditorGamepadTransitions(before, editorGamepadButtonsDown());
+    }
+
+    private void dispatchEditorGamepadTransitions(int before, int after) {
+        int changed = before ^ after;
+        while (changed != 0) {
+            int bit = Integer.lowestOneBit(changed);
+            changed &= ~bit;
+            boolean pressed = (after & bit) != 0;
+            handleEditorBindingEvent(InputBinding.gamepad(bit), pressed, pressed);
+        }
+    }
+
+    private void handleEditorMouseEvent(MotionEvent event) {
+        if (!InputBinding.isPhysicalMouseEvent(event)) return;
+
+        int currentButtons = event.getButtonState();
+        int changed = currentButtons ^ editorMouseButtonsDown;
+        editorMouseButtonsDown = currentButtons;
+
+        if (changed != 0) {
+            dispatchEditorMouseButtonMask(changed, currentButtons, event.getEventTime());
+            return;
+        }
+
+        int action = event.getActionMasked();
+        if (action != MotionEvent.ACTION_BUTTON_PRESS && action != MotionEvent.ACTION_BUTTON_RELEASE) return;
+        int actionButton = event.getActionButton();
+        if (actionButton == 0) return;
+        if (event.getEventTime() == editorMouseLastEventTime
+                && actionButton == editorMouseLastActionButton
+                && action == editorMouseLastAction) return;
+
+        // Fallback for drivers that do not update buttonState on ACTION_BUTTON_* events.
+        boolean pressed = action == MotionEvent.ACTION_BUTTON_PRESS;
+        int inputCode = InputBinding.mouseFromAndroidButton(actionButton);
+        if (inputCode < 0) return;
+        editorMouseLastEventTime = event.getEventTime();
+        editorMouseLastActionButton = actionButton;
+        editorMouseLastAction = action;
+        dispatchUnifiedMouseBinding(inputCode, pressed, event.getEventTime());
+    }
+
+    private void dispatchEditorMouseButtonMask(int changed, int currentButtons, long eventTime) {
+        final int[] buttons = {
+                MotionEvent.BUTTON_PRIMARY, MotionEvent.BUTTON_SECONDARY,
+                MotionEvent.BUTTON_TERTIARY, MotionEvent.BUTTON_BACK, MotionEvent.BUTTON_FORWARD
+        };
+        for (int button : buttons) {
+            if ((changed & button) == 0) continue;
+            int inputCode = InputBinding.mouseFromAndroidButton(button);
+            if (inputCode < 0) continue;
+            boolean pressed = (currentButtons & button) != 0;
+            editorMouseLastEventTime = eventTime;
+            editorMouseLastActionButton = button;
+            editorMouseLastAction = pressed ? MotionEvent.ACTION_BUTTON_PRESS : MotionEvent.ACTION_BUTTON_RELEASE;
+            dispatchUnifiedMouseBinding(inputCode, pressed, eventTime);
+        }
+    }
+
+    private void dispatchUnifiedMouseBinding(int inputCode, boolean pressed, long eventTime) {
+        if (inputCode < 0) return;
+        long when = eventTime > 0L ? eventTime : SystemClock.uptimeMillis();
+        if (inputCode == editorMouseLastUnifiedCode
+                && pressed == editorMouseLastUnifiedPressed
+                && editorMouseLastUnifiedAt >= 0L
+                && Math.abs(when - editorMouseLastUnifiedAt) <= 80L) return;
+        editorMouseLastUnifiedCode = inputCode;
+        editorMouseLastUnifiedPressed = pressed;
+        editorMouseLastUnifiedAt = when;
+        handleEditorBindingEvent(inputCode, pressed, pressed);
+    }
+
+    private void handleEditorBindingEvent(int inputCode, boolean pressed, boolean firstPress) {
+        if (inputCode < 0) return;
+        if (captureMode != CAPTURE_NONE && firstPress) {
+            if (captureMode == CAPTURE_REBIND && rebindTarget != null) {
+                ControlBinding target = rebindTarget;
+                target.spec.keyCode = inputCode;
+                finishCapture();
+                if (selectedBinding == target) updateSelectionPanel();
+            } else if (captureMode == CAPTURE_NEW_CONTROL) {
+                finishCapture();
+                showControlEditor(inputCode);
             }
         }
-        return handled || super.dispatchKeyEvent(event);
+
+        for (ControlBinding binding : controls) {
+            if (binding.spec.keyCode == inputCode) {
+                if (!pressed || firstPress) binding.view.onBoundKeyEvent(pressed);
+            }
+        }
+        // 录入与触发只旁路监听，不消费原始键盘/鼠标/手柄输入。
     }
 
     private void showControlEditor(int keyCode) {
         boolean dark = OverlayState.getUiTheme(this) == OverlayState.UI_THEME_BLACK;
         SuperCustomControlSpec spec = new SuperCustomControlSpec(
-                keyCode, KeyLabel.fromKeyCode(keyCode), dark);
+                keyCode, InputBinding.label(keyCode), dark);
         showControlEditor(null, spec);
     }
 
@@ -296,6 +597,24 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (selectedBinding == null) return;
         showControlEditor(selectedBinding, selectedBinding.spec.copy());
     }
+
+    private void deleteSelectedControl() {
+        ControlBinding target = selectedBinding;
+        if (target == null) return;
+
+        // Cancel a pending rebind before removing its target so no later input can write into a
+        // detached control. The deletion is immediate by design, matching the editor's direct model.
+        if (rebindTarget == target || captureMode == CAPTURE_REBIND) finishCapture();
+        selectedBinding = null;
+        controls.remove(target);
+        if (canvas != null && target.view.getParent() == canvas) canvas.removeView(target.view);
+        clearSelection();
+        persistActiveWorkspace();
+        // If the dedicated display switch is already on, update the live overlay in place.
+        // This refresh never enables the display by itself.
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
 
     private void showControlEditor(ControlBinding editing, SuperCustomControlSpec spec) {
         Dialog dialog = new Dialog(this);
@@ -405,7 +724,7 @@ public final class SuperCustomDisplayActivity extends Activity {
             spec.textColor = textColor.color;
             spec.cpsEnabled = cpsSwitch.isChecked();
             preview.applySpec(spec);
-            keyInfo.setText(getString(R.string.super_custom_info_key, KeyLabel.fromKeyCode(spec.keyCode)));
+            keyInfo.setText(getString(R.string.super_custom_info_key, InputBinding.label(spec.keyCode)));
             sizeInfo.setText(getString(R.string.super_custom_info_size, spec.widthDp, spec.heightDp));
         };
 
@@ -587,6 +906,7 @@ public final class SuperCustomDisplayActivity extends Activity {
     private void selectControl(ControlBinding binding) {
         selectedBinding = binding;
         if (selectionPanel != null) selectionPanel.setVisibility(View.VISIBLE);
+        if (idleActionPanel != null) idleActionPanel.setVisibility(View.GONE);
         if (addButton != null) addButton.setVisibility(View.GONE);
         if (selectionGuide != null) selectionGuide.setVisibility(View.VISIBLE);
         updateSelectionPanel();
@@ -597,6 +917,7 @@ public final class SuperCustomDisplayActivity extends Activity {
     private void clearSelection() {
         selectedBinding = null;
         if (selectionPanel != null) selectionPanel.setVisibility(View.GONE);
+        if (idleActionPanel != null) idleActionPanel.setVisibility(View.VISIBLE);
         if (selectionGuide != null) {
             selectionGuide.setVisibility(View.GONE);
             selectionGuide.invalidate();
@@ -607,14 +928,15 @@ public final class SuperCustomDisplayActivity extends Activity {
 
     private void bringEditorChromeToFront() {
         if (selectionGuide != null) selectionGuide.bringToFront();
-        if (selectionPanel != null) selectionPanel.bringToFront();
+        if (selectionPanel != null && selectionPanel.getVisibility() == View.VISIBLE) selectionPanel.bringToFront();
+        if (idleActionPanel != null && idleActionPanel.getVisibility() == View.VISIBLE) idleActionPanel.bringToFront();
         if (addButton != null && addButton.getVisibility() == View.VISIBLE) addButton.bringToFront();
         if (capturePrompt != null && capturePrompt.getVisibility() == View.VISIBLE) capturePrompt.bringToFront();
     }
 
     private void updateSelectionPanel() {
         if (selectedBinding == null) return;
-        selectedKeyValue.setText(KeyLabel.fromKeyCode(selectedBinding.spec.keyCode));
+        selectedKeyValue.setText(InputBinding.label(selectedBinding.spec.keyCode));
         selectedXValue.setText(String.valueOf(selectedBinding.spec.centerXPx));
         selectedYValue.setText(String.valueOf(selectedBinding.spec.centerYPx));
     }
@@ -938,12 +1260,6 @@ public final class SuperCustomDisplayActivity extends Activity {
         return lp;
     }
 
-    private boolean isPhysicalKeyboardEvent(KeyEvent event) {
-        InputDevice device = event.getDevice();
-        if (device == null || device.isVirtual()) return false;
-        int sources = event.getSource();
-        return (sources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD;
-    }
 
     private void applySystemBars() {
         Window window = getWindow();
