@@ -13,7 +13,7 @@ import java.io.InputStreamReader;
 public final class GamepadInputMonitor {
     public interface Listener {
         void onGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons);
-        void onGamepadProfile(boolean vader5Pro);
+        void onGamepadProfile(boolean vader5Pro, boolean legacyThumb2AsL1);
     }
 
     private interface PrivilegedProcess extends Closeable {
@@ -54,13 +54,13 @@ public final class GamepadInputMonitor {
         worker = null;
         if (thread != null) thread.interrupt();
         listener.onGamepadState(0, 0, 0, 0, 0, 0, 0);
-        listener.onGamepadProfile(false);
+        listener.onGamepadProfile(false, false);
     }
 
     private void runLoop() {
         while (running) {
-            int mode = OverlayState.getSensitivityMode(context);
-            if (mode == OverlayState.SENSITIVITY_MODE_SHIZUKU
+            int mode = SensitivitySettingsStore.getMode(context);
+            if (mode == SensitivitySettingsStore.MODE_SHIZUKU
                     && (!ShizukuBridge.isReady() || !ShizukuBridge.hasPermission())) {
                 sleep(650L);
                 continue;
@@ -69,7 +69,7 @@ public final class GamepadInputMonitor {
             try {
                 String source = binaryPath();
                 if (source == null) break;
-                String temp = tempBinaryBase + (mode == OverlayState.SENSITIVITY_MODE_ROOT ? "_root" : "_shizuku");
+                String temp = tempBinaryBase + (mode == SensitivitySettingsStore.MODE_ROOT ? "_root" : "_shizuku");
                 String command = "rm -f " + q(temp)
                         + "; cat " + q(source) + " > " + q(temp)
                         + " && chmod 700 " + q(temp)
@@ -82,7 +82,7 @@ public final class GamepadInputMonitor {
                 }
             } catch (Throwable ignored) {
                 // Root 被拒绝后不重复请求 su。Shizuku 模式可稍后重试。
-                if (mode == OverlayState.SENSITIVITY_MODE_ROOT) running = false;
+                if (mode == SensitivitySettingsStore.MODE_ROOT) running = false;
             } finally {
                 if (process == current) process = null;
                 if (current != null) {
@@ -90,7 +90,7 @@ public final class GamepadInputMonitor {
                 }
                 // EOF can happen on unplug, permission loss or helper crash without a final zero state.
                 listener.onGamepadState(0, 0, 0, 0, 0, 0, 0);
-                listener.onGamepadProfile(false);
+                listener.onGamepadProfile(false, false);
             }
             if (running) sleep(700L);
         }
@@ -99,16 +99,16 @@ public final class GamepadInputMonitor {
     private void parseLine(String line) {
         if (line == null) return;
         if (line.startsWith("STATUS gamepad-ready ")) {
-            listener.onGamepadProfile(line.contains("vader5-pro"));
+            listener.onGamepadProfile(line.contains("vader5-pro"), line.contains("dunefox-l1-fix"));
             return;
         }
         if (line.startsWith("STATUS gamepad-disconnected") || line.startsWith("STATUS waiting-gamepad")) {
             listener.onGamepadState(0, 0, 0, 0, 0, 0, 0);
-            listener.onGamepadProfile(false);
+            listener.onGamepadProfile(false, false);
             return;
         }
         if (line.startsWith("STATUS vader5-pro-raw-ready")) {
-            listener.onGamepadProfile(true);
+            listener.onGamepadProfile(true, false);
             return;
         }
         if (!line.startsWith("GAMEPAD ") || !LineInts.parse(line, 8, parsedGamepad)) return;
@@ -118,7 +118,7 @@ public final class GamepadInputMonitor {
     }
 
     private PrivilegedProcess startPrivileged(int mode, String command) throws Exception {
-        if (mode == OverlayState.SENSITIVITY_MODE_ROOT) {
+        if (mode == SensitivitySettingsStore.MODE_ROOT) {
             RootBridge.RootProcess root = RootBridge.startShell(command);
             return new PrivilegedProcess() {
                 @Override public InputStream getInputStream() { return root.getInputStream(); }

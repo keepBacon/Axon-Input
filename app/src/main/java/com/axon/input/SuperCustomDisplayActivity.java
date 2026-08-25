@@ -4,7 +4,9 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.database.Cursor;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
@@ -14,7 +16,9 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
+import android.provider.OpenableColumns;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -42,11 +46,14 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Super-custom key display editor.
@@ -57,13 +64,24 @@ public final class SuperCustomDisplayActivity extends Activity {
     private static final int CAPTURE_NONE = 0;
     private static final int CAPTURE_NEW_CONTROL = 1;
     private static final int CAPTURE_REBIND = 2;
+    private static final int CAPTURE_MEDIA_PAUSE = 3;
+    private static final int CAPTURE_MEDIA_PLAY = 4;
     private static final int SUPER_CONFIG_EXPORT_REQUEST = 7301;
+    private static final int FLOATING_MEDIA_IMPORT_REQUEST = 7302;
 
     private final List<ControlBinding> controls = new ArrayList<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService mediaIoExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "AxonFloatingMediaIO");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private FrameLayout canvas;
     private TextView addButton;
+    private TextView floatingMediaButton;
+    private FloatingMediaPreviewController floatingMediaPreviewController;
+    private String pendingMediaHotkeyId;
     private TextView capturePrompt;
     private SelectionGuideView selectionGuide;
     private LinearLayout selectionPanel;
@@ -95,6 +113,12 @@ public final class SuperCustomDisplayActivity extends Activity {
         Toast.makeText(this, R.string.super_custom_rebind_timeout, Toast.LENGTH_SHORT).show();
     };
 
+    private final Runnable mediaHotkeyTimeout = () -> {
+        if (captureMode != CAPTURE_MEDIA_PAUSE && captureMode != CAPTURE_MEDIA_PLAY) return;
+        finishCapture();
+        Toast.makeText(this, "快捷键录入已取消", Toast.LENGTH_SHORT).show();
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         setTheme(OverlayState.getUiTheme(this) == OverlayState.UI_THEME_BLACK
@@ -111,13 +135,14 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (controlEditorDialog != null && controlEditorDialog.isShowing()) {
             resizeEditorWindow(controlEditorDialog);
         }
-        if (canvas != null) canvas.post(this::clampAllControlsToCanvas);
+        if (canvas != null) canvas.post(this::reapplyAllComponentPositions);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         activeBindingActivity = this;
+        if (floatingMediaPreviewController != null) floatingMediaPreviewController.onHostResume();
         AxonInputAccessibilityService.refreshActiveService();
     }
 
@@ -131,6 +156,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         editorGamepadMotionButtonsDown = 0;
         for (ControlBinding binding : controls) binding.view.onBoundKeyEvent(false);
         persistActiveWorkspace();
+        if (floatingMediaPreviewController != null) floatingMediaPreviewController.onHostPause();
         // If a loaded super-custom display is currently running, reflect the edited active workspace.
         AxonInputAccessibilityService.refreshActiveService();
         super.onPause();
@@ -141,12 +167,20 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (activeBindingActivity == this) activeBindingActivity = null;
         mainHandler.removeCallbacksAndMessages(null);
         persistActiveWorkspace();
+        if (floatingMediaPreviewController != null) floatingMediaPreviewController.releaseAll();
+        mediaIoExecutor.shutdownNow();
         super.onDestroy();
     }
 
     static boolean isBindingActivityActive() {
         SuperCustomDisplayActivity activity = activeBindingActivity;
         return activity != null && !activity.isFinishing() && !activity.isDestroyed();
+    }
+
+    static boolean isInputCaptureActive() {
+        SuperCustomDisplayActivity activity = activeBindingActivity;
+        return activity != null && !activity.isFinishing() && !activity.isDestroyed()
+                && activity.captureMode != CAPTURE_NONE;
     }
 
     static void notifyPhysicalMouseButtonForBinding(int button, boolean pressed, long eventTime) {
@@ -162,6 +196,8 @@ public final class SuperCustomDisplayActivity extends Activity {
     private void buildCanvas() {
         canvas = new FrameLayout(this);
         canvas.setBackgroundColor(UiPalette.background(this));
+        canvas.setClipChildren(false);
+        canvas.setClipToPadding(false);
         canvas.setClickable(true);
         canvas.setOnClickListener(v -> clearSelection());
         setContentView(canvas);
@@ -175,6 +211,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         addButton.setClickable(true);
         addButton.setFocusable(true);
         addButton.setBackground(circleDrawable(UiPalette.surface(this)));
+        addButton.setElevation(0f);
         UiMotion.bindPressFeedback(addButton);
         addButton.setOnClickListener(v -> beginKeyCapture());
         FrameLayout.LayoutParams addLp = new FrameLayout.LayoutParams(dp(48), dp(48));
@@ -182,6 +219,28 @@ public final class SuperCustomDisplayActivity extends Activity {
         addLp.leftMargin = dp(16);
         addLp.topMargin = dp(82);
         canvas.addView(addButton, addLp);
+
+        floatingMediaButton = new TextView(this);
+        floatingMediaButton.setText("图片");
+        floatingMediaButton.setContentDescription(getString(R.string.super_custom_add_floating_media));
+        floatingMediaButton.setTextSize(11f);
+        floatingMediaButton.setGravity(Gravity.CENTER);
+        floatingMediaButton.setTextColor(UiPalette.textPrimary(this));
+        floatingMediaButton.setIncludeFontPadding(false);
+        floatingMediaButton.setClickable(true);
+        floatingMediaButton.setFocusable(true);
+        floatingMediaButton.setBackground(UiChrome.ripple(this, UiPalette.surface(this), 12f));
+        UiMotion.bindPressFeedback(floatingMediaButton);
+        floatingMediaButton.setOnClickListener(v -> openFloatingMediaPicker());
+        floatingMediaButton.setOnLongClickListener(v -> {
+            showFloatingMediaManager();
+            return true;
+        });
+        FrameLayout.LayoutParams mediaButtonLp = new FrameLayout.LayoutParams(dp(48), dp(48));
+        mediaButtonLp.gravity = Gravity.TOP | Gravity.START;
+        mediaButtonLp.leftMargin = dp(16);
+        mediaButtonLp.topMargin = dp(138);
+        canvas.addView(floatingMediaButton, mediaButtonLp);
 
         selectionGuide = new SelectionGuideView(this);
         selectionGuide.setVisibility(View.GONE);
@@ -199,21 +258,46 @@ public final class SuperCustomDisplayActivity extends Activity {
         capturePrompt.setTextColor(UiPalette.textPrimary(this));
         capturePrompt.setGravity(Gravity.CENTER);
         capturePrompt.setPadding(dp(20), dp(12), dp(20), dp(12));
-        capturePrompt.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 14f));
+        capturePrompt.setBackground(UiChrome.surface(this, UiPalette.surface(this), 14f));
         capturePrompt.setVisibility(View.GONE);
         FrameLayout.LayoutParams promptLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         promptLp.gravity = Gravity.CENTER;
         canvas.addView(capturePrompt, promptLp);
+        floatingMediaPreviewController = new FloatingMediaPreviewController(
+                this, canvas, this::showFloatingMediaSettings, this::bringEditorChromeToFront);
         restoreActiveWorkspace();
+        syncFloatingMediaPreviews();
+        installEditorSystemInsets();
+    }
+
+    private void installEditorSystemInsets() {
+        if (canvas == null) return;
+        canvas.setOnApplyWindowInsetsListener((view, insets) -> {
+            int topInset = Math.max(0, insets.getSystemWindowInsetTop());
+            setEditorChromeTop(addButton, topInset + dp(82));
+            setEditorChromeTop(floatingMediaButton, topInset + dp(138));
+            setEditorChromeTop(selectionPanel, topInset + dp(10));
+            setEditorChromeTop(idleActionPanel, topInset + dp(10));
+            return insets;
+        });
+        canvas.requestApplyInsets();
+    }
+
+    private void setEditorChromeTop(View view, int topPx) {
+        if (view == null || !(view.getLayoutParams() instanceof FrameLayout.LayoutParams)) return;
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) view.getLayoutParams();
+        if (lp.topMargin == topPx) return;
+        lp.topMargin = topPx;
+        view.setLayoutParams(lp);
     }
 
     private void buildSelectionPanel() {
         selectionPanel = new LinearLayout(this);
         selectionPanel.setOrientation(LinearLayout.HORIZONTAL);
         selectionPanel.setGravity(Gravity.CENTER_VERTICAL);
-        selectionPanel.setPadding(dp(14), dp(10), dp(10), dp(10));
-        selectionPanel.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 14f));
+        selectionPanel.setPadding(dp(16), dp(12), dp(12), dp(12));
+        selectionPanel.setBackground(UiChrome.surface(this, UiPalette.surface(this), 14f));
         selectionPanel.setVisibility(View.GONE);
         selectionPanel.setClickable(true);
 
@@ -236,11 +320,11 @@ public final class SuperCustomDisplayActivity extends Activity {
 
         Button edit = actionButton(R.string.super_custom_edit);
         edit.setOnClickListener(v -> editSelectedControl());
-        Button delete = actionButton(R.string.super_custom_delete_key);
+        Button delete = secondaryActionButton(R.string.super_custom_delete_key);
         delete.setOnClickListener(v -> deleteSelectedControl());
 
-        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(98), dp(36));
-        LinearLayout.LayoutParams deleteLp = new LinearLayout.LayoutParams(dp(98), dp(36));
+        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(dp(104), dp(44));
+        LinearLayout.LayoutParams deleteLp = new LinearLayout.LayoutParams(dp(104), dp(44));
         deleteLp.topMargin = dp(4);
         actionColumn.addView(edit, editLp);
         actionColumn.addView(delete, deleteLp);
@@ -263,13 +347,13 @@ public final class SuperCustomDisplayActivity extends Activity {
         idleActionPanel = new LinearLayout(this);
         idleActionPanel.setOrientation(LinearLayout.HORIZONTAL);
         idleActionPanel.setGravity(Gravity.CENTER_VERTICAL);
-        idleActionPanel.setPadding(dp(10), dp(10), dp(10), dp(10));
-        idleActionPanel.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 14f));
+        idleActionPanel.setPadding(dp(12), dp(12), dp(12), dp(12));
+        idleActionPanel.setBackground(UiChrome.surface(this, UiPalette.surface(this), 14f));
         idleActionPanel.setClickable(true);
 
         Button save = actionButton(R.string.super_custom_save_config);
-        Button export = actionButton(R.string.super_custom_export_config);
-        Button exit = actionButton(R.string.super_custom_exit);
+        Button export = secondaryActionButton(R.string.super_custom_export_config);
+        Button exit = secondaryActionButton(R.string.super_custom_exit);
         save.setOnClickListener(v -> showSaveConfigDialog());
         export.setOnClickListener(v -> showExportConfigDialog());
         exit.setOnClickListener(v -> {
@@ -304,26 +388,26 @@ public final class SuperCustomDisplayActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setText(label);
-        title.setTextSize(11f);
+        title.setTextSize(12f);
         title.setTextColor(UiPalette.textSecondary(this));
         title.setIncludeFontPadding(false);
         row.addView(title, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(26)));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)));
         title.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView value = new TextView(this);
-        value.setTextSize(11f);
+        value.setTextSize(12f);
         value.setTextColor(UiPalette.accent(this));
         value.setIncludeFontPadding(false);
         value.setGravity(Gravity.CENTER_VERTICAL);
-        value.setPadding(dp(6), 0, dp(8), 0);
+        value.setPadding(dp(8), 0, dp(8), 0);
         value.setClickable(true);
         value.setFocusable(true);
         value.setOnClickListener(v -> action.run());
-        row.addView(value, new LinearLayout.LayoutParams(0, dp(26), 1f));
+        row.addView(value, new LinearLayout.LayoutParams(0, dp(40), 1f));
 
         root.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(26)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         return value;
     }
 
@@ -395,11 +479,16 @@ public final class SuperCustomDisplayActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != SUPER_CONFIG_EXPORT_REQUEST || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        if (requestCode == FLOATING_MEDIA_IMPORT_REQUEST) {
+            showFloatingMediaClipDialog(uri);
+            return;
+        }
+        if (requestCode != SUPER_CONFIG_EXPORT_REQUEST) return;
         int slot = pendingExportSlot;
         pendingExportSlot = 0;
         if (slot < 1) return;
-        Uri uri = data.getData();
         try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
             if (out == null) throw new IOException("Cannot open export target");
             out.write(SuperCustomConfigStore.exportSlot(this, slot).getBytes(StandardCharsets.UTF_8));
@@ -408,6 +497,570 @@ public final class SuperCustomDisplayActivity extends Activity {
         } catch (Throwable error) {
             Toast.makeText(this, R.string.super_custom_config_export_failed, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void openFloatingMediaPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("video/*");
+        try {
+            startActivityForResult(intent, FLOATING_MEDIA_IMPORT_REQUEST);
+        } catch (ActivityNotFoundException error) {
+            Toast.makeText(this, R.string.floating_video_picker_failed, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showFloatingMediaClipDialog(Uri uri) {
+        long durationMs;
+        int videoWidth;
+        int videoHeight;
+        MediaMetadataRetriever metadata = new MediaMetadataRetriever();
+        try {
+            metadata.setDataSource(this, uri);
+            String duration = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            durationMs = duration == null ? 0L : Long.parseLong(duration);
+            String width = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+            String height = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+            videoWidth = width == null ? 16 : Integer.parseInt(width);
+            videoHeight = height == null ? 9 : Integer.parseInt(height);
+            String rotationValue = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+            int rotation = rotationValue == null ? 0 : Integer.parseInt(rotationValue);
+            rotation = ((rotation % 360) + 360) % 360;
+            if (rotation == 90 || rotation == 270) {
+                int swap = videoWidth;
+                videoWidth = videoHeight;
+                videoHeight = swap;
+            }
+        } catch (Throwable error) {
+            Toast.makeText(this, R.string.floating_video_invalid, Toast.LENGTH_SHORT).show();
+            try { metadata.release(); } catch (Throwable ignored) {}
+            return;
+        }
+        try { metadata.release(); } catch (Throwable ignored) {}
+        if (durationMs < 100L) {
+            Toast.makeText(this, R.string.floating_video_invalid, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final long safeDuration = Math.max(100L, durationMs);
+        final int steps = Math.max(1, Math.min(6000, (int) Math.ceil(safeDuration / 100.0)));
+        final long[] selectedStartMs = {0L};
+        final long[] selectedEndMs = {safeDuration};
+        final boolean[] adjusting = {false};
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(18), dp(6), dp(18), dp(6));
+
+        FloatingVideoOverlayView preview = new FloatingVideoOverlayView(this);
+        preview.setVideoDisplaySize(Math.max(1, videoWidth), Math.max(1, videoHeight));
+        preview.setVideoUri(uri, 0L, safeDuration, FloatingVideoOverlayView.PLAYBACK_LOOP);
+        content.addView(preview, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(190)));
+
+        TextView clipLabel = mediaLabel(getString(R.string.floating_video_clip_format,
+                0f, safeDuration / 1000f), true);
+        content.addView(clipLabel, wrapParams(dp(8)));
+
+        TextView startLabel = mediaLabel(getString(R.string.floating_video_clip_start_format, 0f), false);
+        content.addView(startLabel, wrapParams(0));
+        SeekBar startSeek = new SeekBar(this);
+        startSeek.setMax(steps);
+        startSeek.setProgress(0);
+        tintSeekBar(startSeek);
+        content.addView(startSeek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
+
+        TextView endLabel = mediaLabel(getString(R.string.floating_video_clip_end_format,
+                safeDuration / 1000f), false);
+        content.addView(endLabel, wrapParams(0));
+        SeekBar endSeek = new SeekBar(this);
+        endSeek.setMax(steps);
+        endSeek.setProgress(steps);
+        tintSeekBar(endSeek);
+        content.addView(endSeek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
+
+        Runnable syncClip = () -> {
+            long start = selectedStartMs[0];
+            long end = selectedEndMs[0];
+            preview.setClipRangeMs(start, end);
+            clipLabel.setText(getString(R.string.floating_video_clip_format,
+                    start / 1000f, end / 1000f));
+            startLabel.setText(getString(R.string.floating_video_clip_start_format, start / 1000f));
+            endLabel.setText(getString(R.string.floating_video_clip_end_format, end / 1000f));
+        };
+
+        startSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (adjusting[0]) return;
+                long value = Math.round((progress / (double) steps) * safeDuration);
+                if (value >= selectedEndMs[0] - 100L) {
+                    value = Math.max(0L, selectedEndMs[0] - 100L);
+                    int corrected = (int) Math.round((value / (double) safeDuration) * steps);
+                    adjusting[0] = true;
+                    startSeek.setProgress(Math.max(0, Math.min(steps, corrected)));
+                    adjusting[0] = false;
+                }
+                selectedStartMs[0] = value;
+                syncClip.run();
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        endSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (adjusting[0]) return;
+                long value = Math.round((progress / (double) steps) * safeDuration);
+                if (value <= selectedStartMs[0] + 100L) {
+                    value = Math.min(safeDuration, selectedStartMs[0] + 100L);
+                    int corrected = (int) Math.round((value / (double) safeDuration) * steps);
+                    adjusting[0] = true;
+                    endSeek.setProgress(Math.max(0, Math.min(steps, corrected)));
+                    adjusting[0] = false;
+                }
+                selectedEndMs[0] = value;
+                syncClip.run();
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+
+        final int sourceWidth = Math.max(1, videoWidth);
+        final int sourceHeight = Math.max(1, videoHeight);
+        final String displayName = queryDisplayName(uri, "floating-video");
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.floating_video_import_title)
+                .setView(content)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton("下一步", (d, which) -> showFloatingMediaChromaDialogForNew(
+                        uri, displayName, safeDuration, selectedStartMs[0], selectedEndMs[0],
+                        sourceWidth, sourceHeight))
+                .create();
+        dialog.setOnDismissListener(d -> preview.release());
+        dialog.show();
+    }
+
+    private void showFloatingMediaChromaDialogForNew(Uri uri, String displayName, long sourceDuration,
+                                                       long clipStart, long clipEnd,
+                                                       int sourceWidth, int sourceHeight) {
+        showFloatingMediaChromaDialog(null, uri, displayName, sourceDuration, clipStart, clipEnd,
+                sourceWidth, sourceHeight);
+    }
+
+    private void showFloatingMediaChromaDialogForItem(FloatingMediaStore.Item item) {
+        if (item == null) return;
+        File file = FloatingMediaStore.fileFor(this, item.id);
+        if (!file.isFile()) return;
+        showFloatingMediaChromaDialog(item, null, item.name, item.sourceDurationMs,
+                item.clipStartMs, item.clipEndMs, item.sourceWidth, item.sourceHeight);
+    }
+
+    private void showFloatingMediaChromaDialog(FloatingMediaStore.Item existing, Uri newUri,
+                                                String displayName, long sourceDuration,
+                                                long clipStart, long clipEnd,
+                                                int sourceWidth, int sourceHeight) {
+        final boolean[] enabled = {existing != null && existing.chromaEnabled};
+        final int[] selectedColor = {existing == null ? 0xff00ff00 : existing.chromaColor};
+        final int[] strength = {existing == null ? 36 : existing.chromaStrength};
+        final boolean[] sampled = {existing != null && existing.chromaSampled};
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(18), dp(6), dp(18), dp(8));
+
+        FloatingVideoOverlayView preview = new FloatingVideoOverlayView(this);
+        preview.setVideoDisplaySize(sourceWidth, sourceHeight);
+        if (existing == null) {
+            preview.setVideoUri(newUri, clipStart, clipEnd, FloatingVideoOverlayView.PLAYBACK_LOOP);
+        } else {
+            preview.setVideoFile(FloatingMediaStore.fileFor(this, existing.id), clipStart, clipEnd,
+                    FloatingVideoOverlayView.PLAYBACK_LOOP);
+        }
+        preview.setChromaKey(enabled[0] && sampled[0], selectedColor[0], strength[0]);
+        content.addView(preview, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(220)));
+
+        TextView hint = mediaLabel(getString(R.string.floating_media_chroma_hint), false);
+        content.addView(hint, wrapParams(dp(7)));
+
+        Switch enableSwitch = themedSwitch(R.string.floating_media_chroma_enable);
+        enableSwitch.setChecked(enabled[0]);
+        content.addView(enableSwitch, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        TextView colorStatus = mediaLabel(sampled[0]
+                ? getString(R.string.floating_media_chroma_color, selectedColor[0] & 0x00ffffff)
+                : getString(R.string.floating_media_chroma_none), true);
+        colorStatus.setGravity(Gravity.CENTER);
+        colorStatus.setPadding(dp(8), dp(10), dp(8), dp(10));
+        colorStatus.setBackground(UiPalette.rounded(this,
+                sampled[0] ? selectedColor[0] : UiPalette.debugSurface(this), 10f));
+        if (sampled[0]) {
+            double luma = 0.299 * Color.red(selectedColor[0]) + 0.587 * Color.green(selectedColor[0])
+                    + 0.114 * Color.blue(selectedColor[0]);
+            colorStatus.setTextColor(luma > 150 ? Color.BLACK : Color.WHITE);
+        }
+        content.addView(colorStatus, wrapParams(dp(8)));
+
+        TextView strengthLabel = mediaLabel(getString(R.string.floating_media_chroma_strength,
+                strength[0]), false);
+        content.addView(strengthLabel, wrapParams(0));
+        SeekBar strengthSeek = new SeekBar(this);
+        strengthSeek.setMax(FloatingMediaStore.CHROMA_STRENGTH_MAX);
+        strengthSeek.setProgress(strength[0]);
+        strengthSeek.setEnabled(enabled[0]);
+        strengthSeek.setAlpha(enabled[0] ? 1f : UiChrome.DISABLED_ALPHA);
+        tintSeekBar(strengthSeek);
+        content.addView(strengthSeek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+
+        preview.setColorPickListener(color -> {
+            sampled[0] = true;
+            selectedColor[0] = color;
+            if (!enableSwitch.isChecked()) enableSwitch.setChecked(true);
+            colorStatus.setText(getString(R.string.floating_media_chroma_color, color & 0x00ffffff));
+            colorStatus.setBackground(UiPalette.rounded(this, color, 10f));
+            double luma = 0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color);
+            colorStatus.setTextColor(luma > 150 ? Color.BLACK : Color.WHITE);
+            preview.setChromaKey(true, selectedColor[0], strength[0]);
+        });
+        enableSwitch.setOnCheckedChangeListener((button, checked) -> {
+            enabled[0] = checked;
+            strengthSeek.setEnabled(checked);
+            strengthSeek.setAlpha(checked ? 1f : UiChrome.DISABLED_ALPHA);
+            preview.setChromaKey(checked && sampled[0], selectedColor[0], strength[0]);
+        });
+        strengthSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                strength[0] = progress;
+                strengthLabel.setText(getString(R.string.floating_media_chroma_strength, progress));
+                preview.setChromaKey(enabled[0] && sampled[0], selectedColor[0], strength[0]);
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.floating_media_chroma_title)
+                .setView(content)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.floating_media_apply, (d, which) -> {
+                    final boolean finalSampled = sampled[0];
+                    final boolean finalEnabled = enabled[0] && finalSampled;
+                    final int finalColor = selectedColor[0];
+                    final int finalStrength = strength[0];
+                    if (existing == null) {
+                        Context appContext = getApplicationContext();
+                        Toast.makeText(this, R.string.floating_media_importing, Toast.LENGTH_SHORT).show();
+                        mediaIoExecutor.execute(() -> {
+                            try {
+                                FloatingMediaStore.add(appContext, newUri, displayName, sourceDuration,
+                                        clipStart, clipEnd, sourceWidth, sourceHeight,
+                                        finalEnabled, finalSampled, finalColor, finalStrength);
+                                mainHandler.post(() -> {
+                                    if (isFinishing() || isDestroyed()) return;
+                                    syncFloatingMediaPreviews();
+                                    Toast.makeText(this, R.string.floating_video_import_success, Toast.LENGTH_SHORT).show();
+                                });
+                            } catch (Throwable error) {
+                                mainHandler.post(() -> {
+                                    if (!isFinishing() && !isDestroyed()) {
+                                        Toast.makeText(this, R.string.floating_video_import_failed, Toast.LENGTH_SHORT).show();
+                                    }
+                                });
+                            }
+                        });
+                    } else {
+                        FloatingMediaStore.Item updated = FloatingMediaStore.get(this, existing.id);
+                        if (updated == null) return;
+                        updated.chromaEnabled = finalEnabled;
+                        updated.chromaSampled = finalSampled;
+                        updated.chromaColor = finalColor;
+                        updated.chromaStrength = finalStrength;
+                        FloatingMediaStore.update(this, updated, true);
+                        syncFloatingMediaPreviews();
+                    }
+                })
+                .create();
+        dialog.setOnDismissListener(d -> preview.release());
+        dialog.show();
+    }
+
+    private void showFloatingMediaSettings(String mediaId) {
+        FloatingMediaStore.Item item = FloatingMediaStore.get(this, mediaId);
+        if (item == null) return;
+        final FloatingMediaStore.Item working = item.copy();
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(18), dp(6), dp(18), dp(8));
+
+        Switch visible = themedSwitch(R.string.floating_media_visible);
+        visible.setChecked(working.enabled);
+        content.addView(visible, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        SeekControl size = addSeekControl(content, R.string.floating_media_size_label,
+                50, 300, working.sizePercent, "%");
+        SeekControl opacity = addSeekControl(content, R.string.floating_media_opacity_label,
+                0, 100, working.opacityPercent, "%");
+
+        Switch sound = themedSwitch(R.string.floating_media_sound);
+        sound.setChecked(working.soundEnabled);
+        content.addView(sound, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        Button chromaEdit = secondaryActionButton(R.string.floating_media_chroma_edit);
+        content.addView(chromaEdit, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+
+        Spinner playback = choiceSpinner(new String[]{
+                getString(R.string.floating_video_playback_loop),
+                getString(R.string.floating_video_playback_once)
+        });
+        playback.setSelection(working.playbackMode == FloatingVideoOverlayView.PLAYBACK_ONCE ? 1 : 0, false);
+        content.addView(labeledChoice(R.string.floating_video_playback_mode_label, playback), wrapParams(dp(6)));
+
+        Button pauseHotkey = secondaryActionButton(R.string.floating_video_pause_hotkey_unbound);
+        pauseHotkey.setText(working.pauseHotkey >= 0
+                ? getString(R.string.floating_video_pause_hotkey_bound, InputBinding.label(working.pauseHotkey))
+                : getString(R.string.floating_video_pause_hotkey_unbound));
+        content.addView(pauseHotkey, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+
+        Button playHotkey = secondaryActionButton(R.string.floating_video_play_hotkey_unbound);
+        playHotkey.setText(working.playHotkey >= 0
+                ? getString(R.string.floating_video_play_hotkey_bound, InputBinding.label(working.playHotkey))
+                : getString(R.string.floating_video_play_hotkey_unbound));
+        LinearLayout.LayoutParams playHotkeyLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        playHotkeyLp.topMargin = dp(4);
+        content.addView(playHotkey, playHotkeyLp);
+
+        Button resetPosition = secondaryActionButton(R.string.floating_media_reset_position);
+        LinearLayout.LayoutParams resetLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        resetLp.topMargin = dp(6);
+        content.addView(resetPosition, resetLp);
+
+        Button remove = secondaryActionButton(R.string.floating_media_remove);
+        LinearLayout.LayoutParams removeLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        removeLp.topMargin = dp(4);
+        content.addView(remove, removeLp);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(working.name == null || working.name.isEmpty()
+                        ? getString(R.string.floating_media_settings_title) : working.name)
+                .setView(content)
+                .setPositiveButton(android.R.string.ok, null)
+                .create();
+
+        visible.setOnCheckedChangeListener((button, checked) -> {
+            if (working.enabled == checked) return;
+            working.enabled = checked;
+            FloatingMediaStore.update(this, working, false);
+            floatingMediaPreviewController.rememberItem(working);
+            syncFloatingMediaPreviews();
+            AxonInputAccessibilityService.refreshActiveService();
+        });
+
+        size.seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                size.value.setText(progress + size.suffix);
+                if (!fromUser) return;
+                working.sizePercent = progress;
+                floatingMediaPreviewController.applyLayout(mediaId, working);
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                if (FloatingMediaStore.update(SuperCustomDisplayActivity.this, working, true)) {
+                    floatingMediaPreviewController.rememberItem(working);
+                }
+            }
+        });
+
+        opacity.seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                opacity.value.setText(progress + opacity.suffix);
+                if (!fromUser) return;
+                working.opacityPercent = progress;
+                FloatingVideoOverlayView preview = floatingMediaPreviewController.getPreview(mediaId);
+                if (preview != null) preview.setVideoOpacity(progress / 100f);
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                if (FloatingMediaStore.update(SuperCustomDisplayActivity.this, working, true)) {
+                    floatingMediaPreviewController.rememberItem(working);
+                }
+            }
+        });
+
+        sound.setOnCheckedChangeListener((button, checked) -> {
+            if (working.soundEnabled == checked) return;
+            working.soundEnabled = checked;
+            FloatingMediaStore.update(this, working, true);
+            floatingMediaPreviewController.rememberItem(working);
+            FloatingVideoOverlayView preview = floatingMediaPreviewController.getPreview(mediaId);
+            if (preview != null) preview.setSoundEnabled(checked);
+        });
+        chromaEdit.setOnClickListener(v -> {
+            dialog.dismiss();
+            showFloatingMediaChromaDialogForItem(FloatingMediaStore.get(this, mediaId));
+        });
+        playback.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                int mode = position == 1 ? FloatingVideoOverlayView.PLAYBACK_ONCE : FloatingVideoOverlayView.PLAYBACK_LOOP;
+                if (working.playbackMode == mode) return;
+                working.playbackMode = mode;
+                FloatingMediaStore.update(SuperCustomDisplayActivity.this, working, true);
+                floatingMediaPreviewController.rememberItem(working);
+                FloatingVideoOverlayView preview = floatingMediaPreviewController.getPreview(mediaId);
+                if (preview != null) preview.setPlaybackMode(mode);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        pauseHotkey.setOnClickListener(v -> {
+            dialog.dismiss();
+            beginFloatingMediaHotkeyCapture(mediaId, true);
+        });
+        pauseHotkey.setOnLongClickListener(v -> {
+            working.pauseHotkey = -1;
+            FloatingMediaStore.update(this, working, false);
+            floatingMediaPreviewController.rememberItem(working);
+            AxonInputAccessibilityService.refreshActiveService();
+            pauseHotkey.setText(R.string.floating_video_pause_hotkey_unbound);
+            return true;
+        });
+        playHotkey.setOnClickListener(v -> {
+            dialog.dismiss();
+            beginFloatingMediaHotkeyCapture(mediaId, false);
+        });
+        playHotkey.setOnLongClickListener(v -> {
+            working.playHotkey = -1;
+            FloatingMediaStore.update(this, working, false);
+            floatingMediaPreviewController.rememberItem(working);
+            AxonInputAccessibilityService.refreshActiveService();
+            playHotkey.setText(R.string.floating_video_play_hotkey_unbound);
+            return true;
+        });
+        resetPosition.setOnClickListener(v -> {
+            working.xPercent = FloatingMediaStore.DEFAULT_X_PERCENT;
+            working.yPercent = FloatingMediaStore.DEFAULT_Y_PERCENT;
+            FloatingMediaStore.update(this, working, true);
+            floatingMediaPreviewController.rememberItem(working);
+            floatingMediaPreviewController.applyLayout(mediaId, working);
+        });
+        remove.setOnClickListener(v -> {
+            FloatingMediaStore.remove(this, mediaId);
+            floatingMediaPreviewController.release(mediaId);
+            syncFloatingMediaPreviews();
+            AxonInputAccessibilityService.refreshActiveService();
+            dialog.dismiss();
+        });
+        dialog.show();
+    }
+
+    private void showFloatingMediaManager() {
+        List<FloatingMediaStore.Item> items = FloatingMediaStore.list(this);
+        if (items.isEmpty()) {
+            Toast.makeText(this, R.string.floating_media_manager_empty, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(18), dp(8), dp(18), dp(8));
+        scroll.addView(list, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (int i = 0; i < items.size(); i++) {
+            FloatingMediaStore.Item item = items.get(i);
+            Button button = secondaryActionButton(R.string.floating_media_settings_title);
+            String name = item.name == null || item.name.trim().isEmpty()
+                    ? getString(R.string.floating_video_default_name) : item.name.trim();
+            button.setText((i + 1) + ". " + name
+                    + (item.enabled ? "" : " · " + getString(R.string.floating_media_hidden)));
+            final String mediaId = item.id;
+            button.setOnClickListener(v -> {
+                if (holder[0] != null) holder[0].dismiss();
+                showFloatingMediaSettings(mediaId);
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+            if (i > 0) lp.topMargin = dp(5);
+            list.addView(button, lp);
+        }
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.floating_media_manager_title)
+                .setView(scroll)
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+    }
+
+    private TextView mediaLabel(String text, boolean primary) {
+        TextView out = new TextView(this);
+        out.setText(text);
+        out.setTextSize(primary ? 13f : 11.5f);
+        out.setTextColor(primary ? UiPalette.textPrimary(this) : UiPalette.textSecondary(this));
+        out.setIncludeFontPadding(false);
+        return out;
+    }
+
+    private String queryDisplayName(Uri uri, String fallback) {
+        if (uri == null) return fallback;
+        try (Cursor cursor = getContentResolver().query(uri,
+                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) {
+                    String name = cursor.getString(index);
+                    if (name != null && !name.trim().isEmpty()) return name.trim();
+                }
+            }
+        } catch (Throwable ignored) {}
+        return fallback;
+    }
+
+    private void syncFloatingMediaPreviews() {
+        if (floatingMediaPreviewController == null) return;
+        int count = floatingMediaPreviewController.sync();
+        if (floatingMediaButton != null) {
+            floatingMediaButton.setText(count == 0 ? "图片" : "图片 · " + count);
+        }
+    }
+
+    private void applyFloatingMediaPreviewLayouts() {
+        if (floatingMediaPreviewController != null) floatingMediaPreviewController.applyAllLayouts();
+    }
+
+    private void beginFloatingMediaHotkeyCapture(String mediaId, boolean pause) {
+        mainHandler.removeCallbacks(rebindTimeout);
+        mainHandler.removeCallbacks(mediaHotkeyTimeout);
+        pendingMediaHotkeyId = mediaId;
+        captureMode = pause ? CAPTURE_MEDIA_PAUSE : CAPTURE_MEDIA_PLAY;
+        rebindTarget = null;
+        capturePrompt.setText(pause
+                ? R.string.floating_video_pause_hotkey_recording
+                : R.string.floating_video_play_hotkey_recording);
+        showCapturePrompt();
+        mainHandler.postDelayed(mediaHotkeyTimeout, 5000L);
+    }
+
+    private boolean floatingMediaHotkeyConflicts(String mediaId, int inputCode, boolean pause) {
+        FloatingMediaStore.Item current = FloatingMediaStore.get(this, mediaId);
+        if (current == null) return true;
+        int opposite = pause ? current.playHotkey : current.pauseHotkey;
+        if (inputCode == opposite) return true;
+        if (FloatingMediaStore.hotkeyConflicts(this, mediaId, inputCode)) return true;
+        if (OverlayState.isForceHoldEnabled(this)
+                && inputCode == OverlayState.getForceHoldTriggerKeyCode(this)) return true;
+        return inputCode == OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this);
     }
 
     private void beginKeyCapture() {
@@ -439,8 +1092,10 @@ public final class SuperCustomDisplayActivity extends Activity {
 
     private void finishCapture() {
         mainHandler.removeCallbacks(rebindTimeout);
+        mainHandler.removeCallbacks(mediaHotkeyTimeout);
         captureMode = CAPTURE_NONE;
         rebindTarget = null;
+        pendingMediaHotkeyId = null;
         hideCapturePrompt();
     }
 
@@ -575,6 +1230,24 @@ public final class SuperCustomDisplayActivity extends Activity {
             } else if (captureMode == CAPTURE_NEW_CONTROL) {
                 finishCapture();
                 showControlEditor(inputCode);
+            } else if (captureMode == CAPTURE_MEDIA_PAUSE || captureMode == CAPTURE_MEDIA_PLAY) {
+                boolean pause = captureMode == CAPTURE_MEDIA_PAUSE;
+                String mediaId = pendingMediaHotkeyId;
+                if (mediaId == null || floatingMediaHotkeyConflicts(mediaId, inputCode, pause)) {
+                    Toast.makeText(this, R.string.floating_video_hotkey_conflict, Toast.LENGTH_SHORT).show();
+                } else {
+                    FloatingMediaStore.Item item = FloatingMediaStore.get(this, mediaId);
+                    if (item != null) {
+                        if (pause) item.pauseHotkey = inputCode;
+                        else item.playHotkey = inputCode;
+                        FloatingMediaStore.update(this, item, false);
+                        floatingMediaPreviewController.rememberItem(item);
+                        AxonInputAccessibilityService.refreshActiveService();
+                    }
+                    finishCapture();
+                    Toast.makeText(this, pause ? "暂停快捷键已绑定" : "播放快捷键已绑定",
+                            Toast.LENGTH_SHORT).show();
+                }
             }
         }
 
@@ -623,38 +1296,59 @@ public final class SuperCustomDisplayActivity extends Activity {
 
         LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.VERTICAL);
-        shell.setPadding(dp(12), dp(12), dp(12), dp(10));
-        shell.setBackground(UiPalette.rounded(this, UiPalette.surface(this), 18f));
+        shell.setPadding(dp(14), dp(14), dp(14), dp(12));
+        shell.setBackground(UiChrome.surface(this, UiPalette.surface(this), 18f));
 
+        boolean compactEditor = getResources().getDisplayMetrics().widthPixels < dp(600)
+                || getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT;
         LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.HORIZONTAL);
+        body.setOrientation(compactEditor ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         body.setGravity(Gravity.TOP);
         shell.addView(body, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         ScrollView leftScroll = new ScrollView(this);
         leftScroll.setFillViewport(true);
+        leftScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
-        left.setPadding(dp(6), dp(2), dp(10), dp(8));
+        left.setPadding(dp(6), dp(4), compactEditor ? dp(6) : dp(12), dp(10));
         leftScroll.addView(left, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        body.addView(leftScroll, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, 0.46f));
+        if (compactEditor) {
+            body.addView(leftScroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.58f));
+        } else {
+            body.addView(leftScroll, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0.46f));
+        }
 
         View divider = new View(this);
         divider.setBackgroundColor(UiPalette.divider(this));
-        body.addView(divider, new LinearLayout.LayoutParams(dp(1),
-                ViewGroup.LayoutParams.MATCH_PARENT));
+        if (compactEditor) {
+            LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
+            dividerLp.topMargin = dp(6);
+            dividerLp.bottomMargin = dp(8);
+            body.addView(divider, dividerLp);
+        } else {
+            body.addView(divider, new LinearLayout.LayoutParams(dp(1),
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+        }
 
         LinearLayout right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
-        right.setPadding(dp(12), dp(2), dp(4), dp(6));
-        body.addView(right, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, 0.54f));
+        right.setPadding(compactEditor ? dp(6) : dp(14), dp(4), dp(4), dp(8));
+        if (compactEditor) {
+            body.addView(right, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.42f));
+        } else {
+            body.addView(right, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0.54f));
+        }
 
         TextView generalLabel = smallSectionLabel(R.string.super_custom_general);
-        generalLabel.setGravity(Gravity.END);
+        generalLabel.setGravity(compactEditor ? Gravity.START : Gravity.END);
         left.addView(generalLabel, wrapParams(dp(4)));
 
         Spinner motionSpinner = choiceSpinner(new String[]{
@@ -665,14 +1359,18 @@ public final class SuperCustomDisplayActivity extends Activity {
         left.addView(labeledChoice(R.string.super_custom_press_motion, motionSpinner), wrapParams(dp(5)));
 
         SeekControl corner = addSeekControl(left, R.string.super_custom_corner, 0, 36, spec.cornerDp, " dp");
-        SeekControl opacity = addSeekControl(left, R.string.super_custom_opacity, 20, 100,
+        SeekControl opacity = addSeekControl(left, R.string.super_custom_opacity, 0, 100,
                 spec.opacityPercent, "%");
+        SeekControl diffusionOpacity = addSeekControl(left, R.string.super_custom_diffusion_opacity, 0, 100,
+                spec.diffusionOpacityPercent, "%");
         SeekControl width = addSeekControl(left, R.string.super_custom_width, 44, 240,
                 spec.widthDp, " dp");
         SeekControl height = addSeekControl(left, R.string.super_custom_length, 32, 160,
                 spec.heightDp, " dp");
 
         ColorRow pressColor = addColorRow(left, R.string.super_custom_press_color, spec.pressColor);
+        int resolvedBorderColor = spec.borderColor != 0 ? spec.borderColor : UiPalette.overlayStroke(this);
+        ColorRow borderColor = addColorRow(left, R.string.super_custom_border_color, resolvedBorderColor);
         ColorRow textColor = addColorRow(left, R.string.super_custom_text_color, spec.textColor);
         SeekControl textSize = addSeekControl(left, R.string.super_custom_text_size, 10, 36,
                 spec.textSizeSp, " sp");
@@ -684,12 +1382,12 @@ public final class SuperCustomDisplayActivity extends Activity {
         Switch cpsSwitch = themedSwitch(R.string.super_custom_cps_switch);
         cpsSwitch.setTextSize(13f);
         left.addView(cpsSwitch, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
         LinearLayout info = new LinearLayout(this);
         info.setOrientation(LinearLayout.VERTICAL);
         info.setPadding(dp(12), dp(10), dp(12), dp(10));
-        info.setBackground(UiPalette.rounded(this, UiPalette.debugSurface(this), 12f));
+        info.setBackground(UiChrome.nestedSurface(this));
         right.addView(info, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -700,7 +1398,7 @@ public final class SuperCustomDisplayActivity extends Activity {
 
         FrameLayout previewArea = new FrameLayout(this);
         previewArea.setPadding(dp(10), dp(10), dp(10), dp(10));
-        previewArea.setBackground(UiPalette.rounded(this, UiPalette.debugSurface(this), 12f));
+        previewArea.setBackground(UiChrome.nestedSurface(this));
         LinearLayout.LayoutParams previewAreaLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
         previewAreaLp.topMargin = dp(10);
@@ -717,10 +1415,12 @@ public final class SuperCustomDisplayActivity extends Activity {
         Runnable refreshPreview = () -> {
             spec.cornerDp = corner.seek.getProgress();
             spec.opacityPercent = opacity.seek.getProgress();
+            spec.diffusionOpacityPercent = diffusionOpacity.seek.getProgress();
             spec.widthDp = width.seek.getProgress();
             spec.heightDp = height.seek.getProgress();
             spec.textSizeSp = textSize.seek.getProgress();
             spec.pressColor = pressColor.color;
+            spec.borderColor = borderColor.color;
             spec.textColor = textColor.color;
             spec.cpsEnabled = cpsSwitch.isChecked();
             preview.applySpec(spec);
@@ -732,6 +1432,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                 : spec.motionMode == OverlayState.MOTION_RIPPLE ? 2
                 : spec.motionMode == OverlayState.MOTION_NONE ? 3 : 0;
         motionSpinner.setSelection(motionSelection, false);
+        setSeekControlEnabled(diffusionOpacity, spec.motionMode == OverlayState.MOTION_RIPPLE);
         cpsSwitch.setChecked(spec.cpsEnabled);
         motionSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
@@ -739,6 +1440,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                         : position == 2 ? OverlayState.MOTION_RIPPLE
                         : position == 3 ? OverlayState.MOTION_NONE
                         : OverlayState.MOTION_SIZE;
+                setSeekControlEnabled(diffusionOpacity, spec.motionMode == OverlayState.MOTION_RIPPLE);
                 preview.applySpec(spec);
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {}
@@ -746,6 +1448,7 @@ public final class SuperCustomDisplayActivity extends Activity {
 
         bindSeekRefresh(corner, refreshPreview);
         bindSeekRefresh(opacity, refreshPreview);
+        bindSeekRefresh(diffusionOpacity, refreshPreview);
         bindSeekRefresh(width, refreshPreview);
         bindSeekRefresh(height, refreshPreview);
         bindSeekRefresh(textSize, refreshPreview);
@@ -758,6 +1461,13 @@ public final class SuperCustomDisplayActivity extends Activity {
             spec.pressColor = color;
             pressColor.color = color;
             pressColor.dot.setBackground(circleDrawable(color));
+            refreshPreview.run();
+        }));
+        borderColor.row.setOnClickListener(v -> showColorEditor(
+                spec.borderColor != 0 ? spec.borderColor : UiPalette.overlayStroke(this), color -> {
+            spec.borderColor = color;
+            borderColor.color = color;
+            borderColor.dot.setBackground(circleDrawable(color));
             refreshPreview.run();
         }));
         textColor.row.setOnClickListener(v -> showColorEditor(spec.textColor, color -> {
@@ -799,6 +1509,8 @@ public final class SuperCustomDisplayActivity extends Activity {
             } else {
                 applyEditedControl(editing, spec.copy());
             }
+            persistActiveWorkspace();
+            AxonInputAccessibilityService.refreshActiveService();
             dialog.dismiss();
         });
 
@@ -833,9 +1545,10 @@ public final class SuperCustomDisplayActivity extends Activity {
         controls.add(binding);
 
         canvas.post(() -> {
-            if (binding.spec.centerXPx < 0 || binding.spec.centerYPx < 0) {
+            if (!binding.spec.positionSet) {
                 binding.spec.centerXPx = canvas.getWidth() / 2;
                 binding.spec.centerYPx = canvas.getHeight() / 2;
+                binding.spec.positionSet = true;
             }
             applyControlPosition(binding);
             selectControl(binding);
@@ -847,6 +1560,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         int centerY = binding.spec.centerYPx;
         edited.centerXPx = centerX;
         edited.centerYPx = centerY;
+        edited.positionSet = binding.spec.positionSet;
         binding.spec = edited;
         binding.view.applySpec(edited);
         applyControlPosition(binding);
@@ -886,6 +1600,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                         if (dragging) {
                             binding.spec.centerXPx = startCenterX + Math.round(dx);
                             binding.spec.centerYPx = startCenterY + Math.round(dy);
+                            binding.spec.positionSet = true;
                             applyControlPosition(binding);
                             updateSelectionPanel();
                             updateSelectionGuides();
@@ -908,6 +1623,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (selectionPanel != null) selectionPanel.setVisibility(View.VISIBLE);
         if (idleActionPanel != null) idleActionPanel.setVisibility(View.GONE);
         if (addButton != null) addButton.setVisibility(View.GONE);
+        if (floatingMediaButton != null) floatingMediaButton.setVisibility(View.GONE);
         if (selectionGuide != null) selectionGuide.setVisibility(View.VISIBLE);
         updateSelectionPanel();
         updateSelectionGuides();
@@ -923,6 +1639,7 @@ public final class SuperCustomDisplayActivity extends Activity {
             selectionGuide.invalidate();
         }
         if (addButton != null) addButton.setVisibility(View.VISIBLE);
+        if (floatingMediaButton != null) floatingMediaButton.setVisibility(View.VISIBLE);
         finishCapture();
     }
 
@@ -931,6 +1648,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (selectionPanel != null && selectionPanel.getVisibility() == View.VISIBLE) selectionPanel.bringToFront();
         if (idleActionPanel != null && idleActionPanel.getVisibility() == View.VISIBLE) idleActionPanel.bringToFront();
         if (addButton != null && addButton.getVisibility() == View.VISIBLE) addButton.bringToFront();
+        if (floatingMediaButton != null && floatingMediaButton.getVisibility() == View.VISIBLE) floatingMediaButton.bringToFront();
         if (capturePrompt != null && capturePrompt.getVisibility() == View.VISIBLE) capturePrompt.bringToFront();
     }
 
@@ -950,10 +1668,10 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (selectedBinding == null) return;
         int initial = xAxis ? selectedBinding.spec.centerXPx : selectedBinding.spec.centerYPx;
         EditText input = new EditText(this);
-        input.setSingleLine(true);
+        UiChrome.styleInput(this, input);
         input.setText(String.valueOf(initial));
         input.setSelection(input.length());
-        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
         input.setTextColor(UiPalette.textPrimary(this));
 
         new AlertDialog.Builder(this)
@@ -965,6 +1683,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                         int value = Integer.parseInt(input.getText().toString().trim());
                         if (xAxis) selectedBinding.spec.centerXPx = value;
                         else selectedBinding.spec.centerYPx = value;
+                        selectedBinding.spec.positionSet = true;
                         applyControlPosition(selectedBinding);
                         updateSelectionPanel();
                         updateSelectionGuides();
@@ -983,9 +1702,8 @@ public final class SuperCustomDisplayActivity extends Activity {
         int halfW = width / 2;
         int halfH = height / 2;
 
-        binding.spec.centerXPx = clamp(binding.spec.centerXPx, halfW, Math.max(halfW, canvas.getWidth() - halfW));
-        binding.spec.centerYPx = clamp(binding.spec.centerYPx, halfH, Math.max(halfH, canvas.getHeight() - halfH));
-
+        // v1.8: super-custom components deliberately allow negative / beyond-display centers.
+        // Do not clamp here: partially off-screen placement is a valid composition choice.
         FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) binding.view.getLayoutParams();
         p.width = width;
         p.height = height;
@@ -995,9 +1713,10 @@ public final class SuperCustomDisplayActivity extends Activity {
         binding.view.setLayoutParams(p);
     }
 
-    private void clampAllControlsToCanvas() {
+    private void reapplyAllComponentPositions() {
         if (canvas == null || canvas.getWidth() <= 0 || canvas.getHeight() <= 0) return;
         for (ControlBinding binding : controls) applyControlPosition(binding);
+        applyFloatingMediaPreviewLayouts();
         updateSelectionPanel();
         updateSelectionGuides();
     }
@@ -1028,7 +1747,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                                        int initial, String suffix) {
         LinearLayout block = new LinearLayout(this);
         block.setOrientation(LinearLayout.VERTICAL);
-        block.setPadding(0, dp(2), 0, dp(2));
+        block.setPadding(0, dp(4), 0, dp(4));
 
         TextView title = new TextView(this);
         title.setTextColor(UiPalette.textSecondary(this));
@@ -1052,13 +1771,18 @@ public final class SuperCustomDisplayActivity extends Activity {
         seek.setMin(min);
         seek.setMax(max);
         seek.setProgress(initial);
-        seek.setMinimumHeight(dp(32));
+        seek.setMinimumHeight(dp(36));
         tintSeekBar(seek);
         block.addView(seek, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(34)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
         value.setText(initial + suffix);
         root.addView(block, wrapParams(dp(1)));
-        return new SeekControl(seek, value, suffix);
+        return new SeekControl(block, title, seek, value, suffix);
+    }
+
+    private void setSeekControlEnabled(SeekControl control, boolean enabled) {
+        control.seek.setEnabled(enabled);
+        control.block.setAlpha(enabled ? 1f : UiChrome.DISABLED_ALPHA);
     }
 
     private void bindSeekRefresh(SeekControl control, Runnable refresh) {
@@ -1076,18 +1800,18 @@ public final class SuperCustomDisplayActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(2), dp(4), dp(2), dp(4));
+        row.setPadding(dp(2), dp(5), dp(2), dp(5));
         row.setClickable(true);
         row.setFocusable(true);
         TextView title = new TextView(this);
         title.setText(titleRes);
         title.setTextColor(UiPalette.textSecondary(this));
         title.setTextSize(12f);
-        row.addView(title, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        row.addView(title, new LinearLayout.LayoutParams(0, dp(44), 1f));
         title.setGravity(Gravity.CENTER_VERTICAL);
         View dot = new View(this);
         dot.setBackground(circleDrawable(color));
-        row.addView(dot, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        row.addView(dot, new LinearLayout.LayoutParams(dp(22), dp(22)));
         UiMotion.bindPressFeedback(row);
         root.addView(row, wrapParams(dp(1)));
         return new ColorRow(row, dot, color);
@@ -1100,7 +1824,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         label.setText(titleRes);
         label.setTextColor(UiPalette.textSecondary(this));
         label.setTextSize(12f);
-        block.addView(label, wrapParams(dp(3)));
+        block.addView(label, wrapParams(dp(5)));
         block.addView(spinner, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         return block;
@@ -1109,45 +1833,62 @@ public final class SuperCustomDisplayActivity extends Activity {
     private Spinner choiceSpinner(String[] items) {
         Spinner spinner = new Spinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
-                android.R.layout.simple_spinner_dropdown_item, items) {
+                android.R.layout.simple_spinner_item, items) {
             @Override public View getView(int position, View convertView, ViewGroup parent) {
-                View view = super.getView(position, convertView, parent);
-                if (view instanceof TextView) {
-                    ((TextView) view).setTextColor(UiPalette.textPrimary(SuperCustomDisplayActivity.this));
-                    ((TextView) view).setTextSize(12f);
-                }
-                return view;
+                return spinnerText(getItem(position), false);
+            }
+
+            @Override public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                return spinnerText(getItem(position), true);
             }
         };
         spinner.setAdapter(adapter);
-        spinner.setBackground(UiPalette.rounded(this, UiPalette.controlSurface(this), 9f));
-        spinner.setPadding(dp(8), 0, dp(8), 0);
+        spinner.setMinimumHeight(dp(44));
+        spinner.setPadding(0, 0, 0, 0);
+        spinner.setBackground(UiChrome.controlRipple(this));
+        spinner.setPopupBackgroundDrawable(UiChrome.popupSurface(this));
+        spinner.setDropDownVerticalOffset(dp(4));
         return spinner;
+    }
+
+    private TextView spinnerText(String value, boolean dropdown) {
+        TextView text = new TextView(this);
+        text.setText(value == null ? "" : value);
+        text.setTextColor(UiPalette.textPrimary(this));
+        text.setTextSize(12.5f);
+        text.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        text.setSingleLine(true);
+        text.setPadding(dp(14), 0, dp(14), 0);
+        text.setMinHeight(dp(dropdown ? 48 : 44));
+        if (!dropdown) {
+            text.setCompoundDrawables(null, null, UiChrome.chevron(this), null);
+            text.setCompoundDrawablePadding(dp(8));
+        }
+        return text;
     }
 
     private Switch themedSwitch(int textRes) {
         Switch sw = new Switch(this);
         sw.setText(textRes);
         sw.setTextColor(UiPalette.textPrimary(this));
-        int[][] states = new int[][]{
-                new int[]{android.R.attr.state_checked}, new int[]{}
-        };
-        sw.setTrackTintList(new ColorStateList(states, new int[]{
-                UiPalette.switchTrackOn(this), UiPalette.switchTrackOff(this)}));
-        sw.setThumbTintList(new ColorStateList(states, new int[]{
-                UiPalette.switchThumbOn(this), UiPalette.switchThumbOff(this)}));
+        sw.setTextSize(14f);
+        sw.setGravity(Gravity.CENTER_VERTICAL);
+        sw.setSingleLine(false);
+        UiChrome.styleSwitch(this, sw);
         return sw;
     }
 
     private Button actionButton(int textRes) {
         Button button = new Button(this);
         button.setText(textRes);
-        button.setAllCaps(false);
-        button.setTextSize(13f);
-        button.setTextColor(OverlayState.getUiTheme(this) == OverlayState.UI_THEME_BLACK
-                ? Color.rgb(20, 20, 22) : Color.WHITE);
-        button.setBackground(UiPalette.rounded(this, UiPalette.accent(this), 10f));
-        UiMotion.bindPressFeedback(button);
+        UiChrome.stylePrimaryButton(this, button);
+        return button;
+    }
+
+    private Button secondaryActionButton(int textRes) {
+        Button button = new Button(this);
+        button.setText(textRes);
+        UiChrome.styleSecondaryButton(this, button);
         return button;
     }
 
@@ -1169,7 +1910,7 @@ public final class SuperCustomDisplayActivity extends Activity {
 
     private void showTextEditor(String title, String initial, TextCallback callback) {
         EditText input = new EditText(this);
-        input.setSingleLine(true);
+        UiChrome.styleInput(this, input);
         input.setText(initial == null ? "" : initial);
         input.setSelection(input.length());
         input.setTextColor(UiPalette.textPrimary(this));
@@ -1241,9 +1982,7 @@ public final class SuperCustomDisplayActivity extends Activity {
     }
 
     private void tintSeekBar(SeekBar seek) {
-        ColorStateList tint = ColorStateList.valueOf(UiPalette.accent(this));
-        seek.setProgressTintList(tint);
-        seek.setThumbTintList(tint);
+        UiChrome.styleSeekBar(this, seek);
     }
 
     private GradientDrawable circleDrawable(int color) {
@@ -1487,10 +2226,14 @@ public final class SuperCustomDisplayActivity extends Activity {
     }
 
     private static final class SeekControl {
+        final LinearLayout block;
+        final TextView title;
         final SeekBar seek;
         final TextView value;
         final String suffix;
-        SeekControl(SeekBar seek, TextView value, String suffix) {
+        SeekControl(LinearLayout block, TextView title, SeekBar seek, TextView value, String suffix) {
+            this.block = block;
+            this.title = title;
             this.seek = seek;
             this.value = value;
             this.suffix = suffix;

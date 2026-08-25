@@ -43,7 +43,7 @@ public final class UiPalette {
     }
 
     public static int divider(Context context) {
-        return dark(context) ? Color.argb(150, 43, 43, 47) : Color.argb(185, 226, 226, 230);
+        return dark(context) ? Color.argb(38, 255, 255, 255) : Color.argb(24, 0, 0, 0);
     }
 
     public static int accent(Context context) {

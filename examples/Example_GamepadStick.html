@@ -1,32 +1,26 @@
-<!doctype html>
+<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-html,body{margin:0;width:100%;height:100%;background:transparent}
-.s{width:88%;height:88%;margin:6%;background:#191a20;border-radius:50%;position:relative}
-.k{position:absolute;left:50%;top:50%;width:38%;height:38%;border-radius:50%;background:white;translate:-50% -50%}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}
+.s{width:88%;height:88%;margin:6%;background:#191a20;border-radius:50%;position:relative;opacity:var(--kd-opacity)}
+.k{position:absolute;left:50%;top:50%;width:38%;height:38%;border-radius:50%;background:white;translate:-50% -50%;will-change:transform}
 </style>
 <div class="s"><i class="k"></i></div>
 <script>
-const shell=document.querySelector('.s'), knob=document.querySelector('.k');
-let lastPressed=false;
-addEventListener('keydisplay:update',e=>{
-  const s=e.detail;
-  if(!s.type.includes('stick')||!s.gamepad)return;
-  shell.style.borderRadius=s.config.stickShape==='square'?'18px':'50%';
-  const right=s.type.includes('right');
-  const x=right?s.gamepad.rx:s.gamepad.lx;
-  const y=right?s.gamepad.ry:s.gamepad.ly;
-  const dotScale=(s.config.dotSizePercent||100)/100;
-  knob.style.transform=`translate(${x*28}px,${y*28}px) scale(${dotScale})`;
-  const pressed=right?s.gamepad.buttons.r3:s.gamepad.buttons.l3;
-  if(pressed&&!lastPressed){
-    knob.animate(
-      [{transform:`translate(${x*28}px,${y*28}px) scale(${dotScale})`},
-       {transform:`translate(${x*28}px,${y*28}px) scale(${dotScale*1.16})`},
-       {transform:`translate(${x*28}px,${y*28}px) scale(${dotScale*.96})`},
-       {transform:`translate(${x*28}px,${y*28}px) scale(${dotScale})`}],
-      {duration:170,easing:'cubic-bezier(.2,.8,.2,1)'}
-    );
+const shell=document.querySelector('.s'),knob=document.querySelector('.k');
+let state=null,lastPressed=false;
+function applyConfig(s){state=s;shell.style.borderRadius=s.config?.stickShape==='square'?'18px':'50%'}
+function update(g){
+  if(!state||!g)return;
+  const right=state.type==='gamepad-right-stick';
+  const x=right?g.rx:g.lx,y=right?g.ry:g.ly,scale=(state.config?.dotSizePercent||100)/100;
+  knob.style.transform=`translate(${x*28}px,${y*28}px) scale(${scale})`;
+  const pressed=right?g.buttons.r3:g.buttons.l3;
+  if(pressed&&!lastPressed&&!KeyDisplay.reducedMotion()){
+    knob.getAnimations().forEach(a=>a.cancel());
+    knob.animate([{scale:'1'},{scale:'1.16'},{scale:'.97'},{scale:'1'}],{duration:170,easing:'cubic-bezier(.23,1,.32,1)'});
   }
   lastPressed=pressed;
-});
+}
+KeyDisplay.onState(s=>{if(!s.type.includes('stick'))return;applyConfig(s);update(s.gamepad)});
+KeyDisplay.on('gamepad',e=>update(e.detail));
 </script>

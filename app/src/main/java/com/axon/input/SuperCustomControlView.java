@@ -26,10 +26,10 @@ import java.util.ArrayDeque;
 /** Live preview / created control for the super-custom key display editor. */
 final class SuperCustomControlView extends FrameLayout {
     /**
-     * Custom centre-fill animation only. Android/OEM RippleDrawable and pressed backgrounds are not
-     * used. The visual is a single opaque press-colour circle whose radius only grows.
+     * Diffusion mode mirrors Matrix Card UI feature on/off motion: state changes are interruptible,
+     * continue from the current visual value, and use the same easing, slowed to 380 ms / 144 ms in Axon 1.7.
      */
-    private static final TimeInterpolator CENTRE_FILL_EASE = KeyAppearance::centreFillCurve;
+    private static final TimeInterpolator CENTRE_FILL_EASE = KeyAppearance::cardFeatureToggleEase;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayDeque<Long> cpsSamples = new ArrayDeque<>();
@@ -39,6 +39,7 @@ final class SuperCustomControlView extends FrameLayout {
 
     private final Paint surfacePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ripplePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF keyBounds = new RectF();
     private final Path keyClipPath = new Path();
 
@@ -49,15 +50,7 @@ final class SuperCustomControlView extends FrameLayout {
 
     private ValueAnimator rippleAnimator;
     private float rippleProgress;
-    private long ripplePressStartedMs;
-    private long rippleFillEndsAtMs;
     private int rippleGeneration;
-
-    private final Runnable rippleReset = () -> {
-        if (keyPressed) return;
-        rippleProgress = 0f;
-        invalidate();
-    };
 
     private final Runnable cpsRefresh = new Runnable() {
         @Override public void run() {
@@ -69,8 +62,8 @@ final class SuperCustomControlView extends FrameLayout {
     SuperCustomControlView(Context context) {
         super(context);
 
-        // Fully opt out of Android/OEM press visuals.  The key surface and the centre-fill circle
-        // are both rendered below in onDraw().
+        // Fully opt out of Android/OEM press visuals. The key surface and Matrix card-state fill
+        // are rendered below in onDraw().
         setBackground(null);
         setForeground(null);
         setStateListAnimator(null);
@@ -158,22 +151,34 @@ final class SuperCustomControlView extends FrameLayout {
         lp.height = dp(next.heightDp);
         setLayoutParams(lp);
 
-        // Ripple mode is rendered pixel-for-pixel in Canvas; no View alpha animation is allowed.
-        setAlpha(next.motionMode == OverlayState.MOTION_RIPPLE ? 1f : next.opacityPercent / 100f);
+        // Keep opacity linear and mode-consistent. Non-ripple modes can use the View alpha so
+        // surface/border/text/CPS fade as one component. Ripple mode stays at View alpha 1 so its
+        // independent diffusion opacity is never multiplied by the base-key opacity; base content
+        // is faded explicitly below instead.
+        animate().cancel();
+        float baseAlpha = clamp01(next.opacityPercent / 100f);
+        boolean independentRipple = next.motionMode == OverlayState.MOTION_RIPPLE;
+        setAlpha(independentRipple ? 1f : baseAlpha);
         setScaleX(1f);
         setScaleY(1f);
 
         label.setText(next.labelText == null ? "" : next.labelText);
-        label.setTextColor(next.textColor);
+        // Imported display fonts must apply to super-custom keys just like the regular native
+        // overlays. Resolve on every apply so a newly imported font refreshes existing configs.
+        label.setTypeface(FontManager.bold(getContext()));
+        cps.setTypeface(FontManager.normal(getContext()));
+        int contentColor = independentRipple
+                ? multiplyColorAlpha(next.textColor, next.opacityPercent / 100f)
+                : next.textColor;
+        label.setTextColor(contentColor);
         label.setTextSize(next.textSizeSp);
-        cps.setTextColor(next.textColor);
+        cps.setTextColor(contentColor);
         cps.setTextSize(Math.max(9f, next.textSizeSp * 0.56f));
         cps.setVisibility(next.cpsEnabled ? View.VISIBLE : View.GONE);
         setPadding(dp(8), dp(6), dp(8), dp(6));
 
         if (next.motionMode != OverlayState.MOTION_RIPPLE) {
             cancelRippleAnimator();
-            handler.removeCallbacks(rippleReset);
             rippleProgress = 0f;
         }
 
@@ -195,13 +200,13 @@ final class SuperCustomControlView extends FrameLayout {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         drawKeySurface(canvas);
-        drawCenterFillCircle(canvas);
+        drawCardFeatureStateFill(canvas);
+        drawKeyBorder(canvas);
     }
 
     @Override
     protected void onDetachedFromWindow() {
         cancelRippleAnimator();
-        handler.removeCallbacks(rippleReset);
         handler.removeCallbacks(cpsRefresh);
         super.onDetachedFromWindow();
     }
@@ -214,21 +219,18 @@ final class SuperCustomControlView extends FrameLayout {
         final float baseAlpha = spec.opacityPercent / 100f;
         switch (spec.motionMode) {
             case OverlayState.MOTION_ALPHA:
-                animate().alpha(pressed ? Math.max(0.22f, baseAlpha * 0.55f) : baseAlpha)
+                animate().alpha(pressed ? baseAlpha * 0.55f : baseAlpha)
                         .setDuration(pressed ? 90L : 130L)
                         .start();
                 break;
 
             case OverlayState.MOTION_RIPPLE:
-                // One-way centre fill. Releasing never contracts the circle back to the centre.
+                // Matrix Card UI semantics: press = feature ON, release = feature OFF. A reversal
+                // starts from the current rendered value instead of restarting from an endpoint.
                 setAlpha(1f);
                 setScaleX(1f);
                 setScaleY(1f);
-                if (pressed) {
-                    startAdaptiveCentreFill(SystemClock.uptimeMillis());
-                } else {
-                    finishCentreFillAfterRelease(SystemClock.uptimeMillis());
-                }
+                animateCardFeatureState(pressed);
                 break;
 
             case OverlayState.MOTION_NONE:
@@ -253,44 +255,28 @@ final class SuperCustomControlView extends FrameLayout {
         invalidate();
     }
 
-    private void startAdaptiveCentreFill(long now) {
-        handler.removeCallbacks(rippleReset);
-        rippleGeneration++;
-        ripplePressStartedMs = now;
-        rippleProgress = 0f;
-        long duration = KeyAppearance.nextCentreFillDuration(now);
-        rippleFillEndsAtMs = now + duration;
-        animateRippleTo(1f, duration, null);
-    }
-
-    private void finishCentreFillAfterRelease(long now) {
-        handler.removeCallbacks(rippleReset);
-        // Do not cancel/restart the fill on release: changing interpolators mid-flight was the main
-        // source of the old mechanical feel. The same curve keeps its velocity to the edge.
-        long remaining = Math.max(0L, rippleFillEndsAtMs - now);
-        handler.postDelayed(rippleReset, remaining + 72L);
-    }
-
-    private void animateRippleTo(float target, long duration, Runnable endAction) {
-        float end = clamp01(target);
+    private void animateCardFeatureState(boolean enabledNow) {
         float start = clamp01(rippleProgress);
+        float end = enabledNow ? 1f : 0f;
         int generation = ++rippleGeneration;
 
         cancelRippleAnimator();
 
-        float distance = Math.abs(end - start);
-        if (distance < 0.0001f) {
+        long duration = KeyAppearance.cardFeatureToggleDuration(start, end);
+        if (duration <= 0L) {
             rippleProgress = end;
             invalidate();
-            if (endAction != null) endAction.run();
             return;
         }
 
         rippleAnimator = ValueAnimator.ofFloat(start, end);
-        rippleAnimator.setDuration(Math.max(1L, duration));
+        rippleAnimator.setDuration(duration);
         rippleAnimator.setInterpolator(CENTRE_FILL_EASE);
         rippleAnimator.addUpdateListener(animation -> {
             rippleProgress = (float) animation.getAnimatedValue();
+            float bounce = KeyAppearance.cardFeatureBounce(rippleProgress);
+            setScaleX(bounce);
+            setScaleY(bounce);
             postInvalidateOnAnimation();
         });
         rippleAnimator.addListener(new AnimatorListenerAdapter() {
@@ -301,8 +287,13 @@ final class SuperCustomControlView extends FrameLayout {
             }
 
             @Override public void onAnimationEnd(Animator animation) {
-                if (!cancelled && generation == rippleGeneration && endAction != null) {
-                    endAction.run();
+                if (rippleAnimator == animation) rippleAnimator = null;
+                if (!cancelled && generation == rippleGeneration) {
+                    rippleProgress = end;
+                    float bounce = KeyAppearance.cardFeatureBounce(end);
+                    setScaleX(bounce);
+                    setScaleY(bounce);
+                    postInvalidateOnAnimation();
                 }
             }
         });
@@ -325,41 +316,51 @@ final class SuperCustomControlView extends FrameLayout {
         surfacePaint.setStyle(Paint.Style.FILL);
         surfacePaint.setColor(color);
 
-        // Preserve the user's explicit opacity setting only.  The animation itself never changes it.
-        int sourceAlpha = Color.alpha(color);
-        surfacePaint.setAlpha(Math.round(sourceAlpha * spec.opacityPercent / 100f));
+        // Non-ripple modes already apply the user's opacity at the View layer. Ripple mode keeps
+        // View alpha at 1 to preserve diffusion-opacity independence, so only its base surface is
+        // multiplied here.
+        if (spec.motionMode == OverlayState.MOTION_RIPPLE) {
+            int sourceAlpha = Color.alpha(color);
+            surfacePaint.setAlpha(Math.round(sourceAlpha * spec.opacityPercent / 100f));
+        }
         canvas.drawRoundRect(keyBounds, corner, corner, surfacePaint);
     }
 
-    private void drawCenterFillCircle(Canvas canvas) {
+    private void drawCardFeatureStateFill(Canvas canvas) {
         if (spec == null || spec.motionMode != OverlayState.MOTION_RIPPLE) return;
         if (rippleProgress <= 0f || getWidth() <= 0 || getHeight() <= 0) return;
 
         keyBounds.set(0f, 0f, getWidth(), getHeight());
         float corner = resolvedCornerRadius();
-        float halfW = keyBounds.width() * 0.5f;
-        float halfH = keyBounds.height() * 0.5f;
-
-        // Exactly the minimum radius required for a centre circle to reach the farthest key corner.
-        // It stops here; it never overshoots beyond the amount needed to fill the key.
-        float maxRadius = (float) Math.hypot(halfW, halfH);
-        float radius = maxRadius * clamp01(rippleProgress);
-        if (radius <= 0f) return;
-
-        keyClipPath.reset();
-        keyClipPath.addRoundRect(keyBounds, corner, corner, Path.Direction.CW);
-
-        int save = canvas.save();
-        canvas.clipPath(keyClipPath);
-
         ripplePaint.reset();
         ripplePaint.setAntiAlias(true);
         ripplePaint.setStyle(Paint.Style.FILL);
-        // Exact configured press color.  No theme ripple tint, shader, blend, fade or alpha pulse.
-        ripplePaint.setColor(spec.pressColor);
-        canvas.drawCircle(keyBounds.centerX(), keyBounds.centerY(), radius, ripplePaint);
+        int alpha = Math.round(Color.alpha(spec.pressColor) * spec.diffusionOpacityPercent / 100f);
+        int press = Color.argb(alpha, Color.red(spec.pressColor),
+                Color.green(spec.pressColor), Color.blue(spec.pressColor));
+        KeyAppearance.drawCentreFill(canvas, keyBounds, KeyAppearance.STYLE_ROUNDED, corner,
+                press, rippleProgress, ripplePaint, keyClipPath);
+    }
 
-        canvas.restoreToCount(save);
+    private void drawKeyBorder(Canvas canvas) {
+        if (spec == null || getWidth() <= 0 || getHeight() <= 0) return;
+        int paletteStroke = UiPalette.overlayStroke(getContext());
+        int source = spec.borderColor != 0 ? spec.borderColor : paletteStroke;
+        int alpha = Color.alpha(source);
+        if (spec.motionMode == OverlayState.MOTION_RIPPLE) {
+            alpha = Math.round(alpha * spec.opacityPercent / 100f);
+        }
+        float strokeWidth = Math.max(1f, dp(1f));
+        float half = strokeWidth * 0.5f;
+        keyBounds.set(half, half, Math.max(half, getWidth() - half), Math.max(half, getHeight() - half));
+        float corner = resolvedCornerRadius();
+
+        borderPaint.reset();
+        borderPaint.setAntiAlias(true);
+        borderPaint.setStyle(Paint.Style.STROKE);
+        borderPaint.setStrokeWidth(strokeWidth);
+        borderPaint.setColor(Color.argb(alpha, Color.red(source), Color.green(source), Color.blue(source)));
+        canvas.drawRoundRect(keyBounds, corner, corner, borderPaint);
     }
 
     private float resolvedCornerRadius() {
@@ -386,8 +387,10 @@ final class SuperCustomControlView extends FrameLayout {
         cps.setText(spec.renderCps(cpsSamples.size()));
     }
 
-    private static float clamp(float value, float min, float max) {
-        return Math.max(min, Math.min(max, value));
+    private static int multiplyColorAlpha(int color, float factor) {
+        float f = clamp01(factor);
+        int alpha = Math.round(Color.alpha(color) * f);
+        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
     }
 
     private static float clamp01(float value) {

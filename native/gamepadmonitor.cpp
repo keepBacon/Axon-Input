@@ -176,7 +176,7 @@ int mapTrigger1000(const input_absinfo& info, int value, bool restAtMax) {
     return static_cast<int>(out);
 }
 
-int buttonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
+int buttonIndex(int code, bool hasStandardEast, bool hasStandardWest, bool legacyThumb2AsL1) {
     switch (code) {
         case BTN_SOUTH: return 0;
         case BTN_EAST: return 1;
@@ -196,7 +196,11 @@ int buttonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
         // 旧式 HID/蓝牙手柄可能只上报 BTN_TRIGGER 系列。
         case BTN_TRIGGER: return 0;
         case BTN_THUMB: return 1;
-        case BTN_THUMB2: return 4;
+        // Some hybrid XInput/DInput devices (observed on Flydigi Dune Fox) expose a
+        // standard BTN_WEST for the real X button, while L1 comes through legacy
+        // BTN_THUMB2. Only reinterpret it when capabilities prove standard X exists
+        // and standard BTN_TL is absent; otherwise keep the normal legacy X mapping.
+        case BTN_THUMB2: return legacyThumb2AsL1 ? 6 : 4;
         case BTN_TOP: return 3;
         case BTN_TOP2: return 6;
         case BTN_PINKIE: return 7;
@@ -242,6 +246,7 @@ struct Device {
     bool digitalRt = false;
     bool hasStandardEast = false;
     bool hasStandardWest = false;
+    bool legacyThumb2AsL1 = false;
     bool vader5Pro = false;
     uint16_t vendor = 0;
     uint16_t product = 0;
@@ -549,11 +554,20 @@ bool attachDevice(const char* path, Device* d) {
     if (getBits(fd, EV_KEY, keyBits)) {
         candidate.hasStandardEast = bitTest(keyBits, BTN_EAST);
         candidate.hasStandardWest = bitTest(keyBits, BTN_WEST);
+        // Flydigi Dune Fox / hybrid XInput-DInput fingerprint: the real X is
+        // exposed through canonical BTN_WEST while the left shoulder may also be
+        // exposed through legacy BTN_THUMB2. Some firmware still advertises BTN_TL
+        // in the capability bitmap even though the physical L1 edge arrives on
+        // BTN_THUMB2, so do NOT require BTN_TL to be absent.
+        candidate.legacyThumb2AsL1 = candidate.hasStandardWest
+                && bitTest(keyBits, BTN_THUMB2);
     }
     snprintf(candidate.path, sizeof(candidate.path), "%s", path);
     snprintf(candidate.name, sizeof(candidate.name), "%s", name[0] ? name : "gamepad");
     *d = candidate;
-    printf("STATUS gamepad-ready %s %s%s\n", d->path, d->name, d->vader5Pro ? " vader5-pro" : "");
+    printf("STATUS gamepad-ready %s %s%s%s\n", d->path, d->name,
+           d->vader5Pro ? " vader5-pro" : "",
+           d->legacyThumb2AsL1 ? " dunefox-l1-fix" : "");
     fflush(stdout);
     return true;
 }
@@ -604,7 +618,7 @@ void emit(Device* d, bool force = false) {
 bool process(Device* d, const input_event& ev) {
     if (!d || d->fd < 0) return false;
     if (ev.type == EV_KEY) {
-        int index = buttonIndex(ev.code, d->hasStandardEast, d->hasStandardWest);
+        int index = buttonIndex(ev.code, d->hasStandardEast, d->hasStandardWest, d->legacyThumb2AsL1);
         if (index >= 0 && index < 32) {
             uint32_t bit = static_cast<uint32_t>(1u << index);
             bool pressed = ev.value != 0;

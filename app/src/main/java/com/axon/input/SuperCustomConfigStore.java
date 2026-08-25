@@ -14,7 +14,7 @@ final class SuperCustomConfigStore {
     static final int SLOT_COUNT = 5;
     static final int MAX_CONFIG_BYTES = 512 * 1024;
 
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
     private static final String PREFS = "super_custom_configs";
     private static final String ACTIVE = "active_workspace";
     private static final String SLOT_PREFIX = "slot_";
@@ -114,7 +114,9 @@ final class SuperCustomConfigStore {
                 item.put("heightDp", spec.heightDp);
                 item.put("cornerDp", spec.cornerDp);
                 item.put("opacityPercent", spec.opacityPercent);
+                item.put("diffusionOpacityPercent", spec.diffusionOpacityPercent);
                 item.put("pressColor", spec.pressColor);
+                item.put("borderColor", spec.borderColor);
                 item.put("textColor", spec.textColor);
                 item.put("textSizeSp", spec.textSizeSp);
                 item.put("motionMode", spec.motionMode);
@@ -122,6 +124,7 @@ final class SuperCustomConfigStore {
                 item.put("cpsTemplate", spec.cpsTemplate == null ? SuperCustomControlSpec.CPS_TEMPLATE : spec.cpsTemplate);
                 item.put("centerXPx", spec.centerXPx);
                 item.put("centerYPx", spec.centerYPx);
+                item.put("positionSet", spec.positionSet);
                 controls.put(item);
             }
         }
@@ -135,7 +138,9 @@ final class SuperCustomConfigStore {
             throw new IllegalArgumentException("unsupported config");
         }
         int version = root.optInt("version", -1);
-        if (version != SCHEMA_VERSION) throw new IllegalArgumentException("unsupported version");
+        if (version != 1 && version != SCHEMA_VERSION) {
+            throw new IllegalArgumentException("unsupported version");
+        }
         JSONArray controls = root.optJSONArray("controls");
         if (controls == null) throw new IllegalArgumentException("missing controls");
         if (controls.length() > 128) throw new IllegalArgumentException("too many controls");
@@ -150,8 +155,11 @@ final class SuperCustomConfigStore {
             spec.widthDp = clamp(item.optInt("widthDp", spec.widthDp), 28, 420);
             spec.heightDp = clamp(item.optInt("heightDp", spec.heightDp), 24, 300);
             spec.cornerDp = clamp(item.optInt("cornerDp", spec.cornerDp), 0, 80);
-            spec.opacityPercent = clamp(item.optInt("opacityPercent", spec.opacityPercent), 5, 100);
+            spec.opacityPercent = clamp(item.optInt("opacityPercent", spec.opacityPercent), 0, 100);
+            spec.diffusionOpacityPercent = clamp(
+                    item.optInt("diffusionOpacityPercent", spec.diffusionOpacityPercent), 0, 100);
             spec.pressColor = item.optInt("pressColor", spec.pressColor);
+            spec.borderColor = item.optInt("borderColor", spec.borderColor);
             spec.textColor = item.optInt("textColor", spec.textColor);
             spec.textSizeSp = clamp(item.optInt("textSizeSp", spec.textSizeSp), 8, 64);
             spec.motionMode = OverlayState.clampMotionMode(item.optInt("motionMode", spec.motionMode));
@@ -162,6 +170,11 @@ final class SuperCustomConfigStore {
             }
             spec.centerXPx = item.optInt("centerXPx", -1);
             spec.centerYPx = item.optInt("centerYPx", -1);
+            // v1 used negative coordinates as an implicit "unset" sentinel. v2 stores an
+            // explicit bit so real negative/off-screen coordinates remain valid.
+            spec.positionSet = version >= 2
+                    ? item.optBoolean("positionSet", false)
+                    : (spec.centerXPx >= 0 && spec.centerYPx >= 0);
             specs.add(spec);
         }
         return specs;

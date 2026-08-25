@@ -23,6 +23,7 @@ public final class SensitivityProxyController {
         void onSensitivityMouseMotion(int dx, int dy);
         void onSensitivityMouseButtons(int mask);
         void onSensitivityGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons);
+        void onSensitivityGamepadProfile(boolean legacyThumb2AsL1);
     }
 
     private interface PrivilegedProcess extends Closeable {
@@ -45,7 +46,7 @@ public final class SensitivityProxyController {
     private volatile boolean destroyed;
     private volatile int desiredMouse = 100;
     private volatile int desiredGamepad = 100;
-    private volatile int desiredMode = OverlayState.SENSITIVITY_MODE_SHIZUKU;
+    private volatile int desiredMode = SensitivitySettingsStore.MODE_SHIZUKU;
     private volatile int activeMode = -1;
     private volatile PrivilegedProcess process;
     private volatile Thread readerThread;
@@ -81,9 +82,9 @@ public final class SensitivityProxyController {
     public synchronized void apply(boolean enabled, int mousePercent, int gamepadPercent, int mode) {
         if (destroyed) return;
         int previousMode = desiredMode;
-        int resolvedMode = mode == OverlayState.SENSITIVITY_MODE_ROOT
-                ? OverlayState.SENSITIVITY_MODE_ROOT
-                : OverlayState.SENSITIVITY_MODE_SHIZUKU;
+        int resolvedMode = mode == SensitivitySettingsStore.MODE_ROOT
+                ? SensitivitySettingsStore.MODE_ROOT
+                : SensitivitySettingsStore.MODE_SHIZUKU;
         int nextMouse = clamp(mousePercent);
         int nextGamepad = clamp(gamepadPercent);
         boolean modeChanged = desiredMode != resolvedMode;
@@ -106,7 +107,7 @@ public final class SensitivityProxyController {
         }
 
         if (!modeReady(resolvedMode)) {
-            postStatus(context.getString(resolvedMode == OverlayState.SENSITIVITY_MODE_ROOT
+            postStatus(context.getString(resolvedMode == SensitivitySettingsStore.MODE_ROOT
                     ? R.string.sensitivity_status_wait_root
                     : R.string.sensitivity_status_wait_shizuku));
             return;
@@ -126,14 +127,14 @@ public final class SensitivityProxyController {
     }
 
     public synchronized void onShizukuAvailable() {
-        if (destroyed || desiredMode != OverlayState.SENSITIVITY_MODE_SHIZUKU) return;
-        if (fatalMode == OverlayState.SENSITIVITY_MODE_SHIZUKU) fatalMode = -1;
+        if (destroyed || desiredMode != SensitivitySettingsStore.MODE_SHIZUKU) return;
+        if (fatalMode == SensitivitySettingsStore.MODE_SHIZUKU) fatalMode = -1;
         if (desiredEnabled) apply(true, desiredMouse, desiredGamepad, desiredMode);
     }
 
     public synchronized void onShizukuDead() {
         if (destroyed) return;
-        if (desiredMode == OverlayState.SENSITIVITY_MODE_SHIZUKU) {
+        if (desiredMode == SensitivitySettingsStore.MODE_SHIZUKU) {
             stopInternal(context.getString(R.string.sensitivity_status_shizuku_lost));
         }
     }
@@ -189,7 +190,7 @@ public final class SensitivityProxyController {
                             && (line = reader.readLine()) != null) {
                         if (line.startsWith("ERROR uhid-open") || line.startsWith("ERROR input-backend-open")) {
                             fatal = true;
-                            postStatus(context.getString(mode == OverlayState.SENSITIVITY_MODE_ROOT
+                            postStatus(context.getString(mode == SensitivitySettingsStore.MODE_ROOT
                                     ? R.string.sensitivity_status_root_uhid_failed
                                     : R.string.sensitivity_status_shizuku_permission_failed));
                         } else if (line.startsWith("ERROR ")) {
@@ -207,10 +208,10 @@ public final class SensitivityProxyController {
                 }
             } catch (Throwable error) {
                 if (desiredEnabled && token == generation.get() && desiredMode == mode) {
-                    postStatus(context.getString(mode == OverlayState.SENSITIVITY_MODE_ROOT
+                    postStatus(context.getString(mode == SensitivitySettingsStore.MODE_ROOT
                             ? R.string.sensitivity_status_root_start_failed
                             : R.string.sensitivity_status_shizuku_start_failed));
-                    if (mode == OverlayState.SENSITIVITY_MODE_ROOT) fatal = true;
+                    if (mode == SensitivitySettingsStore.MODE_ROOT) fatal = true;
                 }
             } finally {
                 if (process == shell) process = null;
@@ -234,6 +235,8 @@ public final class SensitivityProxyController {
         if (status.startsWith("mouse-ready")) {
             postStatus(prefix + context.getString(R.string.sensitivity_status_mouse_ready));
         } else if (status.startsWith("gamepad-ready")) {
+            boolean legacyL1 = status.contains("legacy_l1=1");
+            mainHandler.post(() -> listener.onSensitivityGamepadProfile(legacyL1));
             postStatus(prefix + context.getString(R.string.sensitivity_status_gamepad_ready));
         } else if (status.startsWith("view-ready")) {
             postStatus(prefix + context.getString(R.string.sensitivity_status_view_ready));
@@ -244,6 +247,7 @@ public final class SensitivityProxyController {
         } else if (status.startsWith("gain ")) {
             postStatus(prefix + desiredMouse + "% / " + desiredGamepad + "%");
         } else if (status.startsWith("waiting-device")) {
+            mainHandler.post(() -> listener.onSensitivityGamepadProfile(false));
             postStatus(prefix + context.getString(R.string.sensitivity_status_wait_device));
         } else if (status.startsWith("view-disconnected")) {
             postStatus(prefix + context.getString(R.string.sensitivity_status_view_restart));
@@ -253,7 +257,10 @@ public final class SensitivityProxyController {
             if (previous != 0) mainHandler.post(() -> listener.onSensitivityMouseButtons(0));
             postStatus(prefix + context.getString(R.string.sensitivity_status_device_lost));
         } else if (status.startsWith("gamepad-disconnected")) {
-            mainHandler.post(() -> listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0));
+            mainHandler.post(() -> {
+                listener.onSensitivityGamepadProfile(false);
+                listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0);
+            });
             postStatus(prefix + context.getString(R.string.sensitivity_status_device_lost));
         } else if (status.startsWith("starting")) {
             postStatus(prefix + context.getString(R.string.sensitivity_status_starting));
@@ -311,8 +318,8 @@ public final class SensitivityProxyController {
         // gamepad state immediately instead of waiting for a replacement monitor sample.
         mainHandler.post(() -> listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0));
         postStatus(status);
-        if (modeA == OverlayState.SENSITIVITY_MODE_SHIZUKU
-                || modeA == OverlayState.SENSITIVITY_MODE_ROOT) {
+        if (modeA == SensitivitySettingsStore.MODE_SHIZUKU
+                || modeA == SensitivitySettingsStore.MODE_ROOT) {
             enqueueControl(() -> cleanupMode(modeA));
         }
     }
@@ -340,7 +347,7 @@ public final class SensitivityProxyController {
     }
 
     private void cleanupMode(int mode) {
-        if (mode != OverlayState.SENSITIVITY_MODE_SHIZUKU && mode != OverlayState.SENSITIVITY_MODE_ROOT) return;
+        if (mode != SensitivitySettingsStore.MODE_SHIZUKU && mode != SensitivitySettingsStore.MODE_ROOT) return;
         try {
             if (!modeReady(mode)) return;
             String command = staleProcessStopCommand(pidFile(mode))
@@ -352,7 +359,7 @@ public final class SensitivityProxyController {
     }
 
     private PrivilegedProcess startPrivileged(int mode, String command) throws Exception {
-        if (mode == OverlayState.SENSITIVITY_MODE_ROOT) {
+        if (mode == SensitivitySettingsStore.MODE_ROOT) {
             RootBridge.RootProcess root = RootBridge.startShell(command);
             return new PrivilegedProcess() {
                 @Override public InputStream getInputStream() { return root.getInputStream(); }
@@ -367,29 +374,29 @@ public final class SensitivityProxyController {
     }
 
     private int runPrivileged(int mode, String command) throws Exception {
-        if (mode == OverlayState.SENSITIVITY_MODE_ROOT) return RootBridge.runShell(command);
+        if (mode == SensitivitySettingsStore.MODE_ROOT) return RootBridge.runShell(command);
         return ShizukuBridge.runShell(command);
     }
 
     private boolean modeReady(int mode) {
-        if (mode == OverlayState.SENSITIVITY_MODE_ROOT) return true;
+        if (mode == SensitivitySettingsStore.MODE_ROOT) return true;
         return ShizukuBridge.isReady() && ShizukuBridge.hasPermission();
     }
 
     private String modeName(int mode) {
-        return mode == OverlayState.SENSITIVITY_MODE_ROOT ? "Root" : "Shizuku";
+        return mode == SensitivitySettingsStore.MODE_ROOT ? "Root" : "Shizuku";
     }
 
     private String tempBinary(int mode) {
-        return tempBinaryBase + (mode == OverlayState.SENSITIVITY_MODE_ROOT ? "_root" : "_shizuku");
+        return tempBinaryBase + (mode == SensitivitySettingsStore.MODE_ROOT ? "_root" : "_shizuku");
     }
 
     private String gainFile(int mode) {
-        return gainFileBase + (mode == OverlayState.SENSITIVITY_MODE_ROOT ? "_root.cfg" : "_shizuku.cfg");
+        return gainFileBase + (mode == SensitivitySettingsStore.MODE_ROOT ? "_root.cfg" : "_shizuku.cfg");
     }
 
     private String pidFile(int mode) {
-        return pidFileBase + (mode == OverlayState.SENSITIVITY_MODE_ROOT ? "_root.pid" : "_shizuku.pid");
+        return pidFileBase + (mode == SensitivitySettingsStore.MODE_ROOT ? "_root.pid" : "_shizuku.pid");
     }
 
     private String staleProcessStopCommand(String pidFile) {
@@ -411,7 +418,7 @@ public final class SensitivityProxyController {
     }
 
     private void postStatus(String status) {
-        OverlayState.setSensitivityStatus(context, status);
+        SensitivitySettingsStore.setStatus(context, status);
         mainHandler.post(() -> listener.onSensitivityStatus(status));
     }
 

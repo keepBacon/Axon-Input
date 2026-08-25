@@ -75,8 +75,8 @@ public final class MouseInputMonitor {
 
     private void runLoop() {
         while (running) {
-            int mode = OverlayState.getSensitivityMode(context);
-            if (mode != OverlayState.SENSITIVITY_MODE_ROOT
+            int mode = SensitivitySettingsStore.getMode(context);
+            if (mode != SensitivitySettingsStore.MODE_ROOT
                     && (!ShizukuBridge.isReady() || !ShizukuBridge.hasPermission())) {
                 sleep(500L);
                 continue;
@@ -102,7 +102,7 @@ public final class MouseInputMonitor {
                 }
             } catch (Throwable ignored) {
                 // Root 被拒绝时避免反复触发 su 授权弹窗；Shizuku 可等待服务恢复后重连。
-                if (mode == OverlayState.SENSITIVITY_MODE_ROOT) running = false;
+                if (mode == SensitivitySettingsStore.MODE_ROOT) running = false;
             } finally {
                 if (process == current) process = null;
                 if (current != null) {
@@ -116,7 +116,7 @@ public final class MouseInputMonitor {
     }
 
     private PrivilegedProcess startPrivileged(int mode, String command) throws Exception {
-        if (mode == OverlayState.SENSITIVITY_MODE_ROOT) {
+        if (mode == SensitivitySettingsStore.MODE_ROOT) {
             RootBridge.RootProcess root = RootBridge.startShell(command);
             return new PrivilegedProcess() {
                 @Override public InputStream getInputStream() { return root.getInputStream(); }

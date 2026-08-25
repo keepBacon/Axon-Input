@@ -10,11 +10,13 @@ small{opacity:.6;font-size:11px}
 <div id="root"></div>
 <script>
 const root=document.querySelector('#root');
+KeyDisplay.ready(s=>console.log('HTML ready:',s.type,KeyDisplay.version));
 function render(s){
   if(!s.keys?.length){root.textContent=s.type;return;}
   root.innerHTML=s.keys.map(k=>`<div class="key ${k.pressed?'down':''}" data-id="${k.id}"><b>${k.label}</b>${k.cps?`<small>${k.cps} CPS</small>`:''}</div>`).join('');
 }
 KeyDisplay.onState(render);
+// KeyDisplay.keys() / findKey() / isPressed() 可直接读取已被事件补丁更新的状态。
 KeyDisplay.on('key',e=>{
   const el=root.querySelector(`[data-id="${e.detail.id}"]`);
   if(el)el.classList.toggle('down',e.detail.pressed);

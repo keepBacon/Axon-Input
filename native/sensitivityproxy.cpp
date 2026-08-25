@@ -299,7 +299,7 @@ bool readGainsIfChanged(const char* path, Gains* gains, uint64_t* inodeStamp) {
     return changed;
 }
 
-int createUinputClone(int sourceFd, const char* name) {
+int createUinputClone(int sourceFd, const char* name, bool forceL1Capability) {
     if (sourceFd < 0) return -1;
     int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return -1;
@@ -326,6 +326,10 @@ int createUinputClone(int sourceFd, const char* name) {
         for (int code = 0; code <= KEY_MAX; ++code) {
             if (bitTest(keyBits, code)) (void)ioctl(fd, UI_SET_KEYBIT, code);
         }
+        // Dune Fox hybrid mapping is normalized before forwarding. Ensure the
+        // cloned device accepts canonical BTN_TL even if the physical capability
+        // bitmap is incomplete on a particular firmware/transport.
+        if (forceL1Capability) (void)ioctl(fd, UI_SET_KEYBIT, BTN_TL);
     }
     if (bitTest(evBits, EV_MSC)) {
         unsigned long mscBits[2]{};
@@ -598,6 +602,9 @@ struct GamepadProxy {
     bool digitalLt = false;
     bool hasStandardEast = false;
     bool hasStandardWest = false;
+    // Hybrid Flydigi/Dune Fox style mapping: canonical BTN_WEST is the real X,
+    // while legacy BTN_THUMB2 carries the physical L1 edge.
+    bool legacyThumb2AsL1 = false;
     int hatX = 0;
     int hatY = 0;
     bool dpadUp = false;
@@ -777,7 +784,7 @@ uint8_t mouseButtonMaskForCode(int code) {
     }
 }
 
-int gamepadButtonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
+int gamepadButtonIndex(int code, bool hasStandardEast, bool hasStandardWest, bool legacyThumb2AsL1) {
     switch (code) {
         case BTN_SOUTH: return 0;
         case BTN_EAST: return 1;
@@ -794,6 +801,16 @@ int gamepadButtonIndex(int code, bool hasStandardEast, bool hasStandardWest) {
         case BTN_MODE: return 12;
         case BTN_THUMBL: return 13;
         case BTN_THUMBR: return 14;
+        // Legacy joystick/DInput button range. On hybrid Dune Fox firmware the
+        // canonical BTN_WEST remains the real X, while BTN_THUMB2 is L1.
+        case BTN_TRIGGER: return 0;
+        case BTN_THUMB: return 1;
+        case BTN_THUMB2: return legacyThumb2AsL1 ? 6 : 4;
+        case BTN_TOP: return 3;
+        case BTN_TOP2: return 6;
+        case BTN_PINKIE: return 7;
+        case BTN_BASE: return 8;
+        case BTN_BASE2: return 9;
         default: return -1;
     }
 }
@@ -1005,12 +1022,16 @@ bool attachGamepad(const char* path, GamepadProxy* p) {
     if (getBits(fd, EV_KEY, keyBits)) {
         candidate.hasStandardEast = bitTest(keyBits, BTN_EAST);
         candidate.hasStandardWest = bitTest(keyBits, BTN_WEST);
+        // Do not require BTN_TL to be absent: some Dune Fox firmware advertises
+        // BTN_TL but still emits the physical L1 edge on legacy BTN_THUMB2.
+        candidate.legacyThumb2AsL1 = candidate.hasStandardWest
+                && bitTest(keyBits, BTN_THUMB2);
     }
     input_id physicalId{};
     getDeviceId(fd, &physicalId);
     // uinput 直接克隆物理 evdev 设备，保留原始键码、轴码、VID/PID 和设备名。
     // 这样游戏看到的是同类型手柄，而不是另一套通用 HID 映射。
-    int uinput = createUinputClone(fd, name);
+    int uinput = createUinputClone(fd, name, candidate.legacyThumb2AsL1);
     int uhid = -1;
     if (uinput < 0) {
         uhid = createUhid("Axon Input Virtual Gamepad", kGamepadDescriptor,
@@ -1051,12 +1072,12 @@ bool attachGamepad(const char* path, GamepadProxy* p) {
     for (int code = 0; code <= ABS_MAX; ++code) {
         if (p->gainAxisEnabled[code]) ++gainAxes;
     }
-    printf("STATUS gamepad-ready %s %s backend=%s vid=%04x pid=%04x bus=%04x gain_axes=%d\n",
+    printf("STATUS gamepad-ready %s %s backend=%s vid=%04x pid=%04x bus=%04x gain_axes=%d legacy_l1=%d\n",
            p->path, p->name, p->useUinput ? "uinput" : "uhid",
            static_cast<unsigned>(physicalId.vendor),
            static_cast<unsigned>(physicalId.product),
            static_cast<unsigned>(physicalId.bustype),
-           gainAxes);
+           gainAxes, p->legacyThumb2AsL1 ? 1 : 0);
     fflush(stdout);
     return true;
 }
@@ -1284,7 +1305,13 @@ bool processGamepadEvent(GamepadProxy* p, const input_event& ev, const Gains& ga
 
     input_event forwarded = ev;
     if (ev.type == EV_KEY) {
-        int idx = gamepadButtonIndex(ev.code, p->hasStandardEast, p->hasStandardWest);
+        // Normalize the hybrid Dune Fox L1 edge at the proxy boundary too. This
+        // prevents the virtual cloned device from generating KEYCODE_BUTTON_X
+        // for L1 while sensitivity enhancement is enabled. Real X remains
+        // canonical BTN_WEST and is forwarded unchanged.
+        if (p->legacyThumb2AsL1 && ev.code == BTN_THUMB2) forwarded.code = BTN_TL;
+        int idx = gamepadButtonIndex(ev.code, p->hasStandardEast, p->hasStandardWest,
+                                     p->legacyThumb2AsL1);
         if (idx >= 0 && idx < 16) {
             uint16_t bit = static_cast<uint16_t>(1u << idx);
             bool pressed = ev.value != 0;

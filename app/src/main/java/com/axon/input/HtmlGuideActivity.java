@@ -6,6 +6,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -25,7 +26,7 @@ public final class HtmlGuideActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(18), dp(20), dp(36));
+        root.setPadding(dp(24), dp(20), dp(24), dp(40));
         root.setBackgroundColor(UiPalette.background(this));
 
         addTitle(root, "Axon Input HTML API · v10");
@@ -44,8 +45,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 </style>
 <div id="root"></div>
 <script>
-KeyDisplay.on('init', e => render(e.detail));
-KeyDisplay.on('update', e => render(e.detail));
+KeyDisplay.onState(render);
 function render(state){
   root.textContent = state.type;
 }
@@ -72,10 +72,11 @@ function render(state){
         addSection(root, "3. Axon Input 辅助 API");
         addCode(root, """
 console.log(KeyDisplay.apiVersion); // 10
-console.log(KeyDisplay.version);    // v30
+console.log(KeyDisplay.version);    // v31
 console.log(KeyDisplay.type);       // keyboard / mouse / ...
 
 const state = KeyDisplay.getState();
+KeyDisplay.ready(s => console.log('state ready', s.type));
 const off = KeyDisplay.on('key', e => console.log(e.detail));
 // 不再需要时：off();
 
@@ -92,7 +93,9 @@ KeyDisplay.cssAll({'--gap':'8px','--press':'#fff'});
 
         addSection(root, "4. v10 状态辅助 API");
         addCode(root, """
+const allKeys = KeyDisplay.keys();
 const w = KeyDisplay.findKey('w');
+const wPressed = KeyDisplay.isPressed('w');
 const pressed = KeyDisplay.button('a');
 const x = KeyDisplay.axis('lx');
 const cps = KeyDisplay.cps('l1');
@@ -233,18 +236,19 @@ KeyDisplay.on('gamepad',e=>{
 
         addSection(root, "13. L1/R1 CPS 与 L2/R2 压力");
         addCode(root, """
-KeyDisplay.on('update',e=>{
-  const s=e.detail;if(!s.gamepad)return;
-  const g=s.gamepad;
-  if(s.type==='gamepad-left-shoulder'){
+let shoulderConfig=null;
+KeyDisplay.onState(s=>{shoulderConfig=s.config});
+KeyDisplay.on('gamepad',e=>{
+  const g=e.detail,c=shoulderConfig||{};
+  if(KeyDisplay.type==='gamepad-left-shoulder'){
     l1.classList.toggle('down',g.buttons.l1);
-    l1Cps.textContent=s.config.showShoulderCps?g.cps.l1+' CPS':'';
-    if(s.config.showTriggerProgress) l2.style.setProperty('--pressure',g.lt);
+    l1Cps.textContent=c.showShoulderCps?g.cps.l1+' CPS':'';
+    if(c.showTriggerProgress) l2.style.setProperty('--pressure',g.lt);
   }
-  if(s.type==='gamepad-right-shoulder'){
+  if(KeyDisplay.type==='gamepad-right-shoulder'){
     r1.classList.toggle('down',g.buttons.r1);
-    r1Cps.textContent=s.config.showShoulderCps?g.cps.r1+' CPS':'';
-    if(s.config.showTriggerProgress) r2.style.setProperty('--pressure',g.rt);
+    r1Cps.textContent=c.showShoulderCps?g.cps.r1+' CPS':'';
+    if(c.showTriggerProgress) r2.style.setProperty('--pressure',g.rt);
   }
 });
 """);
@@ -330,10 +334,12 @@ KeyDisplay.onState(s => {
   root.style.opacity=String((c.opacityPercent??100)/100);
   root.style.setProperty('--gap',(c.spacingDp??0)+'px');
   root.dataset.style=c.keyStyle||'rounded';
+  root.style.setProperty('--base',c.baseColor||s.palette.keyIdle);
+  root.style.setProperty('--border',c.borderColor||s.palette.overlayStroke);
   root.style.setProperty('--pressed',c.pressColor||s.palette.keyPressed);
 });
 // 同样可以直接使用：
-// --kd-opacity --kd-key-spacing --kd-press-color --kd-key-style
+// --kd-opacity --kd-key-spacing --kd-base-color --kd-border-color --kd-press-color --kd-key-style
 """);
 
         addSection(root, "21. 本地存储与手柄兼容状态");
@@ -352,10 +358,10 @@ KeyDisplay.onState(s=>{
 
         addSection(root, "22. 高频事件与完整状态");
         addBody(root,
-                "pointer 和 gamepad 属于高频事件。Android 端按显示帧合并，并只修补对应局部状态。"
-                + "KeyDisplay.getState() 在事件回调中仍能读取最新 pointer/gamepad。"
-                + "设置、主题、大小等低频变化才发送完整 keydisplay:update。"
-                + "这样可以降低 JSON 构建、JavaScript 执行和 DOM 更新次数。");
+                "key / mouse / pointer / gamepad 都走细粒度状态补丁；pointer 与 gamepad 额外按显示帧合并。"
+                + "事件回调执行前 KeyDisplay.getState() 已经是最新状态。"
+                + "主题、大小、布局、配置和最近按键列表结构变化才发送完整 keydisplay:update。"
+                + "键盘多键变化与鼠标左右键+CPS 会批量进入 WebView，减少桥接和 JSON 开销。");
 
         addSection(root, "23. 性能规则");
         addBody(root,
@@ -371,6 +377,7 @@ KeyDisplay.onState(s=>{
         scroll.addView(root, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         setContentView(scroll);
+        UiChrome.applySafeInsets(scroll, 0, 0, 0, 0);
     }
 
 
@@ -409,15 +416,22 @@ KeyDisplay.onState(s=>{
     }
 
     private void addCode(LinearLayout root, String code) {
+        HorizontalScrollView horizontal = new HorizontalScrollView(this);
+        horizontal.setHorizontalScrollBarEnabled(false);
+        horizontal.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        horizontal.setFillViewport(true);
+        horizontal.setBackground(UiChrome.nestedSurface(this));
+
         TextView view = new TextView(this);
         view.setText(code.trim());
         view.setTextColor(UiPalette.textPrimary(this));
         view.setTextSize(11.5f);
         view.setTypeface(Typeface.MONOSPACE);
         view.setTextIsSelectable(true);
-        view.setPadding(dp(12), dp(10), dp(12), dp(10));
-        view.setBackground(UiPalette.rounded(this, UiPalette.debugSurface(this), 10f));
-        root.addView(view, new LinearLayout.LayoutParams(
+        view.setPadding(dp(14), dp(12), dp(14), dp(12));
+        horizontal.addView(view, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(horizontal, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 

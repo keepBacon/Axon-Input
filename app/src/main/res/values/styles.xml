@@ -1,5 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <style name="AxonAlertDialogLight" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/dialog_background_light</item>
+        <item name="android:colorAccent">#171719</item>
+        <item name="android:textColorPrimary">#151517</item>
+        <item name="android:textColorSecondary">#6F6F76</item>
+        <item name="android:windowElevation">18dp</item>
+    </style>
+
+    <style name="AxonAlertDialogDark" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/dialog_background_dark</item>
+        <item name="android:colorAccent">#F4F4F5</item>
+        <item name="android:textColorPrimary">#F4F4F5</item>
+        <item name="android:textColorSecondary">#9E9EA5</item>
+        <item name="android:windowElevation">18dp</item>
+    </style>
+
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowActionModeOverlay">true</item>
@@ -8,6 +24,8 @@
         <item name="android:statusBarColor">#F7F7F8</item>
         <item name="android:navigationBarColor">#F7F7F8</item>
         <item name="android:windowLightStatusBar">true</item>
+        <item name="android:alertDialogTheme">@style/AxonAlertDialogLight</item>
+        <item name="android:windowNoTitle">true</item>
     </style>
 
     <style name="AppThemeLight" parent="android:style/Theme.Material.Light.NoActionBar">
@@ -18,6 +36,8 @@
         <item name="android:statusBarColor">#F7F7F8</item>
         <item name="android:navigationBarColor">#F7F7F8</item>
         <item name="android:windowLightStatusBar">true</item>
+        <item name="android:alertDialogTheme">@style/AxonAlertDialogLight</item>
+        <item name="android:windowNoTitle">true</item>
     </style>
 
     <style name="AppThemeBlack" parent="android:style/Theme.Material.NoActionBar">
@@ -28,5 +48,7 @@
         <item name="android:statusBarColor">#080809</item>
         <item name="android:navigationBarColor">#080809</item>
         <item name="android:windowLightStatusBar">false</item>
+        <item name="android:alertDialogTheme">@style/AxonAlertDialogDark</item>
+        <item name="android:windowNoTitle">true</item>
     </style>
 </resources>

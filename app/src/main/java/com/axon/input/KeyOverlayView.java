@@ -26,6 +26,8 @@ public final class KeyOverlayView extends FrameLayout {
     private int pressedMask;
     private boolean keyboardShowSpace = true;
     private boolean keyboardShowSpaceDps;
+    private boolean keyboardShowMouseButtons;
+    private int keyboardMouseButtons;
     private int keyboardSpaceDps;
     private long mouseStats;
     private int[] customKeyCodes = new int[0];
@@ -93,12 +95,20 @@ public final class KeyOverlayView extends FrameLayout {
         nativeView.setKeyBaseColor(color);
     }
 
+    public void setKeyBorderColor(int color) {
+        nativeView.setKeyBorderColor(color);
+    }
+
     public void setCornerStrength(int strength) {
         nativeView.setCornerStrength(strength);
     }
 
     public void setLayerOpacities(int backgroundPercent, int strokePercent, int textPercent) {
         nativeView.setLayerOpacities(backgroundPercent, strokePercent, textPercent);
+    }
+
+    public void setDiffusionOpacity(int percent) {
+        nativeView.setDiffusionOpacity(percent);
     }
 
     public void setTextColor(int color) {
@@ -158,6 +168,18 @@ public final class KeyOverlayView extends FrameLayout {
         if (htmlView != null) htmlView.setKeyboardOptions(keyboardShowSpace, keyboardShowSpaceDps);
     }
 
+    public void setKeyboardMouseButtonsEnabled(boolean enabled) {
+        if (displayType != DISPLAY_KEYBOARD) return;
+        keyboardShowMouseButtons = enabled;
+        nativeView.setMouseButtonsVisible(enabled);
+    }
+
+    public void setKeyboardMouseButtons(int buttons) {
+        if (displayType != DISPLAY_KEYBOARD) return;
+        keyboardMouseButtons = buttons & 0x3;
+        nativeView.setKeyboardMouseButtons(keyboardMouseButtons);
+    }
+
     public void setKeyboardDps(int dps) {
         if (displayType != DISPLAY_KEYBOARD) return;
         keyboardSpaceDps = Math.max(0, Math.min(999, dps));
@@ -198,6 +220,8 @@ public final class KeyOverlayView extends FrameLayout {
         nativeView.releaseAll();
         if (displayType == DISPLAY_KEYBOARD) {
             pressedMask = 0;
+            keyboardMouseButtons = 0;
+            nativeView.setKeyboardMouseButtons(0);
             if (htmlView != null) htmlView.setKeyboardMask(0);
         } else if (displayType == DISPLAY_MOUSE) {
             mouseStats = 0L;

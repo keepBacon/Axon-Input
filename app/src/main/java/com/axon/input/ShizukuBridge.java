@@ -12,6 +12,7 @@ import android.os.RemoteException;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -37,6 +38,7 @@ public final class ShizukuBridge {
     private static final int APP_TX_PERMISSION_RESULT = 3; // 事务 2
     private static final int APP_TX_SHOW_PERMISSION = 10001; // 事务 10000
 
+    private static final int PROCESS_TX_GET_OUTPUT_STREAM = 1;
     private static final int PROCESS_TX_GET_INPUT_STREAM = 2;
     private static final int PROCESS_TX_WAIT_FOR = 4;
     private static final int PROCESS_TX_DESTROY = 6;
@@ -170,6 +172,10 @@ public final class ShizukuBridge {
         return isAvailable() && ready;
     }
 
+    public static boolean hasPermissionCached() {
+        return isReady() && permissionGranted;
+    }
+
     public static boolean hasPermission() {
         if (!isReady()) {
             return false;
@@ -210,7 +216,9 @@ public final class ShizukuBridge {
     public static final class ShellProcess implements Closeable {
         private final IBinder processBinder;
         private final ParcelFileDescriptor stdoutFd;
+        private ParcelFileDescriptor stdinFd;
         private InputStream inputStream;
+        private OutputStream outputStream;
         private boolean closed;
 
         private ShellProcess(IBinder processBinder, ParcelFileDescriptor stdoutFd) {
@@ -225,10 +233,26 @@ public final class ShizukuBridge {
             return inputStream;
         }
 
+        /** Returns the remote process stdin. Used to stream app-owned binaries/data to Shizuku. */
+        public synchronized OutputStream getOutputStream() throws RemoteException {
+            if (closed) throw new RemoteException("Shizuku process is closed");
+            if (outputStream == null) {
+                stdinFd = getProcessOutputStream(processBinder);
+                if (stdinFd == null) throw new RemoteException("Shizuku returned no stdin stream");
+                outputStream = new ParcelFileDescriptor.AutoCloseOutputStream(stdinFd);
+            }
+            return outputStream;
+        }
+
         @Override
         public synchronized void close() {
             if (closed) return;
             closed = true;
+            try {
+                if (outputStream != null) outputStream.close();
+                else if (stdinFd != null) stdinFd.close();
+            } catch (IOException ignored) {
+            }
             try {
                 if (inputStream != null) inputStream.close();
                 else stdoutFd.close();
@@ -286,6 +310,22 @@ public final class ShizukuBridge {
                 throw new RemoteException("Shizuku returned no process");
             }
             return processBinder;
+        } finally {
+            reply.recycle();
+            data.recycle();
+        }
+    }
+
+    private static ParcelFileDescriptor getProcessOutputStream(IBinder process) throws RemoteException {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(REMOTE_PROCESS_DESCRIPTOR);
+            if (!process.transact(PROCESS_TX_GET_OUTPUT_STREAM, data, reply, 0)) {
+                throw new RemoteException("getOutputStream transact failed");
+            }
+            reply.readException();
+            return reply.readInt() != 0 ? ParcelFileDescriptor.CREATOR.createFromParcel(reply) : null;
         } finally {
             reply.recycle();
             data.recycle();

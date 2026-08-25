@@ -10,20 +10,23 @@ Axon Input HTML API v10
 
 二、window.KeyDisplay
 apiVersion = 10
-version = v30
+version = v31
 type = 当前窗口类型
 types = 全部支持的窗口类型
 
 基础：
 KeyDisplay.getState()                 读取当前完整状态
+KeyDisplay.ready(fn)                  state 首次就绪后执行；已就绪则立即执行
 KeyDisplay.on(name, fn)               订阅事件，返回取消函数
 KeyDisplay.once(name, fn)             只订阅一次
-KeyDisplay.onState(fn, immediate)     立即读取一次状态，并继续监听 update
+KeyDisplay.onState(fn, immediate)     立即读取一次状态，并继续监听低频 update
 KeyDisplay.onInput(handlers)          一次订阅 key/mouse/pointer/gamepad/update
 KeyDisplay.has(capability)            判断当前窗口是否支持某能力
 
 状态辅助：
+KeyDisplay.keys()                     读取当前 keys 数组；无键位时返回空数组
 KeyDisplay.findKey(idOrCode)          按 id / keyCode / rawId 查找键位
+KeyDisplay.isPressed(idOrName)        统一判断键盘/鼠标/自定义键或语义手柄键是否按下
 KeyDisplay.button(name)               读取手柄语义按键状态，如 a / l1 / r2
 KeyDisplay.axis(name)                 读取手柄轴，如 lx / ly / rx / ry / lt / rt
 KeyDisplay.cps(idOrName)              读取键位或手柄按键 CPS
@@ -60,8 +63,9 @@ keydisplay:mouse     鼠标按键与 CPS
 keydisplay:pointer   鼠标相对移动，高频，按显示帧合并
 keydisplay:gamepad   手柄状态，高频，按显示帧合并
 
-pointer / gamepad 只更新对应局部状态。
-API v10 中 key / mouse 事件也会先修补 window.__KEYDISPLAY_STATE__，因此事件回调中调用 KeyDisplay.getState() 可读取最新值。
+key / mouse / pointer / gamepad 都只修补对应局部状态，不再为每次输入重复构建完整 state。
+事件回调执行前 window.__KEYDISPLAY_STATE__ 已更新，因此 KeyDisplay.getState() / findKey() / button() / axis() 可以直接读取最新值。
+keydisplay:update 主要用于主题、大小、布局、配置、最近按键列表结构等低频变化。
 
 五、state 主要字段
 apiVersion / rendererVersion / type / theme / sizePercent / timestamp
@@ -88,7 +92,7 @@ gamepad:
 
 config:
   当前窗口直接相关的设置：
-  motionMode, opacityPercent, keyStyle, pressColor, spacingDp,
+  motionMode, opacityPercent, keyStyle, baseColor, borderColor, pressColor, spacingDp,
   dotSizePercent, showSpaceCps, showTriggerProgress 等。
 
 palette:
@@ -123,7 +127,7 @@ capabilities:
 --kd-dot-size
 --kd-opacity --kd-opacity-percent
 --kd-key-spacing
---kd-press-color
+--kd-base-color --kd-border-color --kd-press-color
 --kd-key-style
 --kd-position-x --kd-position-y
 --kd-mouse-sensitivity --kd-gamepad-sensitivity
@@ -150,12 +154,16 @@ data-kd-reduced-motion
 2. 外观状态
 - config.opacityPercent：当前窗口透明度。
 - config.keyStyle：rounded / square / circle。
+- config.baseColor：当前底键颜色。
+- config.borderColor：当前按键边框颜色。
 - config.pressColor：当前按下颜色。
 - config.spacingDp：键盘、自定义按键或 ABXY 的间距。
 
 3. 状态辅助
 示例：
 const w = KeyDisplay.findKey('w');
+const allKeys = KeyDisplay.keys();
+const wDown = KeyDisplay.isPressed('w');
 const aDown = KeyDisplay.button('a');
 const lx = KeyDisplay.axis('lx');
 const l1Cps = KeyDisplay.cps('l1');
@@ -179,8 +187,17 @@ const saved = JSON.parse(localStorage.getItem(key) || 'null');
 - 不要用 north / west 判断显示文字。
 - 当前兼容模式和独立交换状态可从 settings.gamepad.compatibility 读取。
 
-九、性能建议
-1. pointer / gamepad 使用对应细粒度事件，不在每帧重建整棵 DOM。
+九、v31 接口调度优化
+1. 初始化时完整 state 只构建一次，同一次 WebView 调用内发送 init + update。
+2. 键盘一次掩码变化中的多个键会批量进入 WebView，再逐个触发 key 事件。
+3. 鼠标左右键变化与 mouse/CPS 状态合并为一次 WebView 调用。
+4. Space CPS、手柄 CPS、按键状态不再触发重复完整 state 序列化。
+5. key-prompt 只有列表新增、删除、排序或标签变化时发送完整 update；按压/CPS 走 key 事件。
+6. HTML 重载或 WebView 销毁时会取消待执行帧，避免旧页面残留回调。
+7. 新增 ready() / keys() / isPressed()，并加强 on()/once() 参数容错。
+
+十、性能建议
+1. key / mouse / pointer / gamepad 使用对应细粒度事件，不在输入时重建整棵 DOM。
 2. 静止后停止 requestAnimationFrame。
 3. 动画优先 transform、opacity、Web Animations API。
 4. Canvas 只重绘当前变化，不保留无意义空转循环。

@@ -13,7 +13,9 @@ final class SuperCustomControlSpec {
     int heightDp = 64;
     int cornerDp = 14;
     int opacityPercent = 94;
+    int diffusionOpacityPercent = 100;
     int pressColor = Color.rgb(64, 64, 68);
+    int borderColor = 0; // 0 = resolve from current UI palette for backward-compatible configs.
     int textColor = Color.WHITE;
     int textSizeSp = 18;
     int motionMode = OverlayState.MOTION_SIZE;
@@ -21,6 +23,7 @@ final class SuperCustomControlSpec {
     String cpsTemplate = CPS_TEMPLATE;
     int centerXPx = -1;
     int centerYPx = -1;
+    boolean positionSet;
 
     SuperCustomControlSpec(int keyCode, String defaultLabel, boolean darkTheme) {
         this.keyCode = keyCode;
@@ -37,7 +40,9 @@ final class SuperCustomControlSpec {
         out.heightDp = heightDp;
         out.cornerDp = cornerDp;
         out.opacityPercent = opacityPercent;
+        out.diffusionOpacityPercent = diffusionOpacityPercent;
         out.pressColor = pressColor;
+        out.borderColor = borderColor;
         out.textColor = textColor;
         out.textSizeSp = textSizeSp;
         out.motionMode = motionMode;
@@ -45,6 +50,7 @@ final class SuperCustomControlSpec {
         out.cpsTemplate = cpsTemplate;
         out.centerXPx = centerXPx;
         out.centerYPx = centerYPx;
+        out.positionSet = positionSet;
         return out;
     }
 

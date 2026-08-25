@@ -29,8 +29,6 @@ public final class ConfigManager {
     private static final String KEY_CUSTOM_CAPTURE = "custom_capture";
     private static final String KEY_CUSTOM_DRAFT = "custom_draft";
     private static final String KEY_SENSITIVITY_STATUS = "sensitivity_status";
-    private static final String KEY_GLOBAL_HTML_ENABLED = "global_html_enabled";
-    private static final String KEY_GLOBAL_HTML_NAME = "global_html_name";
 
     private ConfigManager() {}
 
@@ -55,7 +53,7 @@ public final class ConfigManager {
         root.put("version", VERSION);
 
         JSONArray entries = new JSONArray();
-        for (Map.Entry<String, ?> item : OverlayState.preferencesForConfig(context).getAll().entrySet()) {
+        for (Map.Entry<String, ?> item : AppPreferences.get(context).getAll().entrySet()) {
             String key = item.getKey();
             if (shouldSkip(key)) continue;
             Object value = item.getValue();
@@ -64,10 +62,10 @@ public final class ConfigManager {
         }
         root.put("preferences", entries);
 
-        if (OverlayState.hasGlobalHtml(context)) {
+        if (GlobalHtmlStore.exists(context)) {
             JSONObject html = new JSONObject();
-            html.put("name", OverlayState.getGlobalHtmlName(context));
-            html.put("content", OverlayState.loadGlobalHtml(context));
+            html.put("name", GlobalHtmlStore.getName(context));
+            html.put("content", GlobalHtmlStore.load(context));
             root.put("globalHtml", html);
         }
         return root.toString(2);
@@ -90,12 +88,12 @@ public final class ConfigManager {
         if (html != null) {
             htmlContent = html.optString("content", "");
             int htmlBytes = htmlContent.getBytes(StandardCharsets.UTF_8).length;
-            if (htmlBytes == 0 || htmlBytes > OverlayState.MAX_GLOBAL_HTML_BYTES) {
+            if (htmlBytes == 0 || htmlBytes > GlobalHtmlStore.MAX_BYTES) {
                 throw new IOException("HTML payload out of range");
             }
         }
 
-        SharedPreferences prefs = OverlayState.preferencesForConfig(context);
+        SharedPreferences prefs = AppPreferences.get(context);
         boolean entryAuthorized = prefs.getBoolean(KEY_ENTRY_AUTHORIZED, false);
         SharedPreferences.Editor editor = prefs.edit().clear();
 
@@ -117,13 +115,10 @@ public final class ConfigManager {
         editor.putString(KEY_SENSITIVITY_STATUS, context.getString(R.string.status_disabled));
         if (!editor.commit()) throw new IOException("Cannot save imported config");
 
-        File htmlFile = OverlayState.globalHtmlFileForConfig(context);
         if (html != null) {
-            writeUtf8(htmlFile, htmlContent);
-            prefs.edit().putString(KEY_GLOBAL_HTML_NAME, html.optString("name", "display.html")).apply();
+            GlobalHtmlStore.restoreFromConfig(context, html.optString("name", "display.html"), htmlContent);
         } else {
-            if (htmlFile.exists() && !htmlFile.delete()) throw new IOException("Cannot remove old HTML");
-            prefs.edit().putBoolean(KEY_GLOBAL_HTML_ENABLED, false).remove(KEY_GLOBAL_HTML_NAME).apply();
+            GlobalHtmlStore.clearFromConfig(context);
         }
 
         OverlayState.refreshAfterConfigChange(context);

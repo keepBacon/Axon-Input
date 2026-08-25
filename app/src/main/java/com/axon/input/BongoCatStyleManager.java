@@ -28,7 +28,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 import java.util.zip.ZipFile;
 
 /** BongoCat 自定义样式导入、校验、选择和删除。导入包永远作为数据读取，不执行其中的脚本。 */
@@ -505,6 +504,14 @@ public final class BongoCatStyleManager {
         config.put("mverRightIdle", renderLegacyPointer ? fileUri(assetImageIgnoreCase(info.root, "rightup")) : "");
         config.put("mverUp", renderLegacyPointer ? fileUri(assetImageIgnoreCase(info.root, "up")) : "");
         config.put("mverRenderHandOverlays", true);
+        // Mver standard packages normally author keyboard hands as full-canvas PNG layers. When
+        // those layers exist they are the source of truth for keyboard-hand placement. Driving the
+        // model's CatParam*HandDown parameters at the same time creates a second hand animation;
+        // mirrored/swapped layouts can then send the pointer hand to the keyboard. Keep the model
+        // hand parameters only as a fallback for Live2D packages that do not provide authored
+        // full-frame hand layers.
+        config.put("mverSpriteHandsAuthoritative",
+                useLive2d && hasFullFrameMverHandOverlay(info.root, info.designWidth, info.designHeight));
 
         config.put("leftKeys", new JSONArray(jsonKeys(leftHandSprites)));
         config.put("rightKeys", new JSONArray(jsonKeys(rightHandSprites)));
@@ -575,6 +582,9 @@ public final class BongoCatStyleManager {
         config.put("mverL2dCorrect", jsonDouble(decoration, 1.0, "l2d_correct", "l2dCorrect"));
         JSONArray l2dOffset = jsonArray(decoration, "l2d_offset", "l2dOffset");
         config.put("mverL2dOffset", l2dOffset == null ? new JSONArray() : l2dOffset);
+        // Preserve the legacy field for diagnostics/import round-tripping. Mver 0.1.6 standard
+        // Live2D does not visually mirror the model from this flag; runtime.js intentionally
+        // keeps the character in native orientation so asymmetric desk/hand layers stay aligned.
         config.put("mverL2dHorizontalFlip", jsonBoolean(decoration, false, "l2d_horizontal_flip", "l2dHorizontalFlip"));
         config.put("mverExpressionBindings", mverComboBindings(mverBindingMatrix(modeConfig, "l2d_expression", "l2dExpression"), true));
         config.put("mverMotionBindings", mverComboBindings(mverBindingMatrix(modeConfig, "l2d_motion", "l2dMotion"), true));
@@ -1026,6 +1036,32 @@ public final class BongoCatStyleManager {
 
     private static String fileUri(File file) {
         return file != null && file.isFile() ? Uri.fromFile(file).toString() : "";
+    }
+
+    /**
+     * Detect whether an Mver standard package supplies authored full-canvas keyboard-hand layers.
+     * Those layers already contain the exact device/hand placement chosen by the skin author and
+     * must not be combined with Live2D CatParam*HandDown animation.
+     */
+    private static boolean hasFullFrameMverHandOverlay(File modeRoot, int designWidth, int designHeight) {
+        if (modeRoot == null || designWidth <= 0 || designHeight <= 0) return false;
+        final double minimumCoverage = 0.72;
+        for (String group : new String[]{"hand", "lefthand", "righthand"}) {
+            File dir = dirIgnoreCase(modeRoot, group);
+            if (dir == null || !dir.isDirectory()) continue;
+            File[] files = dir.listFiles(File::isFile);
+            if (files == null) continue;
+            for (File file : files) {
+                String lower = file.getName().toLowerCase(Locale.ROOT);
+                if (!(lower.endsWith(".png") || lower.endsWith(".webp")
+                        || lower.endsWith(".jpg") || lower.endsWith(".jpeg"))) continue;
+                int[] size = imageSize(file);
+                if (size == null) continue;
+                if (size[0] >= designWidth * minimumCoverage
+                        && size[1] >= designHeight * minimumCoverage) return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1611,50 +1647,6 @@ public final class BongoCatStyleManager {
                         fos.write(buffer, 0, n);
                     }
                 }
-            }
-        }
-    }
-
-    private static void extractZip(InputStream input, File target) throws IOException {
-        long total = 0;
-        int count = 0;
-        byte[] buffer = new byte[64 * 1024];
-        try (ZipInputStream zip = new ZipInputStream(input, StandardCharsets.UTF_8)) {
-            ZipEntry entry;
-            while ((entry = zip.getNextEntry()) != null) {
-                if (++count > MAX_ENTRIES) throw new IOException("样式文件过多");
-                String rawName = entry.getName().replace('\\', '/');
-                if (rawName.isEmpty() || rawName.startsWith("/") || rawName.contains("../")) {
-                    throw new IOException("样式包含非法路径");
-                }
-                if (rawName.contains("/__MACOSX/") || rawName.endsWith("/.DS_Store") || rawName.endsWith(".DS_Store")) {
-                    zip.closeEntry();
-                    continue;
-                }
-                File out = new File(target, rawName);
-                if (!isInside(target, out)) throw new IOException("样式包含非法路径");
-                if (entry.isDirectory()) {
-                    if (!out.exists() && !out.mkdirs()) throw new IOException("Cannot create directory");
-                } else {
-                    File parent = out.getParentFile();
-                    if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IOException("Cannot create parent directory");
-                    long fileBytes = 0;
-                    try (FileOutputStream fos = new FileOutputStream(out)) {
-                        int n;
-                        while ((n = zip.read(buffer)) > 0) {
-                            fileBytes += n;
-                            total += n;
-                            if (fileBytes > MAX_SINGLE_FILE_BYTES) {
-                                throw new IOException("样式中的单个文件不能超过 100 MB");
-                            }
-                            if (total > MAX_EXTRACTED_BYTES) {
-                                throw new IOException("样式解压后的资源总量超过 300 MB");
-                            }
-                            fos.write(buffer, 0, n);
-                        }
-                    }
-                }
-                zip.closeEntry();
             }
         }
     }

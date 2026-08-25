@@ -7,6 +7,7 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
 import android.os.SystemClock;
+import android.util.SparseArray;
 import android.util.SparseBooleanArray;
 import android.util.SparseLongArray;
 import android.view.KeyEvent;
@@ -95,24 +96,29 @@ public final class FullKeyboardOverlayView extends View {
     private final RectF rect = new RectF();
     private final SparseBooleanArray held = new SparseBooleanArray();
     private final SparseLongArray flashUntil = new SparseLongArray();
+    private final SparseArray<Float> fillValue = new SparseArray<>();
+    private final SparseArray<Float> fillFrom = new SparseArray<>();
+    private final SparseArray<Float> fillTo = new SparseArray<>();
     private final SparseLongArray fillStartedAt = new SparseLongArray();
     private final SparseLongArray fillDurationMs = new SparseLongArray();
-    private final SparseLongArray fillResetAt = new SparseLongArray();
     private final Path fillClipPath = new Path();
     private final float density;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
     private int cornerStrength = KeyAppearance.DEFAULT_CORNER_STRENGTH;
     private int baseColor;
+    private int borderColor;
     private int pressColor;
     private int backgroundOpacityPercent = 100;
     private int strokeOpacityPercent = 100;
     private int textOpacityPercent = 100;
+    private int diffusionOpacityPercent = 100;
     private boolean centreFillActive;
 
     public FullKeyboardOverlayView(Context context) {
         super(context);
         density = getResources().getDisplayMetrics().density;
         baseColor = UiPalette.overlayKeyIdle(context);
+        borderColor = UiPalette.overlayStroke(context);
         pressColor = UiPalette.overlayKeyPressed(context);
         paint.setTypeface(FontManager.normal(context));
         strokePaint.setStyle(Paint.Style.STROKE);
@@ -135,6 +141,12 @@ public final class FullKeyboardOverlayView extends View {
         invalidate();
     }
 
+    public void setKeyBorderColor(int color) {
+        if (borderColor == color) return;
+        borderColor = color;
+        invalidate();
+    }
+
     public void setCornerStrength(int strength) {
         int resolved = KeyAppearance.clampCornerStrength(strength);
         if (cornerStrength == resolved) return;
@@ -149,23 +161,18 @@ public final class FullKeyboardOverlayView extends View {
         invalidate();
     }
 
+    public void setDiffusionOpacity(int percent) {
+        diffusionOpacityPercent = clampPercent(percent);
+        invalidate();
+    }
+
     public void setPhysicalKey(int keyCode, boolean pressed) {
         if (!containsKey(keyCode)) return;
-        long now = SystemClock.uptimeMillis();
-        if (pressed) {
-            if (!held.get(keyCode)) {
-                fillStartedAt.put(keyCode, now);
-                fillDurationMs.put(keyCode, KeyAppearance.nextCentreFillDuration(now));
-                fillResetAt.delete(keyCode);
-            }
-            held.put(keyCode, true);
-        } else {
-            if (held.get(keyCode)) {
-                long start = fillStartedAt.get(keyCode, now);
-                long duration = Math.max(1L, fillDurationMs.get(keyCode, 480L));
-                fillResetAt.put(keyCode, Math.max(now, start + duration) + 72L);
-            }
-            held.delete(keyCode);
+        boolean wasPressed = held.get(keyCode);
+        if (pressed) held.put(keyCode, true);
+        else held.delete(keyCode);
+        if (wasPressed != pressed) {
+            startFillTransition(keyCode, pressed, SystemClock.uptimeMillis());
         }
         invalidate();
     }
@@ -173,21 +180,19 @@ public final class FullKeyboardOverlayView extends View {
     public void flashKey(int keyCode) {
         if (!containsKey(keyCode)) return;
         long now = SystemClock.uptimeMillis();
-        long duration = KeyAppearance.nextCentreFillDuration(now);
         flashUntil.put(keyCode, now + FLASH_MS);
-        fillStartedAt.put(keyCode, now);
-        fillDurationMs.put(keyCode, duration);
-        fillResetAt.put(keyCode, now + duration + 72L);
+        startFillTransition(keyCode, true, now);
         invalidate();
-        postInvalidateDelayed(duration + 70L);
     }
 
     public void clearPressed() {
         held.clear();
         flashUntil.clear();
+        fillValue.clear();
+        fillFrom.clear();
+        fillTo.clear();
         fillStartedAt.clear();
         fillDurationMs.clear();
-        fillResetAt.clear();
         invalidate();
     }
 
@@ -233,24 +238,25 @@ public final class FullKeyboardOverlayView extends View {
             rect.set(x, y, x + width, y + height);
             float radius = KeyAppearance.roundedRadius(rect, cornerStrength);
 
-            // The native keyboard never jumps its whole surface to pressColor.  The only press
-            // visual is one opaque centre circle that grows until it covers the key.
+            ensureFillTarget(key.code, pressed, now);
+            float fillProgress = evaluateFill(key.code, now);
+            float bounce = KeyAppearance.cardFeatureBounce(fillProgress);
+            int keySave = canvas.save();
+            canvas.scale(bounce, bounce, rect.centerX(), rect.centerY());
+
+            // Matrix Card UI state animation: stable idle surface + centered key-shaped state fill.
             paint.setColor(withOpacity(baseColor, backgroundOpacityPercent));
             KeyAppearance.drawShape(canvas, rect, keyStyle, radius, paint);
-
-            long fillStart = fillStartedAt.get(key.code, 0L);
-            long fillDuration = Math.max(1L, fillDurationMs.get(key.code, 480L));
-            long resetAt = fillResetAt.get(key.code, 0L);
-            float fillProgress = 0f;
-            if (fillStart > 0L && (pressed || resetAt <= 0L || now < resetAt)) {
-                fillProgress = KeyAppearance.centreFillProgress(fillStart, fillDuration, now);
+            if (fillProgress > 0f) {
                 KeyAppearance.drawCentreFill(canvas, rect, keyStyle, radius,
-                        withOpacity(pressColor, backgroundOpacityPercent),
+                        withOpacity(pressColor, diffusionOpacityPercent),
                         fillProgress, paint, fillClipPath);
-                if (pressed || fillProgress < 1f || (resetAt > now)) centreFillActive = true;
+            }
+            if (fillStartedAt.get(key.code, 0L) > 0L || flashUntil.get(key.code, 0L) > now) {
+                centreFillActive = true;
             }
 
-            strokePaint.setColor(withOpacity(UiPalette.overlayStroke(getContext()), strokeOpacityPercent));
+            strokePaint.setColor(withOpacity(borderColor, strokeOpacityPercent));
             KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
 
             int keyText = KeyAppearance.blendColor(
@@ -264,8 +270,61 @@ public final class FullKeyboardOverlayView extends View {
             Paint.FontMetrics fm = paint.getFontMetrics();
             float baseline = y + height * 0.5f - (fm.ascent + fm.descent) * 0.5f;
             canvas.drawText(key.label, x + width * 0.5f, baseline, paint);
+            canvas.restoreToCount(keySave);
             x += width + gap;
         }
+    }
+
+    private void ensureFillTarget(int keyCode, boolean enabledNow, long now) {
+        float expected = enabledNow ? 1f : 0f;
+        float currentTarget = fillTo.get(keyCode, fillValue.get(keyCode, 0f));
+        if (Math.abs(currentTarget - expected) > 0.001f) {
+            startFillTransition(keyCode, enabledNow, now);
+        }
+    }
+
+    private void startFillTransition(int keyCode, boolean enabledNow, long now) {
+        float current = evaluateFill(keyCode, now);
+        float end = enabledNow ? 1f : 0f;
+        fillValue.put(keyCode, current);
+        fillFrom.put(keyCode, current);
+        fillTo.put(keyCode, end);
+        long duration = KeyAppearance.cardFeatureToggleDuration(current, end);
+        if (duration <= 0L) {
+            fillValue.put(keyCode, end);
+            fillFrom.put(keyCode, end);
+            fillStartedAt.delete(keyCode);
+            fillDurationMs.delete(keyCode);
+            return;
+        }
+        fillStartedAt.put(keyCode, now);
+        fillDurationMs.put(keyCode, duration);
+    }
+
+    private float evaluateFill(int keyCode, long now) {
+        float value = fillValue.get(keyCode, 0f);
+        long start = fillStartedAt.get(keyCode, 0L);
+        long duration = fillDurationMs.get(keyCode, 0L);
+        if (start <= 0L || duration <= 0L) return clamp01(value);
+        float linear = (now - start) / (float) duration;
+        float end = fillTo.get(keyCode, value);
+        if (linear >= 1f) {
+            fillValue.put(keyCode, end);
+            fillFrom.put(keyCode, end);
+            fillStartedAt.delete(keyCode);
+            fillDurationMs.delete(keyCode);
+            return clamp01(end);
+        }
+        float from = fillFrom.get(keyCode, value);
+        if (linear <= 0f) return clamp01(from);
+        float eased = KeyAppearance.cardFeatureToggleEase(linear);
+        value = from + (end - from) * eased;
+        fillValue.put(keyCode, value);
+        return clamp01(value);
+    }
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
     }
 
     private boolean containsKey(int keyCode) {

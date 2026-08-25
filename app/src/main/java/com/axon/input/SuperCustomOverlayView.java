@@ -73,17 +73,13 @@ final class SuperCustomOverlayView extends FrameLayout {
             int controlHeight = dp(binding.spec.heightDp);
             int halfW = controlWidth / 2;
             int halfH = controlHeight / 2;
-            int centerX = binding.spec.centerXPx >= 0 ? binding.spec.centerXPx : width / 2;
-            int centerY = binding.spec.centerYPx >= 0 ? binding.spec.centerYPx : height / 2;
-            centerX = clamp(centerX, halfW, Math.max(halfW, width - halfW));
-            centerY = clamp(centerY, halfH, Math.max(halfH, height - halfH));
+            int centerX = binding.spec.positionSet ? binding.spec.centerXPx : width / 2;
+            int centerY = binding.spec.positionSet ? binding.spec.centerYPx : height / 2;
+            // Off-screen centers are intentional in v1.8. The full-screen parent has clipping
+            // disabled, so partially visible controls render exactly at the saved coordinates.
             binding.view.layout(centerX - halfW, centerY - halfH,
                     centerX - halfW + controlWidth, centerY - halfH + controlHeight);
         }
-    }
-
-    private int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
     }
 
     private int dp(float value) {

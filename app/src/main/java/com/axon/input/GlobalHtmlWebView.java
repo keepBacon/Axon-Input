@@ -4,7 +4,9 @@ import android.content.Context;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.SystemClock;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -13,10 +15,14 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Arrays;
+
 /** HTML 自定义显示层。每个悬浮窗口独立运行。Android 只推送输入和配置状态。 */
 public final class GlobalHtmlWebView extends WebView {
     public static final int API_VERSION = 10;
-    public static final String RENDERER_VERSION = "v30";
+    public static final String RENDERER_VERSION = "v31";
     public static final String TYPE_KEYBOARD = "keyboard";
     public static final String TYPE_MOUSE = "mouse";
     public static final String TYPE_CUSTOM = "custom";
@@ -28,6 +34,7 @@ public final class GlobalHtmlWebView extends WebView {
     public static final String TYPE_GAMEPAD_LEFT_SHOULDER = "gamepad-left-shoulder";
     public static final String TYPE_GAMEPAD_RIGHT_SHOULDER = "gamepad-right-shoulder";
     public static final String TYPE_GAMEPAD_BACK = "gamepad-back";
+    public static final String TYPE_GAMEPAD_DPAD = "gamepad-dpad";
 
     private static final int BTN_SOUTH = 1 << 0;
     private static final int BTN_EAST = 1 << 1;
@@ -45,6 +52,10 @@ public final class GlobalHtmlWebView extends WebView {
     private static final int BTN_R2 = 1 << 9;
     private static final int BTN_L3 = 1 << 13;
     private static final int BTN_R3 = 1 << 14;
+    private static final int BTN_DPAD_UP = 1 << 20;
+    private static final int BTN_DPAD_DOWN = 1 << 21;
+    private static final int BTN_DPAD_LEFT = 1 << 22;
+    private static final int BTN_DPAD_RIGHT = 1 << 23;
 
     private static final int[] KEYBOARD_BITS = {
             NativeKeyEngine.W, NativeKeyEngine.A, NativeKeyEngine.S, NativeKeyEngine.D, NativeKeyEngine.SPACE
@@ -54,6 +65,7 @@ public final class GlobalHtmlWebView extends WebView {
     private static final int[] KEYBOARD_CODES = {51, 29, 47, 32, 62};
 
     private final String type;
+    private final String runtimeSource;
 
     private int sizePercent = 100;
     private int dotSizePercent = 100;
@@ -122,11 +134,11 @@ public final class GlobalHtmlWebView extends WebView {
             // 高频输入只发送变化状态，减少 JSON 重建。
             if (pointerDirty) {
                 pointerDirty = false;
-                dispatchRealtime("keydisplay:pointer", "pointer", pointerObject());
+                dispatch("keydisplay:pointer", pointerObject());
             }
             if (gamepadDirty) {
                 gamepadDirty = false;
-                dispatchRealtime("keydisplay:gamepad", "gamepad", gamepadObject());
+                dispatch("keydisplay:gamepad", gamepadObject());
             }
             pointerDx = 0;
             pointerDy = 0;
@@ -136,6 +148,7 @@ public final class GlobalHtmlWebView extends WebView {
     public GlobalHtmlWebView(Context context, String type) {
         super(context);
         this.type = type == null ? TYPE_KEYBOARD : type;
+        this.runtimeSource = createRuntimeApiSource();
 
         setBackgroundColor(Color.TRANSPARENT);
         setVerticalScrollBarEnabled(false);
@@ -152,6 +165,11 @@ public final class GlobalHtmlWebView extends WebView {
         settings.setSupportMultipleWindows(false);
         settings.setMediaPlaybackRequiresUserGesture(true);
         settings.setDefaultTextEncodingName("utf-8");
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
 
         setWebViewClient(new WebViewClient() {
             @Override
@@ -161,11 +179,36 @@ public final class GlobalHtmlWebView extends WebView {
             }
 
             @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                Uri uri = request == null ? null : request.getUrl();
+                if (uri != null
+                        && "https".equalsIgnoreCase(uri.getScheme())
+                        && "keydisplay.local".equalsIgnoreCase(uri.getHost())
+                        && "/__axon_font__".equals(uri.getPath())
+                        && FontManager.shouldServeImportedFont(getContext())) {
+                    try {
+                        InputStream input = FontManager.openImportedFont(getContext());
+                        return new WebResourceResponse("font/ttf", null, input);
+                    } catch (IOException ignored) {
+                        return new WebResourceResponse("text/plain", "UTF-8",
+                                new java.io.ByteArrayInputStream(new byte[0]));
+                    }
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
+                if (currentHtml.isEmpty()) return;
                 pageReady = true;
                 installRuntimeApi();
-                dispatch("keydisplay:init", buildStateSafely());
-                dispatchFullState();
+                applyConfiguredFont();
+                dispatchInitialState();
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request != null && request.isForMainFrame()) pageReady = false;
             }
         });
     }
@@ -173,11 +216,22 @@ public final class GlobalHtmlWebView extends WebView {
     public void loadRendererHtml(String html) {
         String normalized = html == null ? "" : html;
         if (normalized.equals(currentHtml)) {
-            if (pageReady) dispatchFullState();
+            if (pageReady) {
+                applyConfiguredFont();
+                scheduleFullState();
+            }
             return;
         }
         currentHtml = normalized;
         pageReady = false;
+        removeCallbacks(fullStateDispatch);
+        removeCallbacks(realtimeDispatch);
+        fullStateFramePosted = false;
+        realtimeFramePosted = false;
+        pointerDx = 0;
+        pointerDy = 0;
+        pointerDirty = false;
+        gamepadDirty = false;
         // 用户脚本执行前注入只读 API。
         String document = injectRuntimeBootstrap(normalized);
         loadDataWithBaseURL(
@@ -189,24 +243,36 @@ public final class GlobalHtmlWebView extends WebView {
     }
 
     public void setDisplaySize(int percent) {
-        sizePercent = Math.max(50, Math.min(150, percent));
+        int next = Math.max(50, Math.min(150, percent));
+        if (sizePercent == next) return;
+        sizePercent = next;
         scheduleFullState();
     }
 
     public void setDotSizePercent(int percent) {
-        dotSizePercent = Math.max(50, Math.min(150, percent));
+        int next = Math.max(50, Math.min(150, percent));
+        if (dotSizePercent == next) return;
+        dotSizePercent = next;
         scheduleFullState();
     }
 
     public void setKeyboardOptions(boolean showSpace, boolean showSpaceDps) {
+        boolean nextDps = showSpace && showSpaceDps;
+        if (keyboardShowSpace == showSpace && keyboardShowSpaceDps == nextDps) return;
         keyboardShowSpace = showSpace;
-        keyboardShowSpaceDps = showSpace && showSpaceDps;
+        keyboardShowSpaceDps = nextDps;
         scheduleFullState();
     }
 
     public void setKeyboardDps(int dps) {
-        keyboardSpaceDps = Math.max(0, Math.min(999, dps));
-        scheduleFullState();
+        int next = Math.max(0, Math.min(999, dps));
+        if (keyboardSpaceDps == next) return;
+        keyboardSpaceDps = next;
+        if (keyboardShowSpace && keyboardShowSpaceDps) {
+            dispatch("keydisplay:key", keyObject(
+                    KEYBOARD_IDS[4], KEYBOARD_LABELS[4], KEYBOARD_CODES[4], 4,
+                    (pressedMask & KEYBOARD_BITS[4]) != 0, keyboardSpaceDps));
+        }
     }
 
     public void setKeyboardMask(int newMask) {
@@ -214,11 +280,12 @@ public final class GlobalHtmlWebView extends WebView {
         int old = pressedMask;
         pressedMask = newMask;
         dispatchKeyboardChanges(old, newMask);
-        scheduleFullState();
     }
 
     public void setCustomKeys(int[] keyCodes, int columns) {
         int[] next = keyCodes == null ? new int[0] : keyCodes.clone();
+        int nextColumns = Math.max(1, Math.min(8, columns));
+        if (customColumns == nextColumns && Arrays.equals(customKeyCodes, next)) return;
         boolean[] nextPressed = new boolean[next.length];
         for (int i = 0; i < next.length; i++) {
             for (int j = 0; j < customKeyCodes.length; j++) {
@@ -230,7 +297,7 @@ public final class GlobalHtmlWebView extends WebView {
         }
         customKeyCodes = next;
         customPressed = nextPressed;
-        customColumns = Math.max(1, Math.min(8, columns));
+        customColumns = nextColumns;
         scheduleFullState();
     }
 
@@ -239,56 +306,95 @@ public final class GlobalHtmlWebView extends WebView {
             if (customKeyCodes[i] == keyCode && customPressed[i] != pressed) {
                 customPressed[i] = pressed;
                 dispatch("keydisplay:key", keyObjectForCustom(i));
-                scheduleFullState();
                 return;
             }
         }
     }
 
     public void releaseCustomKeys() {
-        boolean changed = false;
+        JSONArray changed = new JSONArray();
         for (int i = 0; i < customPressed.length; i++) {
             if (customPressed[i]) {
                 customPressed[i] = false;
-                dispatch("keydisplay:key", keyObjectForCustom(i));
-                changed = true;
+                changed.put(keyObjectForCustom(i));
             }
         }
-        if (changed) dispatchFullState();
+        dispatchKeys(changed);
     }
 
-    /** 最近按键列表只在状态变化时更新。 */
+    /** 最近按键列表：结构变化才发送完整状态，按压/CPS 变化使用细粒度 key 事件。 */
     public void setPromptState(int[] ids, String[] labels, boolean[] pressed, int[] cps, int[] pressCount) {
-        promptIds = ids == null ? new int[0] : ids.clone();
-        promptLabels = labels == null ? new String[0] : labels.clone();
-        promptPressed = pressed == null ? new boolean[0] : pressed.clone();
-        promptCps = cps == null ? new int[0] : cps.clone();
-        promptPressCount = pressCount == null ? new int[0] : pressCount.clone();
-        scheduleFullState();
-    }
+        int[] nextIds = ids == null ? new int[0] : ids.clone();
+        String[] nextLabels = labels == null ? new String[0] : labels.clone();
+        boolean[] nextPressed = pressed == null ? new boolean[0] : pressed.clone();
+        int[] nextCps = cps == null ? new int[0] : cps.clone();
+        int[] nextPressCount = pressCount == null ? new int[0] : pressCount.clone();
 
-    public void dispatchPromptKey(int id, String label, boolean pressed, int cps, int pressCount) {
-        JSONObject key = new JSONObject();
-        try {
-            key.put("id", "prompt-" + id);
-            key.put("rawId", id);
-            key.put("label", label == null ? "KEY" : label);
-            key.put("pressed", pressed);
-            key.put("cps", Math.max(0, cps));
-            key.put("dps", Math.max(0, cps));
-            key.put("pressCount", Math.max(0, pressCount));
-            key.put("source", "prompt");
-            key.put("displayType", TYPE_KEY_PROMPT);
-        } catch (JSONException ignored) {}
-        dispatch("keydisplay:key", key);
+        boolean structureChanged = promptIds.length != nextIds.length
+                || promptLabels.length != nextLabels.length
+                || nextIds.length != nextLabels.length
+                || promptIds.length != promptLabels.length;
+        if (!structureChanged) {
+            for (int i = 0; i < nextIds.length; i++) {
+                String oldLabel = i < promptLabels.length ? promptLabels[i] : null;
+                String nextLabel = i < nextLabels.length ? nextLabels[i] : null;
+                if (promptIds[i] != nextIds[i]
+                        || (oldLabel == null ? nextLabel != null : !oldLabel.equals(nextLabel))) {
+                    structureChanged = true;
+                    break;
+                }
+            }
+        }
+
+        JSONArray changed = new JSONArray();
+        if (!structureChanged) {
+            int count = Math.min(nextIds.length, nextLabels.length);
+            for (int i = 0; i < count; i++) {
+                boolean oldPressed = i < promptPressed.length && promptPressed[i];
+                boolean newPressed = i < nextPressed.length && nextPressed[i];
+                int oldCps = i < promptCps.length ? promptCps[i] : 0;
+                int newCps = i < nextCps.length ? nextCps[i] : 0;
+                int oldCount = i < promptPressCount.length ? promptPressCount[i] : 0;
+                int newCount = i < nextPressCount.length ? nextPressCount[i] : 0;
+                if (oldPressed != newPressed || oldCps != newCps || oldCount != newCount) {
+                    JSONObject key = new JSONObject();
+                    try {
+                        key.put("id", "prompt-" + nextIds[i]);
+                        key.put("rawId", nextIds[i]);
+                        key.put("label", nextLabels[i]);
+                        key.put("index", i);
+                        key.put("pressed", newPressed);
+                        key.put("cps", Math.max(0, newCps));
+                        key.put("dps", Math.max(0, newCps));
+                        key.put("pressCount", Math.max(0, newCount));
+                        key.put("source", "prompt");
+                        key.put("displayType", TYPE_KEY_PROMPT);
+                    } catch (JSONException ignored) {}
+                    changed.put(key);
+                }
+            }
+        }
+
+        promptIds = nextIds;
+        promptLabels = nextLabels;
+        promptPressed = nextPressed;
+        promptCps = nextCps;
+        promptPressCount = nextPressCount;
+        if (structureChanged) scheduleFullState();
+        else dispatchKeys(changed);
     }
 
     public void setTrajectoryButtonColors(boolean leftEnabled, int leftColor,
                                             boolean rightEnabled, int rightColor) {
+        int nextLeft = 0xff000000 | (leftColor & 0x00ffffff);
+        int nextRight = 0xff000000 | (rightColor & 0x00ffffff);
+        if (trajectoryLeftColorEnabled == leftEnabled
+                && trajectoryRightColorEnabled == rightEnabled
+                && trajectoryLeftColor == nextLeft && trajectoryRightColor == nextRight) return;
         trajectoryLeftColorEnabled = leftEnabled;
         trajectoryRightColorEnabled = rightEnabled;
-        trajectoryLeftColor = 0xff000000 | (leftColor & 0x00ffffff);
-        trajectoryRightColor = 0xff000000 | (rightColor & 0x00ffffff);
+        trajectoryLeftColor = nextLeft;
+        trajectoryRightColor = nextRight;
         scheduleFullState();
     }
 
@@ -300,10 +406,10 @@ public final class GlobalHtmlWebView extends WebView {
         boolean oldRight = (old & 2L) != 0;
         boolean newLeft = (stats & 1L) != 0;
         boolean newRight = (stats & 2L) != 0;
-        if (oldLeft != newLeft) dispatch("keydisplay:key", mouseKeyObject(true));
-        if (oldRight != newRight) dispatch("keydisplay:key", mouseKeyObject(false));
-        dispatch("keydisplay:mouse", mouseObject());
-        scheduleFullState();
+        JSONArray keyChanges = new JSONArray();
+        if (oldLeft != newLeft) keyChanges.put(mouseKeyObject(true));
+        if (oldRight != newRight) keyChanges.put(mouseKeyObject(false));
+        dispatchMouseBatch(keyChanges, mouseObject());
     }
 
     public void addPointerDelta(int dx, int dy) {
@@ -345,17 +451,22 @@ public final class GlobalHtmlWebView extends WebView {
     }
 
     public void setStickShape(int shape) {
-        stickShape = shape == GamepadOverlayView.SHAPE_SQUARE
+        int next = shape == GamepadOverlayView.SHAPE_SQUARE
                 ? GamepadOverlayView.SHAPE_SQUARE : GamepadOverlayView.SHAPE_CIRCLE;
+        if (stickShape == next) return;
+        stickShape = next;
         scheduleFullState();
     }
 
     public void setFaceReversed(boolean reversed) {
+        if (faceReversed == reversed) return;
         faceReversed = reversed;
         scheduleFullState();
     }
 
     public void setFaceDpsConfig(boolean y, boolean x, boolean b, boolean a) {
+        if (faceYDpsEnabled == y && faceXDpsEnabled == x
+                && faceBDpsEnabled == b && faceADpsEnabled == a) return;
         faceYDpsEnabled = y;
         faceXDpsEnabled = x;
         faceBDpsEnabled = b;
@@ -364,6 +475,7 @@ public final class GlobalHtmlWebView extends WebView {
     }
 
     public void setShoulderConfig(boolean triggerProgress, boolean dps) {
+        if (triggerProgressEnabled == triggerProgress && shoulderDpsEnabled == dps) return;
         triggerProgressEnabled = triggerProgress;
         shoulderDpsEnabled = dps;
         scheduleFullState();
@@ -375,26 +487,29 @@ public final class GlobalHtmlWebView extends WebView {
         if (faceYDps == ny && faceXDps == nx && faceBDps == nb && faceADps == na
                 && l1Dps == nl1 && r1Dps == nr1) return;
         faceYDps = ny; faceXDps = nx; faceBDps = nb; faceADps = na; l1Dps = nl1; r1Dps = nr1;
-        scheduleFullState();
+        gamepadDirty = true;
+        scheduleRealtimeFrame();
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
-        if (w != oldw || h != oldh) dispatchFullState();
+        if (w != oldw || h != oldh) scheduleFullState();
     }
 
     private void dispatchKeyboardChanges(int oldMask, int newMask) {
+        JSONArray changes = new JSONArray();
         for (int i = 0; i < KEYBOARD_BITS.length; i++) {
             if (i == 4 && !keyboardShowSpace) continue;
             boolean before = (oldMask & KEYBOARD_BITS[i]) != 0;
             boolean after = (newMask & KEYBOARD_BITS[i]) != 0;
             if (before != after) {
                 int cps = (i == 4 && keyboardShowSpaceDps) ? keyboardSpaceDps : 0;
-                dispatch("keydisplay:key", keyObject(
+                changes.put(keyObject(
                         KEYBOARD_IDS[i], KEYBOARD_LABELS[i], KEYBOARD_CODES[i], i, after, cps));
             }
         }
+        dispatchKeys(changes);
     }
 
     private JSONObject buildStateSafely() {
@@ -547,6 +662,10 @@ public final class GlobalHtmlWebView extends WebView {
             buttons.put("p2", (gamepadButtons & BTN_BACK_2) != 0);
             buttons.put("p3", (gamepadButtons & BTN_BACK_3) != 0);
             buttons.put("p4", (gamepadButtons & BTN_BACK_4) != 0);
+            buttons.put("dpadUp", (gamepadButtons & BTN_DPAD_UP) != 0);
+            buttons.put("dpadDown", (gamepadButtons & BTN_DPAD_DOWN) != 0);
+            buttons.put("dpadLeft", (gamepadButtons & BTN_DPAD_LEFT) != 0);
+            buttons.put("dpadRight", (gamepadButtons & BTN_DPAD_RIGHT) != 0);
             pad.put("buttons", buttons);
             JSONObject cps = new JSONObject();
             cps.put("y", faceYDps);
@@ -622,6 +741,7 @@ public final class GlobalHtmlWebView extends WebView {
             out.put("keyStyle", keyStyleName(OverlayState.getKeyStyle(c, display)));
             out.put("cornerStrength", OverlayState.getKeyCornerStrength(c, display));
             out.put("baseColor", colorHex(OverlayState.getKeyBaseColor(c, display)));
+            out.put("borderColor", colorHex(OverlayState.getKeyBorderColor(c, display)));
             out.put("pressColor", colorHex(OverlayState.getKeyPressColor(c, display)));
         }
         int spacing = currentSpacingDp(c);
@@ -634,6 +754,7 @@ public final class GlobalHtmlWebView extends WebView {
             out.put("keyStyle", keyStyleName(OverlayState.getKeyStyle(c, display)));
             out.put("cornerStrength", OverlayState.getKeyCornerStrength(c, display));
             out.put("baseColor", colorHex(OverlayState.getKeyBaseColor(c, display)));
+            out.put("borderColor", colorHex(OverlayState.getKeyBorderColor(c, display)));
             out.put("pressColor", colorHex(OverlayState.getKeyPressColor(c, display)));
         }
     }
@@ -667,9 +788,9 @@ public final class GlobalHtmlWebView extends WebView {
     }
 
     private static String gamepadCompatibilityName(int mode) {
-        if (mode == OverlayState.GAMEPAD_COMPAT_LOOSE) return "loose";
-        if (mode == OverlayState.GAMEPAD_COMPAT_ANDROID) return "android";
-        if (mode == OverlayState.GAMEPAD_COMPAT_EVDEV) return "evdev";
+        if (mode == GamepadSettingsStore.COMPAT_LOOSE) return "loose";
+        if (mode == GamepadSettingsStore.COMPAT_ANDROID) return "android";
+        if (mode == GamepadSettingsStore.COMPAT_EVDEV) return "evdev";
         return "auto";
     }
 
@@ -702,11 +823,11 @@ public final class GlobalHtmlWebView extends WebView {
         JSONObject r = new JSONObject();
         Context c = getContext();
         r.put("dragEnabled", OverlayState.isDragEnabled(c));
-        r.put("htmlEnabled", OverlayState.isGlobalHtmlEnabled(c));
-        r.put("sensitivityEnabled", OverlayState.isSensitivityEnabled(c));
-        r.put("mouseSensitivity", OverlayState.getMouseSensitivity(c));
-        r.put("gamepadSensitivity", OverlayState.getGamepadSensitivity(c));
-        r.put("sensitivityMode", OverlayState.getSensitivityMode(c) == OverlayState.SENSITIVITY_MODE_ROOT ? "root" : "shizuku");
+        r.put("htmlEnabled", GlobalHtmlStore.isEnabled(c));
+        r.put("sensitivityEnabled", SensitivitySettingsStore.isEnabled(c));
+        r.put("mouseSensitivity", SensitivitySettingsStore.getMousePercent(c));
+        r.put("gamepadSensitivity", SensitivitySettingsStore.getGamepadPercent(c));
+        r.put("sensitivityMode", SensitivitySettingsStore.getMode(c) == SensitivitySettingsStore.MODE_ROOT ? "root" : "shizuku");
         r.put("positionXPercent", OverlayState.getPositionX(c, displayTypeForState()));
         r.put("positionYPercent", OverlayState.getPositionY(c, displayTypeForState()));
         r.put("displayType", displayTypeForState());
@@ -786,14 +907,14 @@ public final class GlobalHtmlWebView extends WebView {
         face.put("enabled", OverlayState.isGamepadFaceEnabled(c));
         face.put("sizePercent", OverlayState.getGamepadDisplaySize(c, GamepadOverlayView.DISPLAY_FACE));
         face.put("reversed", OverlayState.isGamepadFaceReversed(c));
-        face.put("yDps", OverlayState.isGamepadFaceYDpsEnabled(c));
-        face.put("xDps", OverlayState.isGamepadFaceXDpsEnabled(c));
-        face.put("bDps", OverlayState.isGamepadFaceBDpsEnabled(c));
-        face.put("aCps", OverlayState.isGamepadFaceADpsEnabled(c));
-        face.put("yCps", OverlayState.isGamepadFaceYDpsEnabled(c));
-        face.put("xCps", OverlayState.isGamepadFaceXDpsEnabled(c));
-        face.put("bCps", OverlayState.isGamepadFaceBDpsEnabled(c));
-        face.put("aDps", OverlayState.isGamepadFaceADpsEnabled(c)); // v9 兼容
+        face.put("yDps", GamepadSettingsStore.isFaceYDpsEnabled(c));
+        face.put("xDps", GamepadSettingsStore.isFaceXDpsEnabled(c));
+        face.put("bDps", GamepadSettingsStore.isFaceBDpsEnabled(c));
+        face.put("aCps", GamepadSettingsStore.isFaceADpsEnabled(c));
+        face.put("yCps", GamepadSettingsStore.isFaceYDpsEnabled(c));
+        face.put("xCps", GamepadSettingsStore.isFaceXDpsEnabled(c));
+        face.put("bCps", GamepadSettingsStore.isFaceBDpsEnabled(c));
+        face.put("aDps", GamepadSettingsStore.isFaceADpsEnabled(c)); // v9 兼容
         face.put("spacingDp", OverlayState.getGamepadFaceSpacing(c));
         appendAppearance(face, c, GamepadOverlayView.DISPLAY_FACE);
         gamepad.put("face", face);
@@ -801,18 +922,18 @@ public final class GlobalHtmlWebView extends WebView {
         JSONObject leftShoulder = new JSONObject();
         leftShoulder.put("enabled", OverlayState.isGamepadLeftShoulderEnabled(c));
         leftShoulder.put("sizePercent", OverlayState.getGamepadDisplaySize(c, GamepadOverlayView.DISPLAY_LEFT_SHOULDER));
-        leftShoulder.put("triggerProgress", OverlayState.isGamepadL2ProgressEnabled(c));
-        leftShoulder.put("cps", OverlayState.isGamepadL1DpsEnabled(c));
-        leftShoulder.put("dps", OverlayState.isGamepadL1DpsEnabled(c)); // v9 兼容
+        leftShoulder.put("triggerProgress", GamepadSettingsStore.isL2ProgressEnabled(c));
+        leftShoulder.put("cps", GamepadSettingsStore.isL1DpsEnabled(c));
+        leftShoulder.put("dps", GamepadSettingsStore.isL1DpsEnabled(c)); // v9 兼容
         appendAppearance(leftShoulder, c, GamepadOverlayView.DISPLAY_LEFT_SHOULDER);
         gamepad.put("leftShoulder", leftShoulder);
 
         JSONObject rightShoulder = new JSONObject();
         rightShoulder.put("enabled", OverlayState.isGamepadRightShoulderEnabled(c));
         rightShoulder.put("sizePercent", OverlayState.getGamepadDisplaySize(c, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER));
-        rightShoulder.put("triggerProgress", OverlayState.isGamepadR2ProgressEnabled(c));
-        rightShoulder.put("cps", OverlayState.isGamepadR1DpsEnabled(c));
-        rightShoulder.put("dps", OverlayState.isGamepadR1DpsEnabled(c)); // v9 兼容
+        rightShoulder.put("triggerProgress", GamepadSettingsStore.isR2ProgressEnabled(c));
+        rightShoulder.put("cps", GamepadSettingsStore.isR1DpsEnabled(c));
+        rightShoulder.put("dps", GamepadSettingsStore.isR1DpsEnabled(c)); // v9 兼容
         appendAppearance(rightShoulder, c, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
         gamepad.put("rightShoulder", rightShoulder);
 
@@ -823,14 +944,14 @@ public final class GlobalHtmlWebView extends WebView {
         gamepad.put("back", back);
 
         JSONObject compatibility = new JSONObject();
-        compatibility.put("mode", gamepadCompatibilityName(OverlayState.getGamepadCompatibilityMode(c)));
-        compatibility.put("swapXY", OverlayState.isGamepadSwapXY(c));
-        compatibility.put("swapAB", OverlayState.isGamepadSwapAB(c));
-        compatibility.put("swapSticks", OverlayState.isGamepadSwapSticks(c));
-        compatibility.put("swapTriggers", OverlayState.isGamepadSwapTriggers(c));
-        compatibility.put("customSwapEnabled", OverlayState.isGamepadCustomSwapEnabled(c));
-        compatibility.put("customSwapFirst", OverlayState.getGamepadCustomSwapFirst(c));
-        compatibility.put("customSwapSecond", OverlayState.getGamepadCustomSwapSecond(c));
+        compatibility.put("mode", gamepadCompatibilityName(GamepadSettingsStore.getCompatibilityMode(c)));
+        compatibility.put("swapXY", GamepadSettingsStore.isSwapXY(c));
+        compatibility.put("swapAB", GamepadSettingsStore.isSwapAB(c));
+        compatibility.put("swapSticks", GamepadSettingsStore.isSwapSticks(c));
+        compatibility.put("swapTriggers", GamepadSettingsStore.isSwapTriggers(c));
+        compatibility.put("customSwapEnabled", GamepadSettingsStore.isCustomSwapEnabled(c));
+        compatibility.put("customSwapFirst", GamepadSettingsStore.getCustomSwapFirst(c));
+        compatibility.put("customSwapSecond", GamepadSettingsStore.getCustomSwapSecond(c));
         gamepad.put("compatibility", compatibility);
         root.put("gamepad", gamepad);
 
@@ -840,25 +961,28 @@ public final class GlobalHtmlWebView extends WebView {
         root.put("interaction", interaction);
 
         JSONObject sensitivity = new JSONObject();
-        sensitivity.put("enabled", OverlayState.isSensitivityEnabled(c));
-        sensitivity.put("mode", OverlayState.getSensitivityMode(c) == OverlayState.SENSITIVITY_MODE_ROOT ? "root" : "shizuku");
-        sensitivity.put("mousePercent", OverlayState.getMouseSensitivity(c));
-        sensitivity.put("gamepadPercent", OverlayState.getGamepadSensitivity(c));
-        sensitivity.put("status", OverlayState.getSensitivityStatus(c));
+        sensitivity.put("enabled", SensitivitySettingsStore.isEnabled(c));
+        sensitivity.put("mode", SensitivitySettingsStore.getMode(c) == SensitivitySettingsStore.MODE_ROOT ? "root" : "shizuku");
+        sensitivity.put("mousePercent", SensitivitySettingsStore.getMousePercent(c));
+        sensitivity.put("gamepadPercent", SensitivitySettingsStore.getGamepadPercent(c));
+        sensitivity.put("status", SensitivitySettingsStore.getStatus(c));
         root.put("sensitivity", sensitivity);
 
         JSONObject html = new JSONObject();
-        html.put("enabled", OverlayState.isGlobalHtmlEnabled(c));
-        html.put("name", OverlayState.getGlobalHtmlName(c));
+        html.put("enabled", GlobalHtmlStore.isEnabled(c));
+        html.put("name", GlobalHtmlStore.getName(c));
         html.put("apiVersion", API_VERSION);
-        html.put("maxBytes", OverlayState.MAX_GLOBAL_HTML_BYTES);
+        html.put("maxBytes", GlobalHtmlStore.MAX_BYTES);
         html.put("domStorage", true);
         html.put("networkAccess", false);
         root.put("html", html);
 
         JSONObject appearance = new JSONObject();
+        appearance.put("fontOverrideEnabled", FontManager.isEnabled(c));
+        appearance.put("fontChoice", FontManager.getChoice(c));
         appearance.put("customFont", FontManager.hasImportedFont(c));
         appearance.put("fontName", FontManager.getImportedFontName(c));
+        appearance.put("htmlFontMode", GlobalHtmlStore.getFontMode(c));
         root.put("appearance", appearance);
         return root;
     }
@@ -891,6 +1015,7 @@ public final class GlobalHtmlWebView extends WebView {
         if (TYPE_GAMEPAD_LEFT_SHOULDER.equals(type)) return OverlayState.isGamepadLeftShoulderEnabled(c);
         if (TYPE_GAMEPAD_RIGHT_SHOULDER.equals(type)) return OverlayState.isGamepadRightShoulderEnabled(c);
         if (TYPE_GAMEPAD_BACK.equals(type)) return OverlayState.isGamepadBackEnabled(c);
+        if (TYPE_GAMEPAD_DPAD.equals(type)) return OverlayState.isGamepadDpadEnabled(c);
         return OverlayState.isEnabled(c);
     }
 
@@ -926,24 +1051,28 @@ public final class GlobalHtmlWebView extends WebView {
         if (TYPE_GAMEPAD_LEFT_SHOULDER.equals(type)) return GamepadOverlayView.DISPLAY_LEFT_SHOULDER;
         if (TYPE_GAMEPAD_RIGHT_SHOULDER.equals(type)) return GamepadOverlayView.DISPLAY_RIGHT_SHOULDER;
         if (TYPE_GAMEPAD_BACK.equals(type)) return GamepadOverlayView.DISPLAY_BACK;
+        if (TYPE_GAMEPAD_DPAD.equals(type)) return GamepadOverlayView.DISPLAY_DPAD;
         return KeyOverlayView.DISPLAY_KEYBOARD;
     }
 
-    private String runtimeApiSource() {
+    private String createRuntimeApiSource() {
         return "(function(){"
                 + "const KD=window.KeyDisplay=window.KeyDisplay||{};"
                 + "KD.apiVersion=" + API_VERSION + ";KD.version='" + RENDERER_VERSION + "';KD.type=" + JSONObject.quote(type) + ";"
-                + "KD.types=['keyboard','mouse','custom','mouse-trajectory','key-prompt','gamepad-left-stick','gamepad-right-stick','gamepad-face','gamepad-left-shoulder','gamepad-right-shoulder','gamepad-back'];"
+                + "KD.types=['keyboard','mouse','custom','mouse-trajectory','key-prompt','gamepad-left-stick','gamepad-right-stick','gamepad-face','gamepad-left-shoulder','gamepad-right-shoulder','gamepad-back','gamepad-dpad'];"
                 + "KD.getState=()=>window.__KEYDISPLAY_STATE__||null;"
-                + "KD.on=(n,f)=>{const e=n.startsWith('keydisplay:')?n:'keydisplay:'+n;window.addEventListener(e,f);return()=>window.removeEventListener(e,f)};"
-                + "KD.once=(n,f)=>{const off=KD.on(n,e=>{off();f(e)});return off};"
-                + "KD.onState=(f,immediate=true)=>{const off=KD.on('update',e=>f(e.detail,e));const s=KD.getState();if(immediate&&s)f(s,null);return off};"
+                + "KD.on=(n,f)=>{if(typeof f!=='function')return()=>{};const e=String(n||'').startsWith('keydisplay:')?String(n):'keydisplay:'+String(n||'');window.addEventListener(e,f);return()=>window.removeEventListener(e,f)};"
+                + "KD.once=(n,f)=>{if(typeof f!=='function')return()=>{};let off=()=>{};off=KD.on(n,e=>{off();f(e)});return off};"
+                + "KD.ready=f=>{if(typeof f!=='function')return()=>{};const s=KD.getState();if(s){f(s);return()=>{}}return KD.once('init',e=>f(e.detail))};"
+                + "KD.onState=(f,immediate=true)=>{if(typeof f!=='function')return()=>{};const off=KD.on('update',e=>f(e.detail,e));const s=KD.getState();if(immediate&&s)f(s,null);return off};"
                 + "KD.onInput=h=>{h=h||{};const o=[];for(const n of ['key','mouse','pointer','gamepad','update'])if(typeof h[n]==='function')o.push(KD.on(n,e=>h[n](e.detail,e)));return()=>o.forEach(f=>f())};"
                 + "KD.has=n=>{const s=KD.getState();return !!(s&&s.capabilities&&s.capabilities.includes(n))};"
-                + "KD.findKey=q=>{const s=KD.getState(),a=s&&s.keys||[];return a.find(k=>k.id===q||k.keyCode===q||k.rawId===q)||null};"
-                + "KD.button=n=>{const g=KD.getState()&&KD.getState().gamepad;return !!(g&&g.buttons&&g.buttons[n])};"
-                + "KD.axis=n=>{const g=KD.getState()&&KD.getState().gamepad,v=g&&g[n];return Number.isFinite(v)?v:0};"
-                + "KD.cps=q=>{const k=KD.findKey(q);if(k)return Number(k.cps||0);const g=KD.getState()&&KD.getState().gamepad;return Number(g&&g.cps&&g.cps[q]||0)};"
+                + "KD.keys=()=>{const s=KD.getState();return s&&Array.isArray(s.keys)?s.keys:[]};"
+                + "KD.findKey=q=>{const a=KD.keys(),qs=String(q);return a.find(k=>String(k.id)===qs||String(k.keyCode)===qs||String(k.rawId)===qs)||null};"
+                + "KD.button=n=>{n=String(n==null?'':n).toLowerCase();const s=KD.getState(),g=s&&s.gamepad;return !!(g&&g.buttons&&g.buttons[n])};"
+                + "KD.isPressed=q=>{const k=KD.findKey(q);return k?!!k.pressed:KD.button(q)};"
+                + "KD.axis=n=>{n=String(n==null?'':n).toLowerCase();const s=KD.getState(),g=s&&s.gamepad,v=g&&g[n];return Number.isFinite(v)?v:0};"
+                + "KD.cps=q=>{const k=KD.findKey(q);if(k)return Number(k.cps||0);const s=KD.getState(),g=s&&s.gamepad,n=String(q==null?'':q).toLowerCase();return Number(g&&g.cps&&g.cps[n]||0)};"
                 + "KD.clamp=(v,a,b)=>Math.max(a,Math.min(b,v));KD.lerp=(a,b,t)=>a+(b-a)*t;"
                 + "KD.map=(v,a,b,c,d,limit=true)=>{const t=b===a?0:(v-a)/(b-a),u=limit?KD.clamp(t,0,1):t;return KD.lerp(c,d,u)};"
                 + "KD.deadzone=(v,z=.08)=>{v=Number(v)||0;z=KD.clamp(Number(z)||0,0,.99);const a=Math.abs(v);return a<=z?0:Math.sign(v)*(a-z)/(1-z)};"
@@ -951,21 +1080,27 @@ public final class GlobalHtmlWebView extends WebView {
                 + "KD.css=(n,v)=>document.documentElement.style.setProperty(n,v);"
                 + "KD.cssAll=o=>{for(const [k,v] of Object.entries(o||{}))KD.css(k.startsWith('--')?k:'--'+k,v)};"
                 + "KD.reducedMotion=()=>!!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches);"
+                + "KD.__emit=(n,d)=>{const k=String(n||'').replace(/^keydisplay:/,''),e='keydisplay:'+k;window.dispatchEvent(new CustomEvent(e,{detail:d}));const cb=KD[k];if(typeof cb==='function'){try{cb(d)}catch(err){console.error('[KeyDisplay '+k+']',err)}}};"
+                + "KD.__patchKey=(s,d)=>{if(!s||!d||!Array.isArray(s.keys))return;const i=s.keys.findIndex(k=>k.id===d.id);if(i>=0)s.keys[i]=Object.assign({},s.keys[i],d)};"
+                + "KD.__native=(k,d,t)=>{const s=KD.getState();if(s){if(k==='key')KD.__patchKey(s,d);else if(k==='mouse'){s.mouse=d;if(s.type==='mouse-trajectory')s.mouseButtons={left:!!d.left,right:!!d.right}}else if(k==='pointer')s.pointer=d;else if(k==='gamepad')s.gamepad=d;s.timestamp=t}KD.__emit(k,d)};"
+                + "KD.__nativeKeys=(a,t)=>{a=Array.isArray(a)?a:[];const s=KD.getState();if(s){for(const d of a)KD.__patchKey(s,d);s.timestamp=t}for(const d of a)KD.__emit('key',d)};"
+                + "KD.__nativeMouse=(a,m,t)=>{a=Array.isArray(a)?a:[];const s=KD.getState();if(s){for(const d of a)KD.__patchKey(s,d);s.mouse=m;if(s.type==='mouse-trajectory')s.mouseButtons={left:!!m.left,right:!!m.right};s.timestamp=t}for(const d of a)KD.__emit('key',d);KD.__emit('mouse',m)};"
                 + "KD.__applyState=s=>{if(!s)return;const e=document.documentElement,d=e.style,p=s.palette||{},r=s.runtime||{},c=s.config||{};"
                 + "const set=(k,v)=>{if(v!==undefined&&v!==null)d.setProperty(k,String(v))};"
                 + "set('--kd-size',s.sizePercent/100);set('--kd-width',s.viewport.width+'px');set('--kd-height',s.viewport.height+'px');set('--kd-density',s.viewport.density);"
                 + "set('--kd-dot-size',(c.dotSizePercent||100)/100);const op=c.opacityPercent==null?100:c.opacityPercent;set('--kd-opacity',op/100);set('--kd-opacity-percent',op);"
-                + "set('--kd-key-spacing',(c.spacingDp==null?0:c.spacingDp)+'px');set('--kd-base-color',c.baseColor||p.keyIdle);set('--kd-press-color',c.pressColor||p.keyPressed);set('--kd-key-style',c.keyStyle||'rounded');set('--kd-corner-strength',c.cornerStrength==null?40:c.cornerStrength);set('--kd-corner-radius',(c.cornerStrength==null?40:c.cornerStrength)/100*0.5+'em');"
+                + "set('--kd-key-spacing',(c.spacingDp==null?0:c.spacingDp)+'px');set('--kd-base-color',c.baseColor||p.keyIdle);set('--kd-border-color',c.borderColor||p.overlayStroke);set('--kd-press-color',c.pressColor||p.keyPressed);set('--kd-key-style',c.keyStyle||'rounded');set('--kd-corner-strength',c.cornerStrength==null?40:c.cornerStrength);set('--kd-corner-radius',(c.cornerStrength==null?40:c.cornerStrength)/100*0.5+'em');"
                 + "set('--kd-mouse-sensitivity',r.mouseSensitivity||100);set('--kd-gamepad-sensitivity',r.gamepadSensitivity||100);"
                 + "set('--kd-position-x',(r.positionXPercent||0)+'%');set('--kd-position-y',(r.positionYPercent||0)+'%');"
                 + "for(const k in p)set('--kd-'+k.replace(/[A-Z]/g,m=>'-'+m.toLowerCase()),p[k]);"
                 + "e.dataset.kdType=s.type;e.dataset.kdTheme=s.theme;e.dataset.kdMotion=c.motionMode||'none';e.dataset.kdKeyStyle=c.keyStyle||'rounded';"
                 + "e.dataset.kdDrag=r.dragEnabled?'on':'off';e.dataset.kdOverclock=r.sensitivityEnabled?'on':'off';e.dataset.kdReducedMotion=KD.reducedMotion()?'on':'off';};"
+                + "KD.__setState=(s,initial=false)=>{if(!s)return;window.__KEYDISPLAY_STATE__=s;KD.__applyState(s);if(initial)KD.__emit('init',s);KD.__emit('update',s)};"
                 + "})();";
     }
 
     private String injectRuntimeBootstrap(String html) {
-        String script = "<script>" + runtimeApiSource() + "</script>";
+        String script = "<script>" + runtimeSource + "</script>";
         String lower = html.toLowerCase(java.util.Locale.ROOT);
         int doctype = lower.indexOf("<!doctype");
         if (doctype >= 0) {
@@ -976,8 +1111,36 @@ public final class GlobalHtmlWebView extends WebView {
     }
 
     private void installRuntimeApi() {
-        // 页面加载完成后再次写入 KeyDisplay。
-        evaluateJavascript(runtimeApiSource(), null);
+        // 页面加载完成后再次恢复只读 API，防止用户脚本意外覆盖 KeyDisplay。
+        evaluateJavascript(runtimeSource, null);
+    }
+
+    private void applyConfiguredFont() {
+        if (GlobalHtmlStore.getFontMode(getContext()) != GlobalHtmlStore.FONT_MODE_FOLLOW_APP
+                || !FontManager.isEnabled(getContext())) {
+            evaluateJavascript("(function(){var s=document.getElementById('axon-font-override');if(s)s.remove();})()", null);
+            return;
+        }
+
+        String family = FontManager.cssFamily(getContext());
+        String css;
+        if (FontManager.shouldServeImportedFont(getContext())) {
+            css = "@font-face{font-family:'AxonImportedFont';src:url('https://keydisplay.local/__axon_font__');font-style:normal;font-weight:100 900;}"
+                    + "html,body,body *{font-family:" + family + " !important;}";
+        } else {
+            css = "html,body,body *{font-family:" + family + " !important;}";
+        }
+        String quoted = JSONObject.quote(css);
+        evaluateJavascript("(function(){var s=document.getElementById('axon-font-override');"
+                + "if(!s){s=document.createElement('style');s.id='axon-font-override';document.head.appendChild(s);}"
+                + "s.textContent=" + quoted + ";})()", null);
+    }
+
+    private void dispatchInitialState() {
+        if (!pageReady) return;
+        String payload = buildStateSafely().toString();
+        evaluateJavascript("window.KeyDisplay&&typeof KeyDisplay.__setState==='function'&&KeyDisplay.__setState("
+                + payload + ",true)", null);
     }
 
     private void scheduleFullState() {
@@ -995,57 +1158,45 @@ public final class GlobalHtmlWebView extends WebView {
     private void dispatchFullState() {
         fullStateFramePosted = false;
         if (!pageReady) return;
-        JSONObject state = buildStateSafely();
-        String payload = state.toString();
-        String js = "window.__KEYDISPLAY_STATE__=" + payload + ";"
-                + "if(window.KeyDisplay&&typeof window.KeyDisplay.__applyState==='function'){window.KeyDisplay.__applyState(window.__KEYDISPLAY_STATE__);}"
-                + "window.dispatchEvent(new CustomEvent('keydisplay:update',{detail:window.__KEYDISPLAY_STATE__}));"
-                + "if(window.KeyDisplay&&typeof window.KeyDisplay.update==='function'){window.KeyDisplay.update(window.__KEYDISPLAY_STATE__);}";
-        evaluateJavascript(js, null);
+        String payload = buildStateSafely().toString();
+        evaluateJavascript("window.KeyDisplay&&typeof KeyDisplay.__setState==='function'&&KeyDisplay.__setState("
+                + payload + ",false)", null);
     }
 
-    /** 高频输入只更新对应字段，避免每帧序列化完整状态。 */
-    private void dispatchRealtime(String eventName, String stateKey, JSONObject detail) {
-        if (!pageReady || detail == null) return;
-        String payload = detail.toString();
-        String safeName = JSONObject.quote(eventName);
-        String safeKey = JSONObject.quote(stateKey);
-        String js = "(function(){const d=" + payload + ",s=window.__KEYDISPLAY_STATE__;"
-                + "if(s){s[" + safeKey + "]=d;s.timestamp=" + SystemClock.uptimeMillis() + ";}"
-                + "window.dispatchEvent(new CustomEvent(" + safeName + ",{detail:d}));";
-        if ("keydisplay:pointer".equals(eventName)) {
-            js += "if(window.KeyDisplay&&typeof window.KeyDisplay.pointer==='function'){window.KeyDisplay.pointer(d);}";
-        } else if ("keydisplay:gamepad".equals(eventName)) {
-            js += "if(window.KeyDisplay&&typeof window.KeyDisplay.gamepad==='function'){window.KeyDisplay.gamepad(d);}";
-        }
-        js += "})();";
-        evaluateJavascript(js, null);
-    }
-
+    /** 输入事件只更新对应局部状态，不重复构建完整 state。 */
     private void dispatch(String eventName, JSONObject detail) {
         if (!pageReady || detail == null) return;
-        String payload = detail.toString();
-        String safeName = JSONObject.quote(eventName);
-        String js = "(function(){const d=" + payload + ",n=" + safeName + ";let s=window.__KEYDISPLAY_STATE__;";
-        if ("keydisplay:init".equals(eventName)) {
-            js += "s=window.__KEYDISPLAY_STATE__=d;if(window.KeyDisplay&&KeyDisplay.__applyState)KeyDisplay.__applyState(s);";
-        } else if ("keydisplay:key".equals(eventName)) {
-            js += "if(s&&Array.isArray(s.keys)){const i=s.keys.findIndex(k=>k.id===d.id);if(i>=0)s.keys[i]=Object.assign({},s.keys[i],d);s.timestamp=" + SystemClock.uptimeMillis() + ";}";
-        } else if ("keydisplay:mouse".equals(eventName)) {
-            js += "if(s){s.mouse=d;s.timestamp=" + SystemClock.uptimeMillis() + ";}";
-        }
-        js += "window.dispatchEvent(new CustomEvent(n,{detail:d}));";
-        if ("keydisplay:key".equals(eventName)) {
-            js += "if(window.KeyDisplay&&typeof window.KeyDisplay.key==='function'){window.KeyDisplay.key(d);}";
-        } else if ("keydisplay:mouse".equals(eventName)) {
-            js += "if(window.KeyDisplay&&typeof window.KeyDisplay.mouse==='function'){window.KeyDisplay.mouse(d);}";
-        } else if ("keydisplay:pointer".equals(eventName)) {
-            js += "if(window.KeyDisplay&&typeof window.KeyDisplay.pointer==='function'){window.KeyDisplay.pointer(d);}";
-        } else if ("keydisplay:gamepad".equals(eventName)) {
-            js += "if(window.KeyDisplay&&typeof window.KeyDisplay.gamepad==='function'){window.KeyDisplay.gamepad(d);}";
-        }
-        js += "})();";
-        evaluateJavascript(js, null);
+        String kind = eventName != null && eventName.startsWith("keydisplay:")
+                ? eventName.substring("keydisplay:".length()) : eventName;
+        evaluateJavascript("window.KeyDisplay&&typeof KeyDisplay.__native==='function'&&KeyDisplay.__native("
+                + JSONObject.quote(kind) + "," + detail.toString() + "," + SystemClock.uptimeMillis() + ")", null);
+    }
+
+    private void dispatchKeys(JSONArray details) {
+        if (!pageReady || details == null || details.length() == 0) return;
+        evaluateJavascript("window.KeyDisplay&&typeof KeyDisplay.__nativeKeys==='function'&&KeyDisplay.__nativeKeys("
+                + details.toString() + "," + SystemClock.uptimeMillis() + ")", null);
+    }
+
+    private void dispatchMouseBatch(JSONArray keyChanges, JSONObject mouse) {
+        if (!pageReady || mouse == null) return;
+        JSONArray keys = keyChanges == null ? new JSONArray() : keyChanges;
+        evaluateJavascript("window.KeyDisplay&&typeof KeyDisplay.__nativeMouse==='function'&&KeyDisplay.__nativeMouse("
+                + keys.toString() + "," + mouse.toString() + "," + SystemClock.uptimeMillis() + ")", null);
+    }
+
+    @Override
+    public void destroy() {
+        pageReady = false;
+        currentHtml = "";
+        removeCallbacks(fullStateDispatch);
+        removeCallbacks(realtimeDispatch);
+        fullStateFramePosted = false;
+        realtimeFramePosted = false;
+        pointerDirty = false;
+        gamepadDirty = false;
+        try { setWebViewClient(null); } catch (Throwable ignored) {}
+        super.destroy();
     }
 
     private static String colorHex(int color) {

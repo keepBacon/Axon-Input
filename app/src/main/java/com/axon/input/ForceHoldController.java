@@ -192,15 +192,14 @@ public final class ForceHoldController {
         String source = binaryPath();
         if (source == null) throw new IllegalStateException("keyhold binary missing");
 
-        // 优先使用已经授权的 Shizuku；不可用时回退 Root。
-        if (ShizukuBridge.isReady() && ShizukuBridge.hasPermission()) {
-            try {
-                return awaitReady(startShizuku(source, inputCode, scanCode));
-            } catch (Throwable ignored) {
-                // Root fallback below.
-            }
+        // Root 全局优先；Root 已激活时绝不再建立 Shizuku 进程。
+        if (SensitivitySettingsStore.getMode(context) == SensitivitySettingsStore.MODE_ROOT) {
+            return awaitReady(startRoot(source, inputCode, scanCode));
         }
-        return awaitReady(startRoot(source, inputCode, scanCode));
+        if (ShizukuBridge.isReady() && ShizukuBridge.hasPermission()) {
+            return awaitReady(startShizuku(source, inputCode, scanCode));
+        }
+        throw new SecurityException("No privileged input channel");
     }
 
     private PrivilegedProcess startRoot(String source, int inputCode, int scanCode) throws Exception {
@@ -291,12 +290,12 @@ public final class ForceHoldController {
 
     private void cleanupTempBestEffort() {
         String command = "rm -f " + q(tempBinaryBase + "_root") + " " + q(tempBinaryBase + "_shizuku");
-        try {
-            if (ShizukuBridge.isReady() && ShizukuBridge.hasPermission()) ShizukuBridge.runShell(command);
-        } catch (Throwable ignored) {
+        if (SensitivitySettingsStore.getMode(context) == SensitivitySettingsStore.MODE_ROOT) {
+            try { RootBridge.runShell(command); } catch (Throwable ignored) {}
+            return;
         }
         try {
-            RootBridge.runShell(command);
+            if (ShizukuBridge.isReady() && ShizukuBridge.hasPermission()) ShizukuBridge.runShell(command);
         } catch (Throwable ignored) {
         }
     }

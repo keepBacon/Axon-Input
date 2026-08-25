@@ -2,19 +2,7 @@ package com.axon.input;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.net.Uri;
-import android.util.AtomicFile;
 
-import java.io.File;
-import java.io.ByteArrayOutputStream;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -23,18 +11,12 @@ import java.util.Set;
 
 /** 运行配置入口。普通设置保留到任务退出，长期数据单独保存。 */
 public final class OverlayState {
-    static final int MAX_GLOBAL_HTML_BYTES = 4 * 1024 * 1024;
-    static final long MAX_FLOATING_VIDEO_BYTES = 256L * 1024L * 1024L;
-    private static final String GLOBAL_HTML_FILE = "global_display.html";
-    private static final String FLOATING_VIDEO_FILE = "floating_video_media";
     public static final int MOTION_SIZE = 0;
     public static final int MOTION_ALPHA = 1;
     public static final int MOTION_NONE = 2;
     public static final int MOTION_RIPPLE = 3;
     public static final int UI_THEME_LIGHT = 0;
     public static final int UI_THEME_BLACK = 1;
-    public static final int SENSITIVITY_MODE_SHIZUKU = 0;
-    public static final int SENSITIVITY_MODE_ROOT = 1;
     public static final int DPS_TARGET_NONE = -1;
     public static final int DPS_TARGET_MOUSE_LEFT = 0x10000;
     public static final int DPS_TARGET_MOUSE_RIGHT = 0x10001;
@@ -43,7 +25,6 @@ public final class OverlayState {
     public static final int DPS_TARGET_MOUSE_FORWARD = 0x10004;
     public static final int DPS_TARGET_GAMEPAD_BASE = 0x20000; // legacy v1.6 encoding
     private static final int DPS_TARGET_GAMEPAD_EXT_BASE = 0x02000000;
-    private static final String SESSION_PREFS = "axon_input_session";
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_MOUSE_ENABLED = "mouse_enabled";
@@ -58,17 +39,11 @@ public final class OverlayState {
     private static final String KEY_KEY_PROMPT_ENABLED = "key_prompt_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_ENABLED = "mouse_trajectory_enabled";
     private static final String KEY_CUSTOM_ENABLED = "custom_enabled";
-    // v1.6fix introduces an explicit user-facing display switch. Use a new preference key so
+    // v1.6fix introduced an explicit user-facing display switch. Keep the dedicated preference key so
     // installs upgraded from the previous auto-display build start with this new switch OFF rather
     // than inheriting the old hidden runtime flag that loadSlotIntoActive() used to force on.
     private static final String KEY_SUPER_CUSTOM_ENABLED = "super_custom_display_enabled_v2";
     private static final String KEY_DRAG_ENABLED = "drag_enabled";
-    private static final String KEY_FLOATING_VIDEO_ENABLED = "floating_video_enabled";
-    private static final String KEY_FLOATING_VIDEO_NAME = "floating_video_name";
-    private static final String KEY_FLOATING_VIDEO_SOURCE_DURATION = "floating_video_source_duration";
-    private static final String KEY_FLOATING_VIDEO_LOOP_DURATION = "floating_video_loop_duration";
-    private static final String KEY_FLOATING_VIDEO_WIDTH = "floating_video_width";
-    private static final String KEY_FLOATING_VIDEO_HEIGHT = "floating_video_height";
     private static final String KEY_FORCE_HOLD_ENABLED = "force_hold_enabled";
     private static final String KEY_FORCE_HOLD_TARGET_KEY_CODE = "force_hold_target_key_code";
     private static final String KEY_FORCE_HOLD_TARGET_SCAN_CODE = "force_hold_target_scan_code";
@@ -86,6 +61,7 @@ public final class OverlayState {
     private static final String KEY_KEYBOARD_SPACING = "keyboard_spacing";
     private static final String KEY_KEYBOARD_SPACE_ENABLED = "keyboard_space_enabled";
     private static final String KEY_KEYBOARD_SPACE_DPS_ENABLED = "keyboard_space_dps_enabled";
+    private static final String KEY_KEYBOARD_MOUSE_BUTTONS_ENABLED = "keyboard_mouse_buttons_enabled";
     private static final String KEY_CUSTOM_SIZE = "custom_size";
     private static final String KEY_CUSTOM_SPACING = "custom_spacing";
     private static final String KEY_MOUSE_SIZE = "mouse_size";
@@ -116,26 +92,40 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_CORNER_STRENGTH = "gamepad_left_shoulder_corner_strength";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_CORNER_STRENGTH = "gamepad_right_shoulder_corner_strength";
     private static final String KEY_KEYBOARD_BASE_COLOR = "keyboard_base_color";
+    private static final String KEY_KEYBOARD_BORDER_COLOR = "keyboard_border_color";
     private static final String KEY_KEYBOARD_PRESS_COLOR = "keyboard_press_color";
     private static final String KEY_KEYBOARD_TEXT_COLOR = "keyboard_text_color";
     private static final String KEY_MOUSE_BASE_COLOR = "mouse_base_color";
+    private static final String KEY_MOUSE_BORDER_COLOR = "mouse_border_color";
     private static final String KEY_MOUSE_PRESS_COLOR = "mouse_press_color";
     private static final String KEY_KEY_PROMPT_BASE_COLOR = "key_prompt_base_color";
+    private static final String KEY_KEY_PROMPT_BORDER_COLOR = "key_prompt_border_color";
     private static final String KEY_KEY_PROMPT_PRESS_COLOR = "key_prompt_press_color";
     private static final String KEY_FULL_KEYBOARD_BASE_COLOR = "full_keyboard_base_color";
+    private static final String KEY_FULL_KEYBOARD_BORDER_COLOR = "full_keyboard_border_color";
     private static final String KEY_FULL_KEYBOARD_PRESS_COLOR = "full_keyboard_press_color";
     private static final String KEY_CUSTOM_BASE_COLOR = "custom_base_color";
+    private static final String KEY_CUSTOM_BORDER_COLOR = "custom_border_color";
     private static final String KEY_CUSTOM_PRESS_COLOR = "custom_press_color";
     private static final String KEY_GAMEPAD_FACE_BASE_COLOR = "gamepad_face_base_color";
+    private static final String KEY_GAMEPAD_FACE_BORDER_COLOR = "gamepad_face_border_color";
     private static final String KEY_GAMEPAD_FACE_PRESS_COLOR = "gamepad_face_press_color";
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_BASE_COLOR = "gamepad_left_shoulder_base_color";
+    private static final String KEY_GAMEPAD_LEFT_SHOULDER_BORDER_COLOR = "gamepad_left_shoulder_border_color";
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_PRESS_COLOR = "gamepad_left_shoulder_press_color";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_BASE_COLOR = "gamepad_right_shoulder_base_color";
+    private static final String KEY_GAMEPAD_RIGHT_SHOULDER_BORDER_COLOR = "gamepad_right_shoulder_border_color";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_PRESS_COLOR = "gamepad_right_shoulder_press_color";
     private static final String KEY_GAMEPAD_BACK_KEY_STYLE = "gamepad_back_key_style";
     private static final String KEY_GAMEPAD_BACK_CORNER_STRENGTH = "gamepad_back_corner_strength";
     private static final String KEY_GAMEPAD_BACK_BASE_COLOR = "gamepad_back_base_color";
+    private static final String KEY_GAMEPAD_BACK_BORDER_COLOR = "gamepad_back_border_color";
     private static final String KEY_GAMEPAD_BACK_PRESS_COLOR = "gamepad_back_press_color";
+    private static final String KEY_GAMEPAD_DPAD_KEY_STYLE = "gamepad_dpad_key_style";
+    private static final String KEY_GAMEPAD_DPAD_CORNER_STRENGTH = "gamepad_dpad_corner_strength";
+    private static final String KEY_GAMEPAD_DPAD_BASE_COLOR = "gamepad_dpad_base_color";
+    private static final String KEY_GAMEPAD_DPAD_BORDER_COLOR = "gamepad_dpad_border_color";
+    private static final String KEY_GAMEPAD_DPAD_PRESS_COLOR = "gamepad_dpad_press_color";
     private static final String KEY_MOUSE_TRAJECTORY_LEFT_COLOR_ENABLED = "mouse_trajectory_left_color_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_RIGHT_COLOR_ENABLED = "mouse_trajectory_right_color_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_LEFT_COLOR = "mouse_trajectory_left_color";
@@ -152,21 +142,12 @@ public final class OverlayState {
     private static final String KEY_KEY_PROMPT_POSITION_Y = "key_prompt_position_y";
     private static final String KEY_MOUSE_TRAJECTORY_POSITION_X = "mouse_trajectory_position_x";
     private static final String KEY_MOUSE_TRAJECTORY_POSITION_Y = "mouse_trajectory_position_y";
-    private static final String KEY_FLOATING_VIDEO_POSITION_X = "floating_video_position_x";
-    private static final String KEY_FLOATING_VIDEO_POSITION_Y = "floating_video_position_y";
     private static final String KEY_AUTO_HIDE_BACKGROUND = "auto_hide_background";
     private static final String KEY_ENTRY_AUTHORIZED = "entry_authorized";
     private static final String KEY_LAST_CLOUD_NOTICE_ID = "last_cloud_notice_id";
     private static final String KEY_KEYBOARD_MOTION_MODE = "keyboard_motion_mode";
     private static final String KEY_MOUSE_MOTION_MODE = "mouse_motion_mode";
     private static final String KEY_CUSTOM_MOTION_MODE = "custom_motion_mode";
-    private static final String KEY_GLOBAL_HTML_ENABLED = "global_html_enabled";
-    private static final String KEY_GLOBAL_HTML_NAME = "global_html_name";
-    private static final String KEY_SENSITIVITY_ENABLED = "sensitivity_enabled";
-    private static final String KEY_MOUSE_SENSITIVITY = "mouse_sensitivity";
-    private static final String KEY_GAMEPAD_SENSITIVITY = "gamepad_sensitivity";
-    private static final String KEY_SENSITIVITY_STATUS = "sensitivity_status";
-    private static final String KEY_SENSITIVITY_MODE = "sensitivity_mode";
     private static final String KEY_UI_THEME = "ui_theme";
     private static final String KEY_GAMEPAD_LEFT_STICK_ENABLED = "gamepad_left_stick_enabled";
     private static final String KEY_GAMEPAD_RIGHT_STICK_ENABLED = "gamepad_right_stick_enabled";
@@ -174,25 +155,10 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_ENABLED = "gamepad_left_shoulder_enabled";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_ENABLED = "gamepad_right_shoulder_enabled";
     private static final String KEY_GAMEPAD_BACK_ENABLED = "gamepad_back_enabled";
+    private static final String KEY_GAMEPAD_DPAD_ENABLED = "gamepad_dpad_enabled";
     private static final String KEY_GAMEPAD_LEFT_STICK_SHAPE = "gamepad_left_stick_shape";
     private static final String KEY_GAMEPAD_RIGHT_STICK_SHAPE = "gamepad_right_stick_shape";
     private static final String KEY_GAMEPAD_FACE_REVERSED = "gamepad_face_reversed";
-    private static final String KEY_GAMEPAD_COMPATIBILITY_MODE = "gamepad_compatibility_mode";
-    private static final String KEY_GAMEPAD_SWAP_XY = "gamepad_swap_xy";
-    private static final String KEY_GAMEPAD_SWAP_AB = "gamepad_swap_ab";
-    private static final String KEY_GAMEPAD_SWAP_STICKS = "gamepad_swap_sticks";
-    private static final String KEY_GAMEPAD_SWAP_TRIGGERS = "gamepad_swap_triggers";
-    private static final String KEY_GAMEPAD_CUSTOM_SWAP_ENABLED = "gamepad_custom_swap_enabled";
-    private static final String KEY_GAMEPAD_CUSTOM_SWAP_FIRST = "gamepad_custom_swap_first";
-    private static final String KEY_GAMEPAD_CUSTOM_SWAP_SECOND = "gamepad_custom_swap_second";
-    private static final String KEY_GAMEPAD_FACE_Y_DPS = "gamepad_face_y_dps";
-    private static final String KEY_GAMEPAD_FACE_X_DPS = "gamepad_face_x_dps";
-    private static final String KEY_GAMEPAD_FACE_B_DPS = "gamepad_face_b_dps";
-    private static final String KEY_GAMEPAD_FACE_A_DPS = "gamepad_face_a_dps";
-    private static final String KEY_GAMEPAD_L2_PROGRESS = "gamepad_l2_progress";
-    private static final String KEY_GAMEPAD_R2_PROGRESS = "gamepad_r2_progress";
-    private static final String KEY_GAMEPAD_L1_DPS = "gamepad_l1_dps";
-    private static final String KEY_GAMEPAD_R1_DPS = "gamepad_r1_dps";
     private static final String KEY_GAMEPAD_LEFT_STICK_SIZE = "gamepad_left_stick_size";
     private static final String KEY_GAMEPAD_RIGHT_STICK_SIZE = "gamepad_right_stick_size";
     private static final String KEY_GAMEPAD_LEFT_STICK_DOT_SIZE = "gamepad_left_stick_dot_size";
@@ -202,12 +168,14 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_SIZE = "gamepad_left_shoulder_size";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_SIZE = "gamepad_right_shoulder_size";
     private static final String KEY_GAMEPAD_BACK_SIZE = "gamepad_back_size";
+    private static final String KEY_GAMEPAD_DPAD_SIZE = "gamepad_dpad_size";
     private static final String KEY_GAMEPAD_LEFT_STICK_OPACITY = "gamepad_left_stick_opacity";
     private static final String KEY_GAMEPAD_RIGHT_STICK_OPACITY = "gamepad_right_stick_opacity";
     private static final String KEY_GAMEPAD_FACE_OPACITY = "gamepad_face_opacity";
     private static final String KEY_GAMEPAD_LEFT_SHOULDER_OPACITY = "gamepad_left_shoulder_opacity";
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_OPACITY = "gamepad_right_shoulder_opacity";
     private static final String KEY_GAMEPAD_BACK_OPACITY = "gamepad_back_opacity";
+    private static final String KEY_GAMEPAD_DPAD_OPACITY = "gamepad_dpad_opacity";
     private static final String KEY_GAMEPAD_LEFT_STICK_POSITION_X = "gamepad_left_stick_position_x";
     private static final String KEY_GAMEPAD_LEFT_STICK_POSITION_Y = "gamepad_left_stick_position_y";
     private static final String KEY_GAMEPAD_RIGHT_STICK_POSITION_X = "gamepad_right_stick_position_x";
@@ -220,6 +188,8 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_Y = "gamepad_right_shoulder_position_y";
     private static final String KEY_GAMEPAD_BACK_POSITION_X = "gamepad_back_position_x";
     private static final String KEY_GAMEPAD_BACK_POSITION_Y = "gamepad_back_position_y";
+    private static final String KEY_GAMEPAD_DPAD_POSITION_X = "gamepad_dpad_position_x";
+    private static final String KEY_GAMEPAD_DPAD_POSITION_Y = "gamepad_dpad_position_y";
 
     private static final int DEFAULT_KEYBOARD_X = 50;
     private static final int DEFAULT_KEYBOARD_Y = 34;
@@ -233,8 +203,6 @@ public final class OverlayState {
     private static final int DEFAULT_KEY_PROMPT_Y = 14;
     private static final int DEFAULT_MOUSE_TRAJECTORY_X = 50;
     private static final int DEFAULT_MOUSE_TRAJECTORY_Y = 52;
-    private static final int DEFAULT_FLOATING_VIDEO_X = 50;
-    private static final int DEFAULT_FLOATING_VIDEO_Y = 50;
     private static final int DEFAULT_DPS_X = 50;
     private static final int DEFAULT_DPS_Y = 8;
     private static final int DEFAULT_GAMEPAD_LEFT_STICK_X = 14;
@@ -249,6 +217,8 @@ public final class OverlayState {
     private static final int DEFAULT_GAMEPAD_RIGHT_SHOULDER_Y = 18;
     private static final int DEFAULT_GAMEPAD_BACK_X = 50;
     private static final int DEFAULT_GAMEPAD_BACK_Y = 26;
+    private static final int DEFAULT_GAMEPAD_DPAD_X = 20;
+    private static final int DEFAULT_GAMEPAD_DPAD_Y = 42;
     private static final int DEFAULT_COLUMNS = 4;
     private static final int MIN_COLUMNS = 1;
     private static final int MAX_COLUMNS = 8;
@@ -264,17 +234,6 @@ public final class OverlayState {
     private static final int DEFAULT_MOUSE_TRAJECTORY_RIGHT_COLOR = 0xff34c759;
     private static final int MIN_SIZE = 50;
     private static final int MAX_SIZE = 150;
-    private static final int DEFAULT_SENSITIVITY = 100;
-    private static final int MIN_SENSITIVITY = 1;
-    private static final int MAX_SENSITIVITY = 500;
-
-    public static final int GAMEPAD_COMPAT_AUTO = 0;
-    public static final int GAMEPAD_COMPAT_LOOSE = 1;
-    public static final int GAMEPAD_COMPAT_ANDROID = 2;
-    public static final int GAMEPAD_COMPAT_EVDEV = 3;
-    private static final int LEGACY_GAMEPAD_COMPAT_SWAP_XY = 4;
-    private static final int LEGACY_GAMEPAD_COMPAT_SWAP_AB = 5;
-    private static final int LEGACY_GAMEPAD_COMPAT_SWAP_FACE = 6;
 
     private OverlayState() {}
 
@@ -343,8 +302,9 @@ public final class OverlayState {
 
     public static void setKeyboardCatStyleId(Context context, String styleId) {
         String value = styleId == null || styleId.isEmpty() ? BongoCatStyleManager.BUILTIN_ID : styleId;
-        durablePrefs(context).edit().putString(KEY_KEYBOARD_CAT_STYLE_ID, value).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        if (PreferenceWriter.putStringIfChanged(durablePrefs(context), KEY_KEYBOARD_CAT_STYLE_ID, value)) {
+            AxonInputAccessibilityService.refreshActiveService();
+        }
     }
 
     /** Debug-only expression override for imported Bongo Cat styles. "auto" restores authored behavior. */
@@ -355,14 +315,15 @@ public final class OverlayState {
 
     public static void setKeyboardCatDebugExpression(Context context, String token) {
         String value = token == null || token.isEmpty() ? "auto" : token;
-        prefs(context).edit().putString(KEY_KEYBOARD_CAT_DEBUG_EXPRESSION, value).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        if (PreferenceWriter.putStringIfChanged(prefs(context), KEY_KEYBOARD_CAT_DEBUG_EXPRESSION, value)) {
+            AxonInputAccessibilityService.refreshActiveService();
+        }
     }
 
     /** Hotkey path: persist the expression without rebuilding every overlay window. */
     static void setKeyboardCatDebugExpressionRuntime(Context context, String token) {
         String value = token == null || token.isEmpty() ? "auto" : token;
-        prefs(context).edit().putString(KEY_KEYBOARD_CAT_DEBUG_EXPRESSION, value).apply();
+        PreferenceWriter.putStringIfChanged(prefs(context), KEY_KEYBOARD_CAT_DEBUG_EXPRESSION, value);
     }
 
     public static int getKeyboardCatExpressionHotkeyKeyCode(Context context) {
@@ -370,8 +331,12 @@ public final class OverlayState {
     }
 
     public static void setKeyboardCatExpressionHotkeyKeyCode(Context context, int keyCode) {
-        SharedPreferences.Editor editor = prefs(context).edit();
-        if (keyCode >= 0) editor.putInt(KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE, keyCode);
+        SharedPreferences values = prefs(context);
+        int current = values.getInt(KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE, -1);
+        int next = keyCode >= 0 ? keyCode : -1;
+        if (current == next) return;
+        SharedPreferences.Editor editor = values.edit();
+        if (next >= 0) editor.putInt(KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE, next);
         else editor.remove(KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE);
         editor.apply();
         AxonInputAccessibilityService.refreshActiveService();
@@ -394,9 +359,8 @@ public final class OverlayState {
                 if (token != null && !token.isEmpty()) clean.add(token);
             }
         }
-        prefs(context).edit()
-                .putStringSet(keyboardCatExpressionSelectionKey(styleId), clean)
-                .apply();
+        PreferenceWriter.putStringSetIfChanged(
+                prefs(context), keyboardCatExpressionSelectionKey(styleId), clean);
     }
 
     private static String keyboardCatExpressionSelectionKey(String styleId) {
@@ -436,103 +400,6 @@ public final class OverlayState {
         setBooleanAndRefresh(context, KEY_DRAG_ENABLED, enabled);
     }
 
-    public static boolean isFloatingVideoEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_FLOATING_VIDEO_ENABLED, false);
-    }
-
-    public static void setFloatingVideoEnabled(Context context, boolean enabled) {
-        setBooleanAndRefresh(context, KEY_FLOATING_VIDEO_ENABLED, enabled && hasFloatingVideo(context));
-    }
-
-    public static boolean hasFloatingVideo(Context context) {
-        File file = floatingVideoFile(context);
-        return file.isFile() && file.length() > 0L;
-    }
-
-    public static File getFloatingVideoFile(Context context) {
-        return floatingVideoFile(context);
-    }
-
-    public static String getFloatingVideoName(Context context) {
-        String value = durablePrefs(context).getString(KEY_FLOATING_VIDEO_NAME, "");
-        return value == null ? "" : value;
-    }
-
-    public static long getFloatingVideoSourceDurationMs(Context context) {
-        return Math.max(0L, durablePrefs(context).getLong(KEY_FLOATING_VIDEO_SOURCE_DURATION, 0L));
-    }
-
-    public static long getFloatingVideoLoopDurationMs(Context context) {
-        long source = getFloatingVideoSourceDurationMs(context);
-        long loop = durablePrefs(context).getLong(KEY_FLOATING_VIDEO_LOOP_DURATION, source);
-        if (source <= 0L) return Math.max(0L, loop);
-        return Math.max(100L, Math.min(source, loop <= 0L ? source : loop));
-    }
-
-    public static int getFloatingVideoWidth(Context context) {
-        return Math.max(1, durablePrefs(context).getInt(KEY_FLOATING_VIDEO_WIDTH, 16));
-    }
-
-    public static int getFloatingVideoHeight(Context context) {
-        return Math.max(1, durablePrefs(context).getInt(KEY_FLOATING_VIDEO_HEIGHT, 9));
-    }
-
-    public static void importFloatingVideo(
-            Context context, Uri uri, String displayName, long sourceDurationMs, long loopDurationMs,
-            int sourceWidth, int sourceHeight) throws IOException {
-        if (uri == null) throw new IOException("Missing video Uri");
-        Context app = context.getApplicationContext();
-        File target = floatingVideoFile(app);
-        File temp = new File(target.getParentFile(), FLOATING_VIDEO_FILE + ".tmp");
-        if (temp.exists() && !temp.delete()) throw new IOException("Cannot replace temp video");
-
-        long total = 0L;
-        try (InputStream in = app.getContentResolver().openInputStream(uri);
-             FileOutputStream out = new FileOutputStream(temp, false)) {
-            if (in == null) throw new IOException("Cannot open video");
-            byte[] buffer = new byte[64 * 1024];
-            int read;
-            while ((read = in.read(buffer)) >= 0) {
-                if (read == 0) continue;
-                total += read;
-                if (total > MAX_FLOATING_VIDEO_BYTES) throw new IOException("Video is too large");
-                out.write(buffer, 0, read);
-            }
-            out.flush();
-            out.getFD().sync();
-        } catch (IOException error) {
-            temp.delete();
-            throw error;
-        }
-        if (total <= 0L) {
-            temp.delete();
-            throw new IOException("Empty video");
-        }
-        try {
-            try {
-                Files.move(temp.toPath(), target.toPath(),
-                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException ignored) {
-                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (IOException error) {
-            temp.delete();
-            throw new IOException("Cannot commit video", error);
-        }
-
-        long source = Math.max(100L, sourceDurationMs);
-        long loop = Math.max(100L, Math.min(source, loopDurationMs <= 0L ? source : loopDurationMs));
-        durablePrefs(app).edit()
-                .putString(KEY_FLOATING_VIDEO_NAME, displayName == null ? "" : displayName)
-                .putLong(KEY_FLOATING_VIDEO_SOURCE_DURATION, source)
-                .putLong(KEY_FLOATING_VIDEO_LOOP_DURATION, loop)
-                .putInt(KEY_FLOATING_VIDEO_WIDTH, Math.max(1, sourceWidth))
-                .putInt(KEY_FLOATING_VIDEO_HEIGHT, Math.max(1, sourceHeight))
-                .apply();
-        prefs(app).edit().putBoolean(KEY_FLOATING_VIDEO_ENABLED, true).apply();
-        AxonInputAccessibilityService.refreshFloatingVideo();
-    }
-
     public static boolean isForceHoldEnabled(Context context) {
         return prefs(context).getBoolean(KEY_FORCE_HOLD_ENABLED, false);
     }
@@ -561,7 +428,11 @@ public final class OverlayState {
 
     public static void setForceHoldBinding(
             Context context, int targetKeyCode, int targetScanCode, int triggerKeyCode) {
-        prefs(context).edit()
+        SharedPreferences values = prefs(context);
+        if (values.getInt(KEY_FORCE_HOLD_TARGET_KEY_CODE, -1) == targetKeyCode
+                && values.getInt(KEY_FORCE_HOLD_TARGET_SCAN_CODE, -1) == targetScanCode
+                && values.getInt(KEY_FORCE_HOLD_TRIGGER_KEY_CODE, -1) == triggerKeyCode) return;
+        values.edit()
                 .putInt(KEY_FORCE_HOLD_TARGET_KEY_CODE, targetKeyCode)
                 .putInt(KEY_FORCE_HOLD_TARGET_SCAN_CODE, targetScanCode)
                 .putInt(KEY_FORCE_HOLD_TRIGGER_KEY_CODE, triggerKeyCode)
@@ -570,7 +441,11 @@ public final class OverlayState {
     }
 
     public static void clearForceHoldBinding(Context context) {
-        prefs(context).edit()
+        SharedPreferences values = prefs(context);
+        if (!values.contains(KEY_FORCE_HOLD_TARGET_KEY_CODE)
+                && !values.contains(KEY_FORCE_HOLD_TARGET_SCAN_CODE)
+                && !values.contains(KEY_FORCE_HOLD_TRIGGER_KEY_CODE)) return;
+        values.edit()
                 .remove(KEY_FORCE_HOLD_TARGET_KEY_CODE)
                 .remove(KEY_FORCE_HOLD_TARGET_SCAN_CODE)
                 .remove(KEY_FORCE_HOLD_TRIGGER_KEY_CODE)
@@ -700,12 +575,23 @@ public final class OverlayState {
         setBooleanAndRefresh(context, KEY_GAMEPAD_BACK_ENABLED, enabled);
     }
 
+    public static boolean isGamepadDpadEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_GAMEPAD_DPAD_ENABLED, false);
+    }
+
+    public static void setGamepadDpadEnabled(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_GAMEPAD_DPAD_ENABLED, enabled);
+    }
+
     public static boolean isGamepadShouldersEnabled(Context context) {
         return isGamepadLeftShoulderEnabled(context) || isGamepadRightShoulderEnabled(context);
     }
 
     public static void setGamepadShouldersEnabled(Context context, boolean enabled) {
-        prefs(context).edit()
+        SharedPreferences values = prefs(context);
+        if (values.getBoolean(KEY_GAMEPAD_LEFT_SHOULDER_ENABLED, false) == enabled
+                && values.getBoolean(KEY_GAMEPAD_RIGHT_SHOULDER_ENABLED, false) == enabled) return;
+        values.edit()
                 .putBoolean(KEY_GAMEPAD_LEFT_SHOULDER_ENABLED, enabled)
                 .putBoolean(KEY_GAMEPAD_RIGHT_SHOULDER_ENABLED, enabled)
                 .apply();
@@ -714,16 +600,16 @@ public final class OverlayState {
 
     public static boolean isAnyGamepadDisplayEnabled(Context context) {
         return isGamepadLeftStickEnabled(context) || isGamepadRightStickEnabled(context)
-                || isGamepadFaceEnabled(context) || isGamepadLeftShoulderEnabled(context)
-                || isGamepadRightShoulderEnabled(context) || isGamepadBackEnabled(context);
+                || isGamepadFaceEnabled(context) || isGamepadDpadEnabled(context)
+                || isGamepadLeftShoulderEnabled(context) || isGamepadRightShoulderEnabled(context)
+                || isGamepadBackEnabled(context);
     }
 
     public static boolean isAnyDisplayEnabled(Context context) {
         return isEnabled(context) || isInputFullKeyboardEnabled(context) || isMouseEnabled(context)
                 || isKeyboardCatEnabled(context) || isKeyPromptEnabled(context)
-                || isCustomEnabled(context) || isSuperCustomEnabled(context)
+                || isCustomEnabled(context) || isSuperCustomEnabled(context) || TouchDisplayStore.isEnabled(context)
                 || isMouseTrajectoryEnabled(context)
-                || isFloatingVideoEnabled(context)
                 || isDpsEnabled(context) || isAnyGamepadDisplayEnabled(context);
     }
 
@@ -732,7 +618,7 @@ public final class OverlayState {
     }
 
     public static void setAutoHideBackground(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_AUTO_HIDE_BACKGROUND, enabled).apply();
+        PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_AUTO_HIDE_BACKGROUND, enabled);
     }
 
     public static boolean isEntryAuthorized(Context context) {
@@ -748,7 +634,7 @@ public final class OverlayState {
     }
 
     public static void setEntryAuthorized(Context context, boolean authorized) {
-        durablePrefs(context).edit().putBoolean(KEY_ENTRY_AUTHORIZED, authorized).apply();
+        PreferenceWriter.putBooleanIfChanged(durablePrefs(context), KEY_ENTRY_AUTHORIZED, authorized);
     }
 
     public static String getLastCloudNoticeId(Context context) {
@@ -757,7 +643,7 @@ public final class OverlayState {
 
     public static void setLastCloudNoticeId(Context context, String noticeId) {
         String value = noticeId == null ? "" : noticeId.trim();
-        durablePrefs(context).edit().putString(KEY_LAST_CLOUD_NOTICE_ID, value).apply();
+        PreferenceWriter.putStringIfChanged(durablePrefs(context), KEY_LAST_CLOUD_NOTICE_ID, value);
     }
 
     /** 根任务退出时清理运行配置。手动保存配置和密码授权不删除。 */
@@ -775,56 +661,9 @@ public final class OverlayState {
 
     public static void setUiTheme(Context context, int theme) {
         int resolved = theme == UI_THEME_BLACK ? UI_THEME_BLACK : UI_THEME_LIGHT;
-        prefs(context).edit().putInt(KEY_UI_THEME, resolved).apply();
-        AxonInputAccessibilityService.refreshTheme();
-    }
-
-    public static int getSensitivityMode(Context context) {
-        int value = prefs(context).getInt(KEY_SENSITIVITY_MODE, SENSITIVITY_MODE_SHIZUKU);
-        return value == SENSITIVITY_MODE_ROOT ? SENSITIVITY_MODE_ROOT : SENSITIVITY_MODE_SHIZUKU;
-    }
-
-    public static void setSensitivityMode(Context context, int mode) {
-        int resolved = mode == SENSITIVITY_MODE_ROOT ? SENSITIVITY_MODE_ROOT : SENSITIVITY_MODE_SHIZUKU;
-        prefs(context).edit().putInt(KEY_SENSITIVITY_MODE, resolved).apply();
-        AxonInputAccessibilityService.refreshSensitivity();
-    }
-
-    public static boolean isSensitivityEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_SENSITIVITY_ENABLED, false);
-    }
-
-    public static void setSensitivityEnabled(Context context, boolean enabled) {
-        prefs(context).edit().putBoolean(KEY_SENSITIVITY_ENABLED, enabled).apply();
-        AxonInputAccessibilityService.refreshSensitivity();
-    }
-
-    public static int getMouseSensitivity(Context context) {
-        return clampSensitivity(prefs(context).getInt(KEY_MOUSE_SENSITIVITY, DEFAULT_SENSITIVITY));
-    }
-
-    public static void setMouseSensitivity(Context context, int percent) {
-        prefs(context).edit().putInt(KEY_MOUSE_SENSITIVITY, clampSensitivity(percent)).apply();
-        AxonInputAccessibilityService.refreshSensitivity();
-    }
-
-    public static int getGamepadSensitivity(Context context) {
-        return clampSensitivity(prefs(context).getInt(KEY_GAMEPAD_SENSITIVITY, DEFAULT_SENSITIVITY));
-    }
-
-    public static void setGamepadSensitivity(Context context, int percent) {
-        prefs(context).edit().putInt(KEY_GAMEPAD_SENSITIVITY, clampSensitivity(percent)).apply();
-        AxonInputAccessibilityService.refreshSensitivity();
-    }
-
-    public static String getSensitivityStatus(Context context) {
-        String fallback = context.getString(R.string.status_disabled);
-        String value = prefs(context).getString(KEY_SENSITIVITY_STATUS, fallback);
-        return value == null ? fallback : value;
-    }
-
-    static void setSensitivityStatus(Context context, String status) {
-        prefs(context).edit().putString(KEY_SENSITIVITY_STATUS, status == null ? "" : status).apply();
+        if (PreferenceWriter.putIntIfChanged(prefs(context), KEY_UI_THEME, resolved)) {
+            AxonInputAccessibilityService.refreshTheme();
+        }
     }
 
     public static boolean isCustomCaptureEnabled(Context context) {
@@ -852,8 +691,9 @@ public final class OverlayState {
     }
 
     public static void cancelCustomCapture(Context context) {
-        prefs(context).edit().putBoolean(KEY_CUSTOM_CAPTURE, false).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        if (PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_CUSTOM_CAPTURE, false)) {
+            AxonInputAccessibilityService.refreshActiveService();
+        }
     }
 
     /** 向当前录入结果加入唯一按键码。 */
@@ -920,6 +760,15 @@ public final class OverlayState {
 
     public static void setKeyboardSpaceDpsEnabled(Context context, boolean enabled) {
         setBooleanAndRefresh(context, KEY_KEYBOARD_SPACE_DPS_ENABLED, enabled);
+    }
+
+    /** Whether LMB/RMB are rendered as part of the compact keyboard/touch display. */
+    public static boolean isKeyboardMouseButtonsEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_KEYBOARD_MOUSE_BUTTONS_ENABLED, false);
+    }
+
+    public static void setKeyboardMouseButtonsEnabled(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_KEYBOARD_MOUSE_BUTTONS_ENABLED, enabled);
     }
 
     public static int getCustomSize(Context context) {
@@ -1052,165 +901,13 @@ public final class OverlayState {
         setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_REVERSED, reversed);
     }
 
-    public static int getGamepadCompatibilityMode(Context context) {
-        SharedPreferences preferences = prefs(context);
-        int mode = preferences.getInt(KEY_GAMEPAD_COMPATIBILITY_MODE, GAMEPAD_COMPAT_AUTO);
-
-        // 迁移旧版把交换功能放在模式列表中的配置。
-        if (mode >= LEGACY_GAMEPAD_COMPAT_SWAP_XY && mode <= LEGACY_GAMEPAD_COMPAT_SWAP_FACE) {
-            SharedPreferences.Editor editor = preferences.edit()
-                    .putInt(KEY_GAMEPAD_COMPATIBILITY_MODE, GAMEPAD_COMPAT_AUTO);
-            if (mode == LEGACY_GAMEPAD_COMPAT_SWAP_XY || mode == LEGACY_GAMEPAD_COMPAT_SWAP_FACE) {
-                editor.putBoolean(KEY_GAMEPAD_SWAP_XY, true);
-            }
-            if (mode == LEGACY_GAMEPAD_COMPAT_SWAP_AB || mode == LEGACY_GAMEPAD_COMPAT_SWAP_FACE) {
-                editor.putBoolean(KEY_GAMEPAD_SWAP_AB, true);
-            }
-            editor.apply();
-            return GAMEPAD_COMPAT_AUTO;
-        }
-        return mode >= GAMEPAD_COMPAT_AUTO && mode <= GAMEPAD_COMPAT_EVDEV
-                ? mode : GAMEPAD_COMPAT_AUTO;
-    }
-
-    public static void setGamepadCompatibilityMode(Context context, int mode) {
-        int value = mode >= GAMEPAD_COMPAT_AUTO && mode <= GAMEPAD_COMPAT_EVDEV
-                ? mode : GAMEPAD_COMPAT_AUTO;
-        setIntAndRefresh(context, KEY_GAMEPAD_COMPATIBILITY_MODE, value);
-    }
-
-    public static boolean isGamepadSwapXY(Context context) {
-        getGamepadCompatibilityMode(context);
-        return prefs(context).getBoolean(KEY_GAMEPAD_SWAP_XY, false);
-    }
-
-    public static void setGamepadSwapXY(Context context, boolean enabled) {
-        setBooleanAndRefresh(context, KEY_GAMEPAD_SWAP_XY, enabled);
-    }
-
-    public static boolean isGamepadSwapAB(Context context) {
-        getGamepadCompatibilityMode(context);
-        return prefs(context).getBoolean(KEY_GAMEPAD_SWAP_AB, false);
-    }
-
-    public static void setGamepadSwapAB(Context context, boolean enabled) {
-        setBooleanAndRefresh(context, KEY_GAMEPAD_SWAP_AB, enabled);
-    }
-
-    public static boolean isGamepadSwapSticks(Context context) {
-        getGamepadCompatibilityMode(context);
-        return prefs(context).getBoolean(KEY_GAMEPAD_SWAP_STICKS, false);
-    }
-
-    public static void setGamepadSwapSticks(Context context, boolean enabled) {
-        setBooleanAndRefresh(context, KEY_GAMEPAD_SWAP_STICKS, enabled);
-    }
-
-    public static boolean isGamepadSwapTriggers(Context context) {
-        getGamepadCompatibilityMode(context);
-        return prefs(context).getBoolean(KEY_GAMEPAD_SWAP_TRIGGERS, false);
-    }
-
-    public static void setGamepadSwapTriggers(Context context, boolean enabled) {
-        setBooleanAndRefresh(context, KEY_GAMEPAD_SWAP_TRIGGERS, enabled);
-    }
-
-    public static boolean isGamepadCustomSwapEnabled(Context context) {
-        int first = getGamepadCustomSwapFirst(context);
-        int second = getGamepadCustomSwapSecond(context);
-        return first != 0 && second != 0 && first != second
-                && prefs(context).getBoolean(KEY_GAMEPAD_CUSTOM_SWAP_ENABLED, false);
-    }
-
-    public static int getGamepadCustomSwapFirst(Context context) {
-        return sanitizeGamepadSwapBit(prefs(context).getInt(KEY_GAMEPAD_CUSTOM_SWAP_FIRST, 0));
-    }
-
-    public static int getGamepadCustomSwapSecond(Context context) {
-        return sanitizeGamepadSwapBit(prefs(context).getInt(KEY_GAMEPAD_CUSTOM_SWAP_SECOND, 0));
-    }
-
-    public static void setGamepadCustomSwapEnabled(Context context, boolean enabled) {
-        boolean value = enabled && getGamepadCustomSwapFirst(context) != 0
-                && getGamepadCustomSwapSecond(context) != 0
-                && getGamepadCustomSwapFirst(context) != getGamepadCustomSwapSecond(context);
-        setBooleanAndRefresh(context, KEY_GAMEPAD_CUSTOM_SWAP_ENABLED, value);
-    }
-
-    public static void setGamepadCustomSwapPair(Context context, int first, int second) {
-        first = sanitizeGamepadSwapBit(first);
-        second = sanitizeGamepadSwapBit(second);
-        boolean valid = first != 0 && second != 0 && first != second;
-        prefs(context).edit()
-                .putInt(KEY_GAMEPAD_CUSTOM_SWAP_FIRST, valid ? first : 0)
-                .putInt(KEY_GAMEPAD_CUSTOM_SWAP_SECOND, valid ? second : 0)
-                .putBoolean(KEY_GAMEPAD_CUSTOM_SWAP_ENABLED, valid)
-                .apply();
-        AxonInputAccessibilityService.refreshActiveService();
-    }
-
-    private static int sanitizeGamepadSwapBit(int bit) {
-        if (bit == 0 || Integer.bitCount(bit) != 1) return 0;
-        int allowed = GamepadOverlayView.BTN_SOUTH | GamepadOverlayView.BTN_EAST
-                | GamepadOverlayView.BTN_C | GamepadOverlayView.BTN_NORTH
-                | GamepadOverlayView.BTN_WEST | GamepadOverlayView.BTN_Z
-                | GamepadOverlayView.BTN_L1 | GamepadOverlayView.BTN_R1
-                | GamepadOverlayView.BTN_L2 | GamepadOverlayView.BTN_R2
-                | GamepadOverlayView.BTN_SELECT | GamepadOverlayView.BTN_START
-                | GamepadOverlayView.BTN_MODE | GamepadOverlayView.BTN_L3
-                | GamepadOverlayView.BTN_R3 | GamepadOverlayView.BTN_BACK_1
-                | GamepadOverlayView.BTN_BACK_2 | GamepadOverlayView.BTN_BACK_3
-                | GamepadOverlayView.BTN_BACK_4 | GamepadOverlayView.BTN_DPAD_UP
-                | GamepadOverlayView.BTN_DPAD_DOWN | GamepadOverlayView.BTN_DPAD_LEFT
-                | GamepadOverlayView.BTN_DPAD_RIGHT;
-        return (bit & allowed) != 0 ? bit : 0;
-    }
-
-    public static void resetGamepadCompatibility(Context context) {
-        prefs(context).edit()
-                .putInt(KEY_GAMEPAD_COMPATIBILITY_MODE, GAMEPAD_COMPAT_AUTO)
-                .putBoolean(KEY_GAMEPAD_SWAP_XY, false)
-                .putBoolean(KEY_GAMEPAD_SWAP_AB, false)
-                .putBoolean(KEY_GAMEPAD_SWAP_STICKS, false)
-                .putBoolean(KEY_GAMEPAD_SWAP_TRIGGERS, false)
-                .putBoolean(KEY_GAMEPAD_CUSTOM_SWAP_ENABLED, false)
-                .putInt(KEY_GAMEPAD_CUSTOM_SWAP_FIRST, 0)
-                .putInt(KEY_GAMEPAD_CUSTOM_SWAP_SECOND, 0)
-                .apply();
-        AxonInputAccessibilityService.refreshActiveService();
-    }
-
-    public static boolean isGamepadFaceYDpsEnabled(Context context) { return prefs(context).getBoolean(KEY_GAMEPAD_FACE_Y_DPS, false); }
-    public static boolean isGamepadFaceXDpsEnabled(Context context) { return prefs(context).getBoolean(KEY_GAMEPAD_FACE_X_DPS, false); }
-    public static boolean isGamepadFaceBDpsEnabled(Context context) { return prefs(context).getBoolean(KEY_GAMEPAD_FACE_B_DPS, false); }
-    public static boolean isGamepadFaceADpsEnabled(Context context) { return prefs(context).getBoolean(KEY_GAMEPAD_FACE_A_DPS, false); }
-
-    public static void setGamepadFaceYDpsEnabled(Context context, boolean enabled) { setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_Y_DPS, enabled); }
-    public static void setGamepadFaceXDpsEnabled(Context context, boolean enabled) { setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_X_DPS, enabled); }
-    public static void setGamepadFaceBDpsEnabled(Context context, boolean enabled) { setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_B_DPS, enabled); }
-    public static void setGamepadFaceADpsEnabled(Context context, boolean enabled) { setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_A_DPS, enabled); }
-
-    public static boolean isGamepadL2ProgressEnabled(Context context) { return prefs(context).getBoolean(KEY_GAMEPAD_L2_PROGRESS, false); }
-    public static boolean isGamepadR2ProgressEnabled(Context context) { return prefs(context).getBoolean(KEY_GAMEPAD_R2_PROGRESS, false); }
-    public static boolean isGamepadL1DpsEnabled(Context context) { return prefs(context).getBoolean(KEY_GAMEPAD_L1_DPS, false); }
-    public static boolean isGamepadR1DpsEnabled(Context context) { return prefs(context).getBoolean(KEY_GAMEPAD_R1_DPS, false); }
-
-    public static void setGamepadL2ProgressEnabled(Context context, boolean enabled) { setBooleanAndRefresh(context, KEY_GAMEPAD_L2_PROGRESS, enabled); }
-    public static void setGamepadR2ProgressEnabled(Context context, boolean enabled) { setBooleanAndRefresh(context, KEY_GAMEPAD_R2_PROGRESS, enabled); }
-    public static void setGamepadL1DpsEnabled(Context context, boolean enabled) { setBooleanAndRefresh(context, KEY_GAMEPAD_L1_DPS, enabled); }
-    public static void setGamepadR1DpsEnabled(Context context, boolean enabled) { setBooleanAndRefresh(context, KEY_GAMEPAD_R1_DPS, enabled); }
-
-    public static boolean isAnyGamepadFaceDpsEnabled(Context context) {
-        return isGamepadFaceYDpsEnabled(context) || isGamepadFaceXDpsEnabled(context)
-                || isGamepadFaceBDpsEnabled(context) || isGamepadFaceADpsEnabled(context);
-    }
-
     public static int getGamepadDisplaySize(Context context, int displayType) {
         String key;
         switch (displayType) {
             case GamepadOverlayView.DISPLAY_LEFT_STICK: key = KEY_GAMEPAD_LEFT_STICK_SIZE; break;
             case GamepadOverlayView.DISPLAY_RIGHT_STICK: key = KEY_GAMEPAD_RIGHT_STICK_SIZE; break;
             case GamepadOverlayView.DISPLAY_FACE: key = KEY_GAMEPAD_FACE_SIZE; break;
+            case GamepadOverlayView.DISPLAY_DPAD: key = KEY_GAMEPAD_DPAD_SIZE; break;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: key = KEY_GAMEPAD_LEFT_SHOULDER_SIZE; break;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: key = KEY_GAMEPAD_RIGHT_SHOULDER_SIZE; break;
             case GamepadOverlayView.DISPLAY_BACK: key = KEY_GAMEPAD_BACK_SIZE; break;
@@ -1225,6 +922,7 @@ public final class OverlayState {
             case GamepadOverlayView.DISPLAY_LEFT_STICK: key = KEY_GAMEPAD_LEFT_STICK_SIZE; break;
             case GamepadOverlayView.DISPLAY_RIGHT_STICK: key = KEY_GAMEPAD_RIGHT_STICK_SIZE; break;
             case GamepadOverlayView.DISPLAY_FACE: key = KEY_GAMEPAD_FACE_SIZE; break;
+            case GamepadOverlayView.DISPLAY_DPAD: key = KEY_GAMEPAD_DPAD_SIZE; break;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: key = KEY_GAMEPAD_LEFT_SHOULDER_SIZE; break;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: key = KEY_GAMEPAD_RIGHT_SHOULDER_SIZE; break;
             case GamepadOverlayView.DISPLAY_BACK: key = KEY_GAMEPAD_BACK_SIZE; break;
@@ -1266,6 +964,13 @@ public final class OverlayState {
         return getKeyLayerOpacity(context, displayType, "text");
     }
 
+    /** Diffusion/state-fill alpha is deliberately independent from the idle key background alpha. */
+    public static int getKeyDiffusionOpacity(Context context, int displayType) {
+        String key = keyLayerOpacityKey(displayType, "diffusion");
+        if (key == null) return DEFAULT_OPACITY;
+        return clampOpacity(prefs(context).getInt(key, DEFAULT_OPACITY));
+    }
+
     public static void setKeyBackgroundOpacity(Context context, int displayType, int percent) {
         setKeyLayerOpacity(context, displayType, "background", percent);
     }
@@ -1276,6 +981,10 @@ public final class OverlayState {
 
     public static void setKeyTextOpacity(Context context, int displayType, int percent) {
         setKeyLayerOpacity(context, displayType, "text", percent);
+    }
+
+    public static void setKeyDiffusionOpacity(Context context, int displayType, int percent) {
+        setKeyLayerOpacity(context, displayType, "diffusion", percent);
     }
 
     private static int getKeyLayerOpacity(Context context, int displayType, String layer) {
@@ -1342,6 +1051,7 @@ public final class OverlayState {
 
     private static int defaultKeyBaseColor(Context context, int displayType) {
         if (displayType == GamepadOverlayView.DISPLAY_FACE
+                || displayType == GamepadOverlayView.DISPLAY_DPAD
                 || displayType == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
                 || displayType == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
                 || displayType == GamepadOverlayView.DISPLAY_BACK) {
@@ -1354,6 +1064,25 @@ public final class OverlayState {
         String key = keyBaseColorKey(displayType);
         if (key == null) return;
         setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
+    }
+
+    public static int getKeyBorderColor(Context context, int displayType) {
+        String key = keyBorderColorKey(displayType);
+        int fallback = UiPalette.overlayStroke(context);
+        if (key == null) return fallback;
+        int stored = prefs(context).getInt(key, fallback & 0x00ffffff);
+        // Border opacity is controlled separately by the stroke-opacity setting. Keep the
+        // palette's restrained base alpha so changing hue does not turn every key into a hard outline.
+        return android.graphics.Color.argb(android.graphics.Color.alpha(fallback),
+                android.graphics.Color.red(stored),
+                android.graphics.Color.green(stored),
+                android.graphics.Color.blue(stored));
+    }
+
+    public static void setKeyBorderColor(Context context, int displayType, int color) {
+        String key = keyBorderColorKey(displayType);
+        if (key == null) return;
+        setIntAndRefresh(context, key, color & 0x00ffffff);
     }
 
     public static int getKeyPressColor(Context context, int displayType) {
@@ -1386,6 +1115,7 @@ public final class OverlayState {
             case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: return KEY_FULL_KEYBOARD_KEY_STYLE;
             case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_KEY_STYLE;
             case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_KEY_STYLE;
+            case GamepadOverlayView.DISPLAY_DPAD: return KEY_GAMEPAD_DPAD_KEY_STYLE;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_KEY_STYLE;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_KEY_STYLE;
             case GamepadOverlayView.DISPLAY_BACK: return KEY_GAMEPAD_BACK_KEY_STYLE;
@@ -1401,6 +1131,7 @@ public final class OverlayState {
             case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: return KEY_FULL_KEYBOARD_CORNER_STRENGTH;
             case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_CORNER_STRENGTH;
             case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_CORNER_STRENGTH;
+            case GamepadOverlayView.DISPLAY_DPAD: return KEY_GAMEPAD_DPAD_CORNER_STRENGTH;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_CORNER_STRENGTH;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_CORNER_STRENGTH;
             case GamepadOverlayView.DISPLAY_BACK: return KEY_GAMEPAD_BACK_CORNER_STRENGTH;
@@ -1416,9 +1147,26 @@ public final class OverlayState {
             case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: return KEY_FULL_KEYBOARD_BASE_COLOR;
             case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_BASE_COLOR;
             case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_BASE_COLOR;
+            case GamepadOverlayView.DISPLAY_DPAD: return KEY_GAMEPAD_DPAD_BASE_COLOR;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_BASE_COLOR;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_BASE_COLOR;
             case GamepadOverlayView.DISPLAY_BACK: return KEY_GAMEPAD_BACK_BASE_COLOR;
+            default: return null;
+        }
+    }
+
+    private static String keyBorderColorKey(int displayType) {
+        switch (displayType) {
+            case KeyOverlayView.DISPLAY_KEYBOARD: return KEY_KEYBOARD_BORDER_COLOR;
+            case KeyOverlayView.DISPLAY_MOUSE: return KEY_MOUSE_BORDER_COLOR;
+            case KeyPromptOverlayView.DISPLAY_KEY_PROMPT: return KEY_KEY_PROMPT_BORDER_COLOR;
+            case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: return KEY_FULL_KEYBOARD_BORDER_COLOR;
+            case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_BORDER_COLOR;
+            case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_BORDER_COLOR;
+            case GamepadOverlayView.DISPLAY_DPAD: return KEY_GAMEPAD_DPAD_BORDER_COLOR;
+            case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_BORDER_COLOR;
+            case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_BORDER_COLOR;
+            case GamepadOverlayView.DISPLAY_BACK: return KEY_GAMEPAD_BACK_BORDER_COLOR;
             default: return null;
         }
     }
@@ -1431,6 +1179,7 @@ public final class OverlayState {
             case FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD: return KEY_FULL_KEYBOARD_PRESS_COLOR;
             case KeyOverlayView.DISPLAY_CUSTOM: return KEY_CUSTOM_PRESS_COLOR;
             case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_PRESS_COLOR;
+            case GamepadOverlayView.DISPLAY_DPAD: return KEY_GAMEPAD_DPAD_PRESS_COLOR;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_PRESS_COLOR;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_PRESS_COLOR;
             case GamepadOverlayView.DISPLAY_BACK: return KEY_GAMEPAD_BACK_PRESS_COLOR;
@@ -1448,6 +1197,7 @@ public final class OverlayState {
             case GamepadOverlayView.DISPLAY_LEFT_STICK: return KEY_GAMEPAD_LEFT_STICK_OPACITY;
             case GamepadOverlayView.DISPLAY_RIGHT_STICK: return KEY_GAMEPAD_RIGHT_STICK_OPACITY;
             case GamepadOverlayView.DISPLAY_FACE: return KEY_GAMEPAD_FACE_OPACITY;
+            case GamepadOverlayView.DISPLAY_DPAD: return KEY_GAMEPAD_DPAD_OPACITY;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER: return KEY_GAMEPAD_LEFT_SHOULDER_OPACITY;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER: return KEY_GAMEPAD_RIGHT_SHOULDER_OPACITY;
             case GamepadOverlayView.DISPLAY_BACK: return KEY_GAMEPAD_BACK_OPACITY;
@@ -1465,68 +1215,6 @@ public final class OverlayState {
         setIntAndRefresh(context, motionModeKey(displayType), clampMotionMode(mode));
     }
 
-    public static boolean isGlobalHtmlEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_GLOBAL_HTML_ENABLED, false);
-    }
-
-    public static void setGlobalHtmlEnabled(Context context, boolean enabled) {
-        setBooleanAndRefresh(context, KEY_GLOBAL_HTML_ENABLED, enabled);
-    }
-
-    public static String getGlobalHtmlName(Context context) {
-        return prefs(context).getString(KEY_GLOBAL_HTML_NAME, "");
-    }
-
-    public static boolean hasGlobalHtml(Context context) {
-        File file = globalHtmlFile(context);
-        return file.isFile() && file.length() > 0;
-    }
-
-    public static void saveGlobalHtml(Context context, String displayName, String html) throws IOException {
-        if (html == null) throw new IOException("HTML is null");
-        byte[] data = html.getBytes(StandardCharsets.UTF_8);
-        if (data.length == 0 || data.length > MAX_GLOBAL_HTML_BYTES) {
-            throw new IOException("HTML size out of range");
-        }
-        AtomicFile file = new AtomicFile(globalHtmlFile(context));
-        FileOutputStream out = null;
-        try {
-            out = file.startWrite();
-            out.write(data);
-            out.flush();
-            out.getFD().sync();
-            file.finishWrite(out);
-        } catch (IOException error) {
-            if (out != null) file.failWrite(out);
-            throw error;
-        }
-        prefs(context).edit()
-                .putString(KEY_GLOBAL_HTML_NAME, displayName == null ? "display.html" : displayName)
-                .putBoolean(KEY_GLOBAL_HTML_ENABLED, true)
-                .apply();
-        AxonInputAccessibilityService.refreshActiveService();
-    }
-
-    public static String loadGlobalHtml(Context context) {
-        File file = globalHtmlFile(context);
-        if (!file.isFile()) return "";
-        try (FileInputStream in = new FileInputStream(file);
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int total = 0;
-            int read;
-            while ((read = in.read(buffer)) != -1) {
-                total += read;
-                if (total > MAX_GLOBAL_HTML_BYTES) return "";
-                out.write(buffer, 0, read);
-            }
-            if (total == 0) return "";
-            return new String(out.toByteArray(), StandardCharsets.UTF_8);
-        } catch (IOException ignored) {
-            return "";
-        }
-    }
-
     public static int clampMotionMode(int mode) {
         if (mode == MOTION_ALPHA || mode == MOTION_NONE || mode == MOTION_RIPPLE) return mode;
         return MOTION_SIZE;
@@ -1538,13 +1226,7 @@ public final class OverlayState {
         return KEY_KEYBOARD_MOTION_MODE;
     }
 
-    private static File globalHtmlFile(Context context) {
-        return new File(context.getApplicationContext().getFilesDir(), GLOBAL_HTML_FILE);
-    }
 
-    private static File floatingVideoFile(Context context) {
-        return new File(context.getApplicationContext().getFilesDir(), FLOATING_VIDEO_FILE);
-    }
 
     public static int getPositionX(Context context, int displayType) {
         return getPosition(context, displayType, true);
@@ -1559,10 +1241,12 @@ public final class OverlayState {
         String xKey = positionKey(displayType, true);
         String yKey = positionKey(displayType, false);
         if (xKey == null || yKey == null) return;
-        prefs(context).edit()
-                .putInt(xKey, clampFreePositionPercent(xPercent))
-                .putInt(yKey, clampFreePositionPercent(yPercent))
-                .apply();
+        int nextX = clampFreePositionPercent(xPercent);
+        int nextY = clampFreePositionPercent(yPercent);
+        SharedPreferences values = prefs(context);
+        if (values.getInt(xKey, Integer.MIN_VALUE) == nextX
+                && values.getInt(yKey, Integer.MIN_VALUE) == nextY) return;
+        values.edit().putInt(xKey, nextX).putInt(yKey, nextY).apply();
     }
 
     private static int getPosition(Context context, int displayType, boolean xAxis) {
@@ -1580,11 +1264,11 @@ public final class OverlayState {
             case KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT -> xAxis ? KEY_KEYBOARD_CAT_POSITION_X : KEY_KEYBOARD_CAT_POSITION_Y;
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT -> xAxis ? KEY_KEY_PROMPT_POSITION_X : KEY_KEY_PROMPT_POSITION_Y;
             case MouseTrajectoryView.DISPLAY_TRAJECTORY -> xAxis ? KEY_MOUSE_TRAJECTORY_POSITION_X : KEY_MOUSE_TRAJECTORY_POSITION_Y;
-            case FloatingVideoOverlayView.DISPLAY_FLOATING_VIDEO -> xAxis ? KEY_FLOATING_VIDEO_POSITION_X : KEY_FLOATING_VIDEO_POSITION_Y;
             case DpsOverlayView.DISPLAY_DPS -> xAxis ? KEY_DPS_POSITION_X : KEY_DPS_POSITION_Y;
             case GamepadOverlayView.DISPLAY_LEFT_STICK -> xAxis ? KEY_GAMEPAD_LEFT_STICK_POSITION_X : KEY_GAMEPAD_LEFT_STICK_POSITION_Y;
             case GamepadOverlayView.DISPLAY_RIGHT_STICK -> xAxis ? KEY_GAMEPAD_RIGHT_STICK_POSITION_X : KEY_GAMEPAD_RIGHT_STICK_POSITION_Y;
             case GamepadOverlayView.DISPLAY_FACE -> xAxis ? KEY_GAMEPAD_FACE_POSITION_X : KEY_GAMEPAD_FACE_POSITION_Y;
+            case GamepadOverlayView.DISPLAY_DPAD -> xAxis ? KEY_GAMEPAD_DPAD_POSITION_X : KEY_GAMEPAD_DPAD_POSITION_Y;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER -> xAxis ? KEY_GAMEPAD_LEFT_SHOULDER_POSITION_X : KEY_GAMEPAD_LEFT_SHOULDER_POSITION_Y;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER -> xAxis ? KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_X : KEY_GAMEPAD_RIGHT_SHOULDER_POSITION_Y;
             case GamepadOverlayView.DISPLAY_BACK -> xAxis ? KEY_GAMEPAD_BACK_POSITION_X : KEY_GAMEPAD_BACK_POSITION_Y;
@@ -1600,20 +1284,16 @@ public final class OverlayState {
             case KeyboardCatOverlayView.DISPLAY_KEYBOARD_CAT -> xAxis ? DEFAULT_KEYBOARD_CAT_X : DEFAULT_KEYBOARD_CAT_Y;
             case KeyPromptOverlayView.DISPLAY_KEY_PROMPT -> xAxis ? DEFAULT_KEY_PROMPT_X : DEFAULT_KEY_PROMPT_Y;
             case MouseTrajectoryView.DISPLAY_TRAJECTORY -> xAxis ? DEFAULT_MOUSE_TRAJECTORY_X : DEFAULT_MOUSE_TRAJECTORY_Y;
-            case FloatingVideoOverlayView.DISPLAY_FLOATING_VIDEO -> xAxis ? DEFAULT_FLOATING_VIDEO_X : DEFAULT_FLOATING_VIDEO_Y;
             case DpsOverlayView.DISPLAY_DPS -> xAxis ? DEFAULT_DPS_X : DEFAULT_DPS_Y;
             case GamepadOverlayView.DISPLAY_LEFT_STICK -> xAxis ? DEFAULT_GAMEPAD_LEFT_STICK_X : DEFAULT_GAMEPAD_LEFT_STICK_Y;
             case GamepadOverlayView.DISPLAY_RIGHT_STICK -> xAxis ? DEFAULT_GAMEPAD_RIGHT_STICK_X : DEFAULT_GAMEPAD_RIGHT_STICK_Y;
             case GamepadOverlayView.DISPLAY_FACE -> xAxis ? DEFAULT_GAMEPAD_FACE_X : DEFAULT_GAMEPAD_FACE_Y;
+            case GamepadOverlayView.DISPLAY_DPAD -> xAxis ? DEFAULT_GAMEPAD_DPAD_X : DEFAULT_GAMEPAD_DPAD_Y;
             case GamepadOverlayView.DISPLAY_LEFT_SHOULDER -> xAxis ? DEFAULT_GAMEPAD_LEFT_SHOULDER_X : DEFAULT_GAMEPAD_LEFT_SHOULDER_Y;
             case GamepadOverlayView.DISPLAY_RIGHT_SHOULDER -> xAxis ? DEFAULT_GAMEPAD_RIGHT_SHOULDER_X : DEFAULT_GAMEPAD_RIGHT_SHOULDER_Y;
             case GamepadOverlayView.DISPLAY_BACK -> xAxis ? DEFAULT_GAMEPAD_BACK_X : DEFAULT_GAMEPAD_BACK_Y;
             default -> 50;
         };
-    }
-
-    private static int clampSensitivity(int value) {
-        return Math.max(MIN_SENSITIVITY, Math.min(MAX_SENSITIVITY, value));
     }
 
     private static int clampOpacity(int value) {
@@ -1624,13 +1304,11 @@ public final class OverlayState {
         return Math.max(MIN_SIZE, Math.min(MAX_SIZE, value));
     }
 
+
     private static int clampKeySpacing(int value) {
         return Math.max(MIN_KEY_SPACING, Math.min(MAX_KEY_SPACING, value));
     }
 
-    private static int clampPercent(int value) {
-        return Math.max(0, Math.min(100, value));
-    }
 
     /** 拖动位置可超出屏幕。仅限制异常坐标。 */
     private static int clampFreePositionPercent(int value) {
@@ -1672,30 +1350,24 @@ public final class OverlayState {
     }
 
     private static void setBooleanAndRefresh(Context context, String key, boolean enabled) {
-        prefs(context).edit().putBoolean(key, enabled).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        if (PreferenceWriter.putBooleanIfChanged(prefs(context), key, enabled)) {
+            AxonInputAccessibilityService.refreshActiveService();
+        }
     }
 
     private static void setIntAndRefresh(Context context, String key, int value) {
-        prefs(context).edit().putInt(key, value).apply();
-        AxonInputAccessibilityService.refreshActiveService();
+        if (PreferenceWriter.putIntIfChanged(prefs(context), key, value)) {
+            AxonInputAccessibilityService.refreshActiveService();
+        }
     }
 
-    static SharedPreferences preferencesForConfig(Context context) {
-        return prefs(context);
-    }
-
-    static File globalHtmlFileForConfig(Context context) {
-        return globalHtmlFile(context);
-    }
 
     static void refreshAfterConfigChange(Context context) {
         AxonInputAccessibilityService.refreshTheme();
-        AxonInputAccessibilityService.refreshActiveService();
     }
 
     private static SharedPreferences prefs(Context context) {
-        return context.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE);
+        return AppPreferences.get(context);
     }
 
     private static SharedPreferences durablePrefs(Context context) {

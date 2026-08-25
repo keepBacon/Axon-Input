@@ -1,1 +1,20 @@
-<!doctype html><style>html,body{margin:0;width:100%;height:100%;background:transparent}#m{display:flex;width:100%;height:100%;overflow:hidden;border-radius:24px;background:#191a20;color:#fff;font-family:system-ui}#m>div{flex:1;display:grid;place-items:center;transition:transform 90ms}#m>div.down{background:#fff;color:#111;transform:scale(.96)}small{opacity:.6}</style><div id="m"></div><script>addEventListener('keydisplay:update',e=>{const s=e.detail;if(s.type!=='mouse')return;m.innerHTML=s.keys.map(k=>`<div class="${k.pressed?'down':''}"><b>${k.label}</b><small>${k.cps} CPS</small></div>`).join('')})</script>
+<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:system-ui}
+#m{display:flex;width:100%;height:100%;overflow:hidden;border-radius:24px;background:#191a20;color:#fff;opacity:var(--kd-opacity)}
+#m>div{flex:1;display:grid;place-items:center;transition:transform 90ms ease-out,background 90ms ease-out,color 90ms ease-out}
+#m>div.down{background:#fff;color:#111;transform:scale(.96)}
+small{opacity:.6}
+</style>
+<div id="m"><div data-side="left"><b>Left</b><small>0 CPS</small></div><div data-side="right"><b>Right</b><small>0 CPS</small></div></div>
+<script>
+const left=m.querySelector('[data-side="left"]'),right=m.querySelector('[data-side="right"]');
+function update(v){
+  if(!v)return;
+  left.classList.toggle('down',!!v.left);right.classList.toggle('down',!!v.right);
+  left.querySelector('small').textContent=(v.leftCps||0)+' CPS';
+  right.querySelector('small').textContent=(v.rightCps||0)+' CPS';
+}
+KeyDisplay.onState(s=>{if(s.type==='mouse')update(s.mouse)});
+KeyDisplay.on('mouse',e=>update(e.detail));
+</script>

@@ -17,6 +17,10 @@
   // Mver is a layered compositor, not a single image. Keep every exported layer in the
   // package design coordinate system so imported animations retain their original geometry.
   const MVER_RENDER_HAND_OVERLAYS = IS_MVER && CONFIG.mverRenderHandOverlays === true;
+  // Full-frame Mver hand PNGs contain the skin author's exact keyboard-hand placement. When they
+  // are authoritative they replace the model's built-in keyboard hand while active; the runtime
+  // uses CatParam*HandDown only as a temporary hide gate so the PNG and model arm never coexist.
+  const MVER_SPRITE_HANDS_AUTHORITATIVE = IS_MVER && CONFIG.mverSpriteHandsAuthoritative === true;
   const MVER_RENDER_MOUSE_OVERLAY = IS_MVER && CONFIG.mverRenderMouseOverlay === true;
   const MVER_BASE_BACKGROUND = IS_MVER ? String(CONFIG.mverMouseBg || '') : '';
   const MVER_KEY_SPRITES = CONFIG.mverKeySprites && typeof CONFIG.mverKeySprites === 'object' ? CONFIG.mverKeySprites : {};
@@ -60,7 +64,11 @@
   const MVER_HAND_OFFSET_Y = Number(CONFIG.mverHandOffsetY) || 0;
   const MVER_LEFT_HANDED = CONFIG.mverLeftHanded === true;
   const MVER_L2D_OFFSET = Array.isArray(CONFIG.mverL2dOffset) ? CONFIG.mverL2dOffset : [];
-  const MVER_L2D_HORIZONTAL_FLIP = CONFIG.mverL2dHorizontalFlip === true;
+  // Mver 0.1.6 exposes l2d_horizontal_flip in config, but its standard Live2D runtime
+  // does not mirror the rendered model with it. Keep the source value only for diagnostics;
+  // applying CSS scaleX(-1) here mirrors the character while leaving the authored desk/base
+  // layers untouched, which breaks asymmetric/swapped layouts.
+  const MVER_SOURCE_L2D_HORIZONTAL_FLIP = CONFIG.mverL2dHorizontalFlip === true;
   // Importer supplies per-package compositor semantics. Dedicated l2d*bg packages use their
   // authored coordinates; legacy plain mousebg/tabletbg fallbacks can receive a small calibrated offset.
   const MVER_FULLFRAME_OFFSET_X = IS_MVER ? (Number(CONFIG.mverFullFrameOffsetX) || 0) : 0;
@@ -972,9 +980,36 @@
   function syncHandOverrides() {
     if (!renderer) return;
     if (IS_MVER) {
-      // Mver standard drives its Live2D physics from these CAT parameters in addition to
-      // drawing the PNG hand layer. The previous runtime only changed the PNG, leaving the
-      // model permanently at CatParamLeftHandDown=0.
+      // Full-frame authored Mver hand layers encode the exact keyboard-hand pose. Treat them as
+      // the visible authority and use CatParam*HandDown only to hide the model's idle hand while
+      // a replacement sprite is active, preventing two arm systems from being visible together.
+      if (MVER_SPRITE_HANDS_AUTHORITATIVE) {
+        // Full-canvas hand sprites are drawn on top of the Live2D model. In many Mver
+        // standard models CatParam*HandDown is not a second animation trigger: value 1
+        // hides the model's built-in idle hand so the authored PNG can replace it. Leaving
+        // the parameter at its default (usually 0) keeps the model hand visible underneath
+        // the PNG and produces the familiar "double arm / two hands" artifact.
+        //
+        // Only hide a model hand while its authored replacement sprite is actually active.
+        // Missing parameters are ignored by setFrameInput, so this remains safe for community
+        // models that only use raster hand layers.
+        const genericHandActive = anyBindingPressed(MVER_HAND_BINDINGS);
+        const leftHandActive = genericHandActive || anyBindingPressed(MVER_LEFT_HAND_BINDINGS);
+        const rightHandActive = anyBindingPressed(MVER_RIGHT_HAND_BINDINGS);
+        const lockHand = state.mverMotionLockHand && state.mverMotionIndex >= 0;
+        if (lockHand) {
+          // lockhand motions own the model arm and suppress the normal input-hand sprite.
+          renderer.clearFrameInput('CatParamLeftHandDown');
+          renderer.clearFrameInput('CatParamRightHandDown');
+          return;
+        }
+        if (leftHandActive) renderer.setFrameInput('CatParamLeftHandDown', 1);
+        else renderer.clearFrameInput('CatParamLeftHandDown');
+        if (rightHandActive) renderer.setFrameInput('CatParamRightHandDown', 1);
+        else renderer.clearFrameInput('CatParamRightHandDown');
+        return;
+      }
+      // Fallback for community Live2D packages without authored full-frame hand layers.
       const lockHand = state.mverMotionLockHand && state.mverMotionIndex >= 0;
       const leftDown = !lockHand && (anyBindingPressed(MVER_HAND_BINDINGS)
         || anyBindingPressed(MVER_LEFT_HAND_BINDINGS));
@@ -1261,6 +1296,7 @@
         pressed: Array.from(state.mverPressed),
         keyBindings: MVER_KEY_BINDINGS.length,
         handBindings: MVER_HAND_BINDINGS.length,
+        spriteHandsAuthoritative: MVER_SPRITE_HANDS_AUTHORITATIVE,
         faceBindings: MVER_FACE_BINDINGS.length,
         expressionBindings: MVER_EXPRESSION_BINDINGS.length,
         debugExpression: [state.debugExpressionKind, state.debugExpressionIndex],
@@ -1283,6 +1319,7 @@
     live2d: MVER_USE_LIVE2D,
     keyBindings: MVER_KEY_BINDINGS.length,
     handBindings: MVER_HAND_BINDINGS.length,
+    spriteHandsAuthoritative: MVER_SPRITE_HANDS_AUTHORITATIVE,
     faceBindings: MVER_FACE_BINDINGS.length,
     pose: Boolean(LIVE2D_POSE),
     eyeBlinkIds: LIVE2D_EYE_BLINK_IDS.length,
@@ -2209,8 +2246,13 @@
       // Current-frame Mver input. Pointer and key states must feed physics every frame, but must
       // never be baked into SaveParameters or they continue moving after input is released.
       for (const [index, value] of this.frameInputs) this.parameters.values[index] = value;
-      this.setValue('ParamMouseLeftDown', (state.mouseVisualButtons & 1) ? 1 : 0);
-      this.setValue('ParamMouseRightDown', (state.mouseVisualButtons & 2) ? 1 : 0);
+      const mouseLeftDown = (state.mouseVisualButtons & 1) ? 1 : 0;
+      const mouseRightDown = (state.mouseVisualButtons & 2) ? 1 : 0;
+      this.setValue('ParamMouseLeftDown', mouseLeftDown);
+      this.setValue('ParamMouseRightDown', mouseRightDown);
+      // A number of Mver skins shipped with this historical misspelling in the model. Missing
+      // parameters are ignored by setValue, so feeding both names is safe for correct models.
+      this.setValue('ParamMouseRihgtDown', mouseRightDown);
 
       // l2dcat/Cubism late updater order: blink (only without active motion) -> expression
       // -> look/drag -> breath -> physics.
@@ -2393,7 +2435,13 @@
       if (!model) throw new Error('model init failed');
 
       renderer = new CoreRenderer(core, model, textureImages);
-      if (IS_MVER && MVER_L2D_HORIZONTAL_FLIP) canvas.style.transform = 'scaleX(-1)';
+      // Match Mver 0.1.6 compositor semantics: l2d_horizontal_flip is not a visual canvas
+      // mirror. The desk/background and full-frame hand overlays are already authored in final
+      // coordinates, so only keep the model in its native orientation.
+      canvas.style.transform = '';
+      if (IS_MVER && MVER_SOURCE_L2D_HORIZONTAL_FLIP) {
+        console.info('[AxonBongoCat] legacy l2d_horizontal_flip preserved as metadata; visual mirror intentionally ignored');
+      }
       if (IS_MVER && MVER_MOUSE_FORCE_MOVE) {
         state.pointerActive = true;
         applyPointerOverrides(state.cursorX, state.cursorY);

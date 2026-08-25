@@ -1,4 +1,4 @@
-Axon Input 1.6 代码结构
+Axon Input 1.8 代码结构
 
 原则
 - 配置、输入、绘制、权限分开处理。
@@ -37,8 +37,20 @@ GamepadButtons.java
 
 MouseInputMonitor.java
 GamepadInputMonitor.java
-- 读取底层输入并上报。
-- 不负责绘制。
+TouchInputMonitor.java
+native/touchmonitor.cpp
+- TouchInputMonitor 仅负责 Shizuku 生命周期、原生监听器传输/启动与稳定协议解析。
+- touchmonitor.cpp 直接通过 evdev 只读读取 /dev/input/event* 的 input_event，支持 Type-B slot、多点 tracking id、Type-A 与 BTN_TOUCH 单指回退。
+- 触屏监听独立于 Root/灵敏度模式；不 EVIOCGRAB、不注入，不负责绘制。
+
+TouchRegionOverlayEditorView.java
+- 触屏显示四区域全屏悬浮调试器，由 AccessibilityService 直接覆盖目标应用。
+- 仅在横屏显示，支持挖孔/安全区布局，并保存物理整屏归一化区域坐标。
+
+FloatingVideoOverlayView.java
+ChromaKeyVideoSurfaceView.java
+- 超级自定义按显中的悬浮图片/视频组件。
+- 使用 OpenGL ES 外部纹理实时渲染透明度与色键抠图；导入时支持点击视频取色和强度预览。
 
 SensitivityProxyController.java
 native/sensitivityproxy.cpp

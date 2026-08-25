@@ -5,19 +5,24 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.view.animation.PathInterpolator;
 
 /** 按键形状、按下颜色和扩散动画。 */
 final class KeyAppearance {
     static final int STYLE_ROUNDED = 0;
     static final int STYLE_SQUARE = 1;
     static final int STYLE_CIRCLE = 2;
-    static final long RIPPLE_MS = 260L;
+    // v1.7: user requested 0.5x speed relative to the first Matrix migration.
+    // Matrix source is 190/72 ms; Axon intentionally doubles both to 380/144 ms.
+    static final long CARD_FEATURE_TOGGLE_MS = 380L;
+    static final long RIPPLE_MIN_MS = 144L;
     static final int DEFAULT_CORNER_STRENGTH = 40;
 
-    // Shared keyboard cadence estimator used by every native key-display surface.  This keeps
-    // centre-fill speed consistent when the same physical key event is mirrored by multiple views.
-    private static long lastCentreFillPressMs;
-    private static float centreFillCadenceEmaMs = 620f;
+    // Matrix Card UI feature-toggle motion. Keep this curve and timing aligned with
+    // ClickUiView.animateCardFeatureState(): 380 ms full travel, 144 ms minimum,
+    // cubic-bezier(0.18, 0.94, 0.28, 1).
+    private static final PathInterpolator CARD_FEATURE_TOGGLE_EASE =
+            new PathInterpolator(0.18f, 0.94f, 0.28f, 1f);
 
     private KeyAppearance() {}
 
@@ -48,29 +53,15 @@ final class KeyAppearance {
     }
 
     /**
-     * Legacy compatibility entry point.  The old white/black translucent OEM-like ripple was
-     * removed in v1.6.  Remaining callers receive only an opaque press-colour centre disc.
-     */
-    static void drawRipple(Canvas canvas, RectF area, int pressColor,
-                           long startMs, long nowMs, Paint paint) {
-        if (startMs <= 0L) return;
-        float t = (nowMs - startMs) / (float) RIPPLE_MS;
-        if (t < 0f || t >= 1f) return;
-        float maxRadius = (float) Math.hypot(area.width() * 0.5f, area.height() * 0.5f);
-        paint.setStyle(Paint.Style.FILL);
-        paint.setColor(pressColor);
-        canvas.drawCircle(area.centerX(), area.centerY(), maxRadius * t, paint);
-    }
-
-
-    /**
-     * Draws one opaque press-colour circle from the exact centre of the key and clips it to the
-     * key's own geometry. No tint, alpha fade, halo or secondary ripple is applied.
+     * Matrix Card UI feature-state fill. This is NOT a radial ripple. The whole key-shaped state
+     * surface grows from the centre toward the final bounds, matching ClickUiView's centred
+     * scratchRectD expansion.
      */
     static void drawCentreFill(Canvas canvas, RectF area, int style, float radius,
                                int pressColor, float progress, Paint paint, Path clipPath) {
         if (area == null || progress <= 0f) return;
-        float p = Math.max(0f, Math.min(1f, progress));
+        float spread = cardFeatureSpread(progress);
+        if (spread <= 0.0001f) return;
         int resolvedStyle = clampStyle(style);
 
         clipPath.reset();
@@ -83,57 +74,62 @@ final class KeyAppearance {
             clipPath.addRoundRect(area, radius, radius, Path.Direction.CW);
         }
 
-        float maxRadius = resolvedStyle == STYLE_CIRCLE
-                ? Math.min(area.width(), area.height()) * 0.5f
-                : (float) Math.hypot(area.width() * 0.5f, area.height() * 0.5f);
+        float cx = area.centerX();
+        float cy = area.centerY();
+        float left = cx - (cx - area.left) * spread;
+        float top = cy - (cy - area.top) * spread;
+        float right = cx + (area.right - cx) * spread;
+        float bottom = cy + (area.bottom - cy) * spread;
 
         int save = canvas.save();
         canvas.clipPath(clipPath);
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(pressColor);
-        canvas.drawCircle(area.centerX(), area.centerY(), maxRadius * p, paint);
+        if (resolvedStyle == STYLE_SQUARE) {
+            canvas.drawRect(left, top, right, bottom, paint);
+        } else if (resolvedStyle == STYLE_CIRCLE) {
+            float revealRadius = Math.min(right - left, bottom - top) * 0.5f;
+            canvas.drawCircle(cx, cy, revealRadius, paint);
+        } else {
+            float revealRadius = Math.min(radius,
+                    Math.max(0f, Math.min(right - left, bottom - top) * 0.5f));
+            canvas.drawRoundRect(left, top, right, bottom,
+                    revealRadius, revealRadius, paint);
+        }
         canvas.restoreToCount(save);
     }
 
-    /**
-     * Returns an adaptive centre-fill duration from recent key cadence.  Slow deliberate input
-     * produces a visibly slower fill; rapid typing shortens it without collapsing into an OEM-like
-     * instant ripple.
-     */
-    static synchronized long nextCentreFillDuration(long nowMs) {
-        if (lastCentreFillPressMs > 0L) {
-            long interval = nowMs - lastCentreFillPressMs;
-            if (interval > 1800L) {
-                // A new deliberate sequence starts calm instead of inheriting stale rapid cadence.
-                centreFillCadenceEmaMs = 620f;
-            } else if (interval >= 55L) {
-                // React to typing tempo quickly, but smooth enough that alternating keys do not jitter.
-                centreFillCadenceEmaMs = centreFillCadenceEmaMs * 0.55f + interval * 0.45f;
-            }
-        }
-        lastCentreFillPressMs = nowMs;
-        return Math.round(Math.max(260f, Math.min(820f, 210f + centreFillCadenceEmaMs * 0.68f)));
-    }
-
-    /**
-     * Soft centre-fill curve: gentle acceleration, a lively middle, and a damped arrival.
-     * It has zero hard corners in velocity, so the solid disc reads as a fill rather than an OEM ripple.
-     */
-    static float centreFillCurve(float input) {
+    /** Matrix Card UI feature-toggle easing. Input and output are clamped to [0, 1]. */
+    static float cardFeatureToggleEase(float input) {
         float t = Math.max(0f, Math.min(1f, input));
-        float smooth = t * t * (3f - 2f * t);
-        float softOut = 1f - (float) Math.pow(1f - t, 2.15f);
-        return Math.max(0f, Math.min(1f, smooth * 0.72f + softOut * 0.28f));
+        return CARD_FEATURE_TOGGLE_EASE.getInterpolation(t);
     }
 
-    static float centreFillProgress(long startMs, long durationMs, long nowMs) {
-        if (startMs <= 0L) return 0f;
-        float linear = (nowMs - startMs) / (float) Math.max(1L, durationMs);
-        return centreFillCurve(linear);
+    /**
+     * Matches Matrix Card UI interruption semantics: duration scales with the remaining visual
+     * distance, but never drops below 144 ms for a real state change in the 0.5x-speed Axon variant.
+     */
+    static long cardFeatureToggleDuration(float from, float to) {
+        float distance = Math.abs(Math.max(0f, Math.min(1f, to))
+                - Math.max(0f, Math.min(1f, from)));
+        if (distance <= 0.001f) return 0L;
+        return Math.max(RIPPLE_MIN_MS, Math.round(CARD_FEATURE_TOGGLE_MS * distance));
+    }
+
+    /** Matrix Card UI uses smoothstep on the animated state to produce the actual spread. */
+    static float cardFeatureSpread(float stateReveal) {
+        float p = Math.max(0f, Math.min(1f, stateReveal));
+        return p * p * (3f - 2f * p);
+    }
+
+    /** Exact card feature-state micro-bounce from Matrix ClickUiView. */
+    static float cardFeatureBounce(float stateReveal) {
+        float p = Math.max(0f, Math.min(1f, stateReveal));
+        return 1f + 0.048f * (float) Math.sin(Math.PI * p);
     }
 
     static float centreTextMix(float fillProgress) {
-        return centreFillCurve(Math.max(0f, Math.min(1f, fillProgress / 0.24f)));
+        return cardFeatureSpread(fillProgress);
     }
 
     static int blendColor(int from, int to, float progress) {
