@@ -26,8 +26,8 @@ final class FloatingMediaStore {
     private static final String FILE_PREFIX = "floating_media_";
     private static final String FILE_SUFFIX = ".mp4";
     private static final int MAX_ITEMS = 24;
-    private static final long MAX_MEDIA_BYTES = 256L * 1024L * 1024L;
-    static final int CHROMA_STRENGTH_MAX = 200;
+    private static final long MAX_MEDIA_BYTES = 1L * 1024L * 1024L * 1024L;
+    static final int CHROMA_STRENGTH_MAX = 300;
     static final int HOTKEY_INPUT_KEYBOARD = 1;
     static final int HOTKEY_INPUT_MOUSE = 1 << 1;
     static final int HOTKEY_INPUT_GAMEPAD = 1 << 2;
@@ -353,7 +353,7 @@ final class FloatingMediaStore {
                 Math.min(item.sourceDurationMs, item.clipEndMs <= 0L ? item.sourceDurationMs : item.clipEndMs));
         item.sourceWidth = Math.max(1, item.sourceWidth);
         item.sourceHeight = Math.max(1, item.sourceHeight);
-        item.sizePercent = Math.max(50, Math.min(300, item.sizePercent));
+        item.sizePercent = Math.max(25, Math.min(500, item.sizePercent));
         item.opacityPercent = clampPercent(item.opacityPercent);
         item.playbackMode = item.playbackMode == FloatingVideoOverlayView.PLAYBACK_ONCE
                 ? FloatingVideoOverlayView.PLAYBACK_ONCE : FloatingVideoOverlayView.PLAYBACK_LOOP;

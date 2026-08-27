@@ -89,12 +89,12 @@ public final class MouseTrajectoryView extends FrameLayout {
     }
 
     public void setDisplaySize(int percent) {
-        displaySizePercent = Math.max(50, Math.min(150, percent));
+        displaySizePercent = Math.max(25, Math.min(300, percent));
         if (htmlView != null) htmlView.setDisplaySize(displaySizePercent);
     }
 
     public void setDotSize(int percent) {
-        dotSizePercent = Math.max(50, Math.min(150, percent));
+        dotSizePercent = Math.max(25, Math.min(300, percent));
         if (htmlView != null) htmlView.setDotSizePercent(dotSizePercent);
         invalidate();
     }
@@ -187,6 +187,11 @@ public final class MouseTrajectoryView extends FrameLayout {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (globalHtmlEnabled) return;
+        int save = canvas.save();
+        float viewportScale = displaySizePercent < 50 ? displaySizePercent / 50f : 1f;
+        if (viewportScale < 0.999f) {
+            canvas.scale(viewportScale, viewportScale, getWidth() * 0.5f, getHeight() * 0.5f);
+        }
         final float pad = dp(4);
         final float side = Math.min(getWidth(), getHeight());
         final float radius = Math.min(dp(18), side * 0.19f);
@@ -201,6 +206,7 @@ public final class MouseTrajectoryView extends FrameLayout {
         float dotRadius = dp(5.8f) * (dotSizePercent / 100f) * (1f + speedNorm * 0.055f);
         dotPaint.setColor(resolveDotColor());
         canvas.drawCircle(centerX + offsetX, centerY + offsetY, dotRadius, dotPaint);
+        canvas.restoreToCount(save);
     }
 
     @Override

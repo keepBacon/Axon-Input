@@ -140,11 +140,10 @@ KeyDisplay.on('key', e => {
   const el=document.querySelector(`[data-id="${k.id}"]`);
   if(!el)return;
   el.getAnimations().forEach(a=>a.cancel());
+  const from=getComputedStyle(el).transform;
   el.animate(
-    k.pressed
-      ? [{transform:'scale(1)'},{transform:'scale(.88)'}]
-      : [{transform:'scale(.88)'},{transform:'scale(1.04)'},{transform:'scale(1)'}],
-    {duration:k.pressed?85:190,easing:'cubic-bezier(.2,.8,.2,1)',fill:'forwards'}
+    [{transform:from},{transform:k.pressed?'scale(.97)':'scale(1)'}],
+    {duration:k.pressed?180:300,easing:'cubic-bezier(.2,.82,.2,1)',fill:'forwards'}
   );
 });
 """);
@@ -213,10 +212,11 @@ KeyDisplay.on('gamepad',e=>{
   knob.style.translate=`${x*32}px ${y*32}px`;
   const down=right?g.buttons.r3:g.buttons.l3;
   const old=right?lastR3:lastL3;
-  if(down&&!old) knob.animate(
-    [{scale:'1'},{scale:'1.16'},{scale:'.97'},{scale:'1'}],
-    {duration:170,easing:'cubic-bezier(.2,.8,.2,1)'}
-  );
+  if(down&&!old){
+    knob.getAnimations().forEach(a=>a.cancel());
+    knob.animate([{scale:'1'},{scale:'.97'}],
+      {duration:220,easing:'cubic-bezier(.2,.82,.2,1)',direction:'alternate',iterations:2});
+  }
   if(right)lastR3=down;else lastL3=down;
 });
 """);
@@ -297,8 +297,11 @@ if(KeyDisplay.type==='key-prompt'){
   });
   KeyDisplay.on('key',e=>{
     const el=document.querySelector(`[data-id="${e.detail.id}"]`);
-    if(el)el.animate([{scale:'.72'},{scale:'1.06'},{scale:'1'}],
-      {duration:180,easing:'cubic-bezier(.2,.8,.2,1)'});
+    if(el){
+      el.getAnimations().forEach(a=>a.cancel());
+      el.animate([{scale:'.97'},{scale:'1'}],
+        {duration:300,easing:'cubic-bezier(.2,.82,.2,1)'});
+    }
   });
 }
 """);

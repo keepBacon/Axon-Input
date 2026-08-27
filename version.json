@@ -1,5 +1,5 @@
 {
-  "versionCode": 12,
-  "versionName": "1.8",
-  "changelog": "qq群1080086855,更新了什么自己看qq群或github吧"
+  "versionCode": 13,
+  "versionName": "1.9",
+  "changelog": "qq群1080086855,优化ui,新增live2d,新增手柄映射,新增隐藏按显,超级自定义按显新增文本可增加类型,ABXY按键新增△○□X图标切换调试项,颜色选择器支持多颜色选择渐变"
 }

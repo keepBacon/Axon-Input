@@ -47,6 +47,10 @@ public final class RootBridge {
             return process.getInputStream();
         }
 
+        public java.io.OutputStream getOutputStream() {
+            return process.getOutputStream();
+        }
+
         @Override
         public void close() {
             process.destroy();

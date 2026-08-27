@@ -72,6 +72,7 @@ public final class GamepadOverlayView extends FrameLayout {
     private boolean dragging;
     private int stickShape = SHAPE_CIRCLE;
     private boolean faceReversed;
+    private boolean faceSymbolIcons;
     private boolean vader5BackLabels;
     private boolean faceYDpsEnabled;
     private boolean faceXDpsEnabled;
@@ -158,8 +159,8 @@ public final class GamepadOverlayView extends FrameLayout {
         pressColor = UiPalette.overlayKeyPressed(context);
         buttonPaint.setColor(pressColor);
 
-        setScaleX(0.94f);
-        setScaleY(0.94f);
+        setScaleX(0.97f);
+        setScaleY(0.97f);
         postFrame();
     }
 
@@ -173,12 +174,12 @@ public final class GamepadOverlayView extends FrameLayout {
     }
 
     public void setDisplaySize(int percent) {
-        displaySizePercent = Math.max(50, Math.min(150, percent));
+        displaySizePercent = Math.max(25, Math.min(300, percent));
         if (htmlView != null) htmlView.setDisplaySize(displaySizePercent);
     }
 
     public void setFaceSpacing(int spacingDp) {
-        faceSpacingDp = Math.max(0, Math.min(16, spacingDp));
+        faceSpacingDp = Math.max(0, Math.min(40, spacingDp));
         invalidate();
     }
 
@@ -212,7 +213,7 @@ public final class GamepadOverlayView extends FrameLayout {
     }
 
     public void setStickDotSize(int percent) {
-        stickDotSizePercent = Math.max(50, Math.min(150, percent));
+        stickDotSizePercent = Math.max(25, Math.min(300, percent));
         if (htmlView != null) htmlView.setDotSizePercent(stickDotSizePercent);
         invalidate();
     }
@@ -232,6 +233,7 @@ public final class GamepadOverlayView extends FrameLayout {
         web.loadRendererHtml(html);
         web.setStickShape(stickShape);
         web.setFaceReversed(faceReversed);
+        web.setFaceSymbolIcons(faceSymbolIcons);
         web.setFaceDpsConfig(faceYDpsEnabled, faceXDpsEnabled, faceBDpsEnabled, faceADpsEnabled);
         web.setShoulderConfig(triggerProgressEnabled, shoulderDpsEnabled);
         web.setGamepadDpsStats(faceYDps, faceXDps, faceBDps, faceADps, l1Dps, r1Dps);
@@ -252,6 +254,13 @@ public final class GamepadOverlayView extends FrameLayout {
         if (faceReversed == reversed) return;
         faceReversed = reversed;
         if (htmlView != null) htmlView.setFaceReversed(faceReversed);
+        invalidate();
+    }
+
+    public void setFaceSymbolIcons(boolean enabled) {
+        if (faceSymbolIcons == enabled) return;
+        faceSymbolIcons = enabled;
+        if (htmlView != null) htmlView.setFaceSymbolIcons(faceSymbolIcons);
         invalidate();
     }
 
@@ -332,7 +341,7 @@ public final class GamepadOverlayView extends FrameLayout {
                     ? (buttons & BTN_L3) != 0 : (buttons & BTN_R3) != 0;
             if (pressed && !stickPressDown) {
                 // L3/R3 反馈只改变大小，不移动摇杆中心。
-                stickPulseVelocity += 8.2f;
+                stickPulseVelocity += 3.6f;
                 postFrame();
             }
             stickPressDown = pressed;
@@ -369,12 +378,21 @@ public final class GamepadOverlayView extends FrameLayout {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (globalHtmlEnabled) return;
+        int save = canvas.save();
+        // Settings now allow 25%. Below the original 50% render floor the WindowManager buffer
+        // stays larger, so scale the native composition inside that safe viewport. This keeps the
+        // requested visual size without letting strokes/text/press motion hit the window edge.
+        float viewportScale = displaySizePercent < 50 ? displaySizePercent / 50f : 1f;
+        if (viewportScale < 0.999f) {
+            canvas.scale(viewportScale, viewportScale, getWidth() * 0.5f, getHeight() * 0.5f);
+        }
         if (displayType == DISPLAY_LEFT_STICK || displayType == DISPLAY_RIGHT_STICK) drawStick(canvas);
         else if (displayType == DISPLAY_FACE) drawFaceButtons(canvas);
         else if (displayType == DISPLAY_LEFT_SHOULDER) drawShoulders(canvas, true);
         else if (displayType == DISPLAY_RIGHT_SHOULDER) drawShoulders(canvas, false);
         else if (displayType == DISPLAY_BACK) drawBackButtons(canvas);
         else if (displayType == DISPLAY_DPAD) drawDpad(canvas);
+        canvas.restoreToCount(save);
     }
 
     private void drawStick(Canvas canvas) {
@@ -419,10 +437,10 @@ public final class GamepadOverlayView extends FrameLayout {
         textPaint.setTextSize(radius * 0.92f);
 
         String[] labels = faceReversed ? FACE_LABELS_REVERSED : FACE_LABELS_NORMAL;
-        drawFaceButton(canvas, cx, cy - gap, radius, labels[0], press[0], faceDpsEnabled(labels[0]), faceDps(labels[0]));
-        drawFaceButton(canvas, cx + gap, cy, radius, labels[1], press[1], faceDpsEnabled(labels[1]), faceDps(labels[1]));
-        drawFaceButton(canvas, cx, cy + gap, radius, labels[2], press[2], faceDpsEnabled(labels[2]), faceDps(labels[2]));
-        drawFaceButton(canvas, cx - gap, cy, radius, labels[3], press[3], faceDpsEnabled(labels[3]), faceDps(labels[3]));
+        drawFaceButton(canvas, cx, cy - gap, radius, labels[0], faceDisplayLabel(labels[0]), press[0], faceDpsEnabled(labels[0]), faceDps(labels[0]));
+        drawFaceButton(canvas, cx + gap, cy, radius, labels[1], faceDisplayLabel(labels[1]), press[1], faceDpsEnabled(labels[1]), faceDps(labels[1]));
+        drawFaceButton(canvas, cx, cy + gap, radius, labels[2], faceDisplayLabel(labels[2]), press[2], faceDpsEnabled(labels[2]), faceDps(labels[2]));
+        drawFaceButton(canvas, cx - gap, cy, radius, labels[3], faceDisplayLabel(labels[3]), press[3], faceDpsEnabled(labels[3]), faceDps(labels[3]));
     }
 
     private boolean faceDpsEnabled(String label) {
@@ -445,10 +463,21 @@ public final class GamepadOverlayView extends FrameLayout {
         }
     }
 
-    private void drawFaceButton(Canvas canvas, float cx, float cy, float radius, String label, float scale, boolean showDps, int dps) {
+    private String faceDisplayLabel(String logicalLabel) {
+        if (!faceSymbolIcons) return logicalLabel;
+        switch (logicalLabel) {
+            case "Y": return "△";
+            case "B": return "○";
+            case "A": return "X";
+            case "X": return "□";
+            default: return logicalLabel;
+        }
+    }
+
+    private void drawFaceButton(Canvas canvas, float cx, float cy, float radius, String logicalLabel, String label, float scale, boolean showDps, int dps) {
         float r = radius * scale;
         boolean pressed = scale < 0.97f;
-        int index = faceIndex(label);
+        int index = faceIndex(logicalLabel);
         rect.set(cx - r, cy - r, cx + r, cy + r);
         float corner = KeyAppearance.roundedRadius(rect, cornerStrength);
         Paint body = pressed ? buttonPaint : fillPaint;
@@ -467,9 +496,10 @@ public final class GamepadOverlayView extends FrameLayout {
         float primaryBaseline = cy - (primaryFm.ascent + primaryFm.descent) * 0.5f;
 
         if (showDps) {
-            // 显示 CPS 时只上移主标签，不缩小 Y/X/B/A。
+            // 显示 CPS 时只上移主标签，不缩小主图标/字母。
             primaryBaseline -= radius * 0.16f;
-            canvas.drawText(label, cx, primaryBaseline, textPaint);
+            if (faceSymbolIcons) drawFaceSymbol(canvas, logicalLabel, cx, cy - radius * 0.16f, radius, textPaint);
+            else canvas.drawText(label, cx, primaryBaseline, textPaint);
 
             textPaint.setTextSize(Math.min(radius * 0.28f, dp(7.5f)));
             textPaint.setTypeface(typefaceNormal);
@@ -477,10 +507,50 @@ public final class GamepadOverlayView extends FrameLayout {
             float dpsBaseline = cy + radius * 0.62f - dpsFm.descent;
             canvas.drawText(dps + " CPS", cx, dpsBaseline, textPaint);
         } else {
-            canvas.drawText(label, cx, primaryBaseline, textPaint);
+            if (faceSymbolIcons) drawFaceSymbol(canvas, logicalLabel, cx, cy, radius, textPaint);
+            else canvas.drawText(label, cx, primaryBaseline, textPaint);
         }
         textPaint.setTypeface(oldTypeface);
         textPaint.setColor(oldText);
+    }
+
+    private void drawFaceSymbol(Canvas canvas, String logicalLabel, float cx, float cy,
+                                float radius, Paint sourcePaint) {
+        Paint.Style oldStyle = sourcePaint.getStyle();
+        float oldStroke = sourcePaint.getStrokeWidth();
+        Paint.Cap oldCap = sourcePaint.getStrokeCap();
+        sourcePaint.setStyle(Paint.Style.STROKE);
+        sourcePaint.setStrokeWidth(Math.max(dp(1.35f), radius * 0.105f));
+        sourcePaint.setStrokeCap(Paint.Cap.ROUND);
+        float size = radius * 0.72f;
+        switch (logicalLabel) {
+            case "Y": { // triangle
+                float top = cy - size * 0.58f;
+                float bottom = cy + size * 0.48f;
+                canvas.drawLine(cx, top, cx - size * 0.58f, bottom, sourcePaint);
+                canvas.drawLine(cx - size * 0.58f, bottom, cx + size * 0.58f, bottom, sourcePaint);
+                canvas.drawLine(cx + size * 0.58f, bottom, cx, top, sourcePaint);
+                break;
+            }
+            case "B": // circle
+                canvas.drawCircle(cx, cy, size * 0.55f, sourcePaint);
+                break;
+            case "X": // square (Xbox X -> PlayStation square)
+                rect.set(cx - size * 0.52f, cy - size * 0.52f,
+                        cx + size * 0.52f, cy + size * 0.52f);
+                canvas.drawRoundRect(rect, size * 0.05f, size * 0.05f, sourcePaint);
+                break;
+            case "A": // cross
+                float d = size * 0.48f;
+                canvas.drawLine(cx - d, cy - d, cx + d, cy + d, sourcePaint);
+                canvas.drawLine(cx + d, cy - d, cx - d, cy + d, sourcePaint);
+                break;
+            default:
+                break;
+        }
+        sourcePaint.setStyle(oldStyle);
+        sourcePaint.setStrokeWidth(oldStroke);
+        sourcePaint.setStrokeCap(oldCap);
     }
 
     private int faceIndex(String label) {
@@ -719,24 +789,24 @@ public final class GamepadOverlayView extends FrameLayout {
         float dt = Math.min(0.022f, Math.max(0.001f, (now - lastFrameMs) / 1000f));
         lastFrameMs = now;
 
-        // 摇杆使用接近临界阻尼的快速跟随。
-        float ax = 210f * (targetX - shownX) - 28f * velocityX;
-        float ay = 210f * (targetY - shownY) - 28f * velocityY;
+        // 摇杆保持临界阻尼和连续改道，但降低刚度，让视觉跟随更平静。
+        float ax = 120f * (targetX - shownX) - 22f * velocityX;
+        float ay = 120f * (targetY - shownY) - 22f * velocityY;
         velocityX += ax * dt;
         velocityY += ay * dt;
         shownX += velocityX * dt;
         shownY += velocityY * dt;
 
-        float alt = 190f * (targetLt - shownLt) - 25f * triggerVelocityLt;
-        float art = 190f * (targetRt - shownRt) - 25f * triggerVelocityRt;
+        float alt = 105f * (targetLt - shownLt) - 20.5f * triggerVelocityLt;
+        float art = 105f * (targetRt - shownRt) - 20.5f * triggerVelocityRt;
         triggerVelocityLt += alt * dt;
         triggerVelocityRt += art * dt;
         shownLt += triggerVelocityLt * dt;
         shownRt += triggerVelocityRt * dt;
 
-        // L3/R3 使用轻微欠阻尼缩放。
+        // L3/R3 只保留很轻的阻尼反馈，不再出现明显回弹。
         // 缩放时保持摇杆中心位置不变。
-        float stickPulseA = -300f * stickPulse - 24f * stickPulseVelocity;
+        float stickPulseA = -120f * stickPulse - 22f * stickPulseVelocity;
         stickPulseVelocity += stickPulseA * dt;
         stickPulse += stickPulseVelocity * dt;
         if (Math.abs(stickPulse) < 0.0007f && Math.abs(stickPulseVelocity) < 0.012f) {
@@ -747,7 +817,7 @@ public final class GamepadOverlayView extends FrameLayout {
         boolean buttonActive = false;
         for (int i = 0; i < 4; i++) {
             float target = pressTargets[i] ? 0.86f : 1f;
-            float a = 360f * (target - press[i]) - 31f * pressVelocity[i];
+            float a = 145f * (target - press[i]) - 24f * pressVelocity[i];
             pressVelocity[i] += a * dt;
             press[i] += pressVelocity[i] * dt;
             if (Math.abs(target - press[i]) < 0.0008f && Math.abs(pressVelocity[i]) < 0.012f) {
@@ -758,11 +828,11 @@ public final class GamepadOverlayView extends FrameLayout {
             }
         }
 
-        float hostA = 315f * (hostTarget - hostProgress) - 29f * hostVelocity;
+        float hostA = 100f * (hostTarget - hostProgress) - 20f * hostVelocity;
         hostVelocity += hostA * dt;
         hostProgress += hostVelocity * dt;
         float dragTarget = dragging ? 1f : 0f;
-        float dragA = 430f * (dragTarget - dragProgress) - 36f * dragVelocity;
+        float dragA = 135f * (dragTarget - dragProgress) - 23f * dragVelocity;
         dragVelocity += dragA * dt;
         dragProgress += dragVelocity * dt;
 
@@ -775,8 +845,8 @@ public final class GamepadOverlayView extends FrameLayout {
             dragVelocity = 0f;
         }
 
-        float enterScale = 0.94f + 0.06f * clamp(hostProgress, 0f, 1.04f);
-        float dragScale = 1f - 0.015f * clamp(dragProgress, 0f, 1.02f);
+        float enterScale = 0.97f + 0.03f * clamp(hostProgress, 0f, 1f);
+        float dragScale = 1f - 0.010f * clamp(dragProgress, 0f, 1f);
         float hostScale = enterScale * dragScale;
         setPivotX(getWidth() * 0.5f);
         setPivotY(getHeight() * 0.5f);

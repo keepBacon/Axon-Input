@@ -60,7 +60,7 @@ final class LegacyFloatingMediaMigration {
                 Math.min(item.sourceDurationMs, rawEnd <= 0L ? item.sourceDurationMs : rawEnd));
         item.sourceWidth = Math.max(1, durable.getInt(KEY_WIDTH, 16));
         item.sourceHeight = Math.max(1, durable.getInt(KEY_HEIGHT, 9));
-        item.sizePercent = clamp(session.getInt(KEY_SIZE, 100), 50, 300);
+        item.sizePercent = clamp(session.getInt(KEY_SIZE, 100), 25, 500);
         item.opacityPercent = clamp(session.getInt(KEY_OPACITY, 100), 0, 100);
         item.playbackMode = session.getInt(KEY_PLAYBACK, FloatingVideoOverlayView.PLAYBACK_LOOP)
                 == FloatingVideoOverlayView.PLAYBACK_ONCE

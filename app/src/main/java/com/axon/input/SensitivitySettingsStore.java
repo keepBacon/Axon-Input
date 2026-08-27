@@ -16,7 +16,7 @@ final class SensitivitySettingsStore {
 
     private static final int DEFAULT_PERCENT = 100;
     private static final int MIN_PERCENT = 1;
-    private static final int MAX_PERCENT = 500;
+    private static final int MAX_PERCENT = 1000;
 
     private SensitivitySettingsStore() {}
 

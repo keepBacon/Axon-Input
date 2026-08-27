@@ -428,8 +428,8 @@ final class ChromaKeyVideoSurfaceView extends GLSurfaceView {
             "  float chromaD=distance(ycc.yz,keyYcc.yz)+abs(ycc.x-keyYcc.x)*0.10;\n" +
             "  float rgbD=distance(c.rgb,uKeyColor)*0.50;\n" +
             "  float d=mix(rgbD,chromaD,chromaMode);\n" +
-            "  float strengthBase=min(clamp(uStrength,0.0,2.0),1.0);\n" +
-            "  float strengthExtra=max(clamp(uStrength,0.0,2.0)-1.0,0.0);\n" +
+            "  float strengthBase=min(clamp(uStrength,0.0,3.0),1.0);\n" +
+            "  float strengthExtra=max(clamp(uStrength,0.0,3.0)-1.0,0.0);\n" +
             "  float tuned=pow(strengthBase,1.08);\n" +
             "  float threshold=mix(0.012,0.185,tuned)+0.160*strengthExtra;\n" +
             "  float feather=mix(0.012,0.072,0.30+0.70*tuned)+0.055*strengthExtra;\n" +

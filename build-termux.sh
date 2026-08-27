@@ -9,14 +9,14 @@ fail() {
     exit 1
 }
 
-REQUIRED_CMDS=(java javac jar keytool clang++ aapt2 d8 apksigner zip sha256sum)
+REQUIRED_CMDS=(java javac jar keytool clang++ aapt2 d8 apksigner zip unzip curl sha256sum)
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
 done
 if [ "${#MISSING[@]}" -ne 0 ]; then
     echo "[Axon Input] Missing tools: ${MISSING[*]}" >&2
-    echo "pkg install openjdk-21 clang aapt2 d8 apksigner zip coreutils -y" >&2
+    echo "pkg install openjdk-21 clang aapt2 d8 apksigner zip unzip curl coreutils -y" >&2
     exit 1
 fi
 
@@ -50,6 +50,7 @@ CLASSES="$BUILD/classes"
 CLASSES_JAR="$BUILD/classes.jar"
 DEX="$BUILD/dex"
 APK_STAGE="$BUILD/apk-stage"
+ASSETS_STAGE="$BUILD/assets"
 UNSIGNED="$BUILD/AxonInput-unsigned.apk"
 FINAL_APK="$BUILD/AxonInput-debug.apk"
 
@@ -61,7 +62,7 @@ KEY_PASS="android"
 CERT_DER="$BUILD/axon-input-cert.der"
 
 rm -rf "$BUILD"
-mkdir -p "$COMPILED_RES" "$GEN" "$CLASSES" "$DEX" "$APK_STAGE/lib/arm64-v8a" "$SIGNING_DIR"
+mkdir -p "$COMPILED_RES" "$GEN" "$CLASSES" "$DEX" "$APK_STAGE/lib/arm64-v8a" "$ASSETS_STAGE" "$SIGNING_DIR"
 
 if [ ! -f "$KEYSTORE" ]; then
     keytool -genkeypair \
@@ -87,18 +88,25 @@ CERT_SHA256="$(sha256sum "$CERT_DER" | cut -d' ' -f1)"
 echo "[Axon Input] Java 21 + C++20 / no Gradle"
 echo "[Axon Input] Android jar: $ANDROID_JAR"
 
+# 0）准备应用静态资源。
+mkdir -p "$ASSETS_STAGE"
+cp -a "$ROOT/app/src/main/assets/." "$ASSETS_STAGE/"
+
+
 # 1）构建 Native C++
 "$ROOT/build-native.sh"
 NATIVE_LIB="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyengine.so"
 PROXY_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libsensitivityproxy.so"
 GAMEPAD_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libgamepadmonitor.so"
 KEYHOLD_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyhold.so"
+KEYMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeymapper.so"
 TOUCH_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libtouchmonitor.so"
 [ -f "$NATIVE_LIB" ] || fail "C++ JNI 输出不存在"
 [ -f "$PROXY_BIN" ] || fail "灵敏度代理输出不存在"
 [ -f "$GAMEPAD_MONITOR_BIN" ] || fail "手柄监听输出不存在"
 [ -f "$TOUCH_MONITOR_BIN" ] || fail "触屏监听输出不存在"
 [ -f "$KEYHOLD_BIN" ] || fail "强制长按代理输出不存在"
+[ -f "$KEYMAPPER_BIN" ] || fail "手柄映射代理输出不存在"
 
 # 2）编译资源
 # 编译完整 Android 资源，包括 PNG 图标。
@@ -117,7 +125,7 @@ aapt2 link \
     --min-sdk-version 26 \
     --target-sdk-version 36 \
     -I "$ANDROID_JAR" \
-    -A "$ROOT/app/src/main/assets" \
+    -A "$ASSETS_STAGE" \
     "${FLATS[@]}"
 
 # 3）生成构建签名摘要。使用同一签名密钥。
@@ -157,6 +165,7 @@ cp "$PROXY_BIN" "$APK_STAGE/lib/arm64-v8a/libsensitivityproxy.so"
 cp "$GAMEPAD_MONITOR_BIN" "$APK_STAGE/lib/arm64-v8a/libgamepadmonitor.so"
 cp "$TOUCH_MONITOR_BIN" "$APK_STAGE/lib/arm64-v8a/libtouchmonitor.so"
 cp "$KEYHOLD_BIN" "$APK_STAGE/lib/arm64-v8a/libkeyhold.so"
+cp "$KEYMAPPER_BIN" "$APK_STAGE/lib/arm64-v8a/libkeymapper.so"
 (
     cd "$APK_STAGE"
     zip -q -u "$UNSIGNED" classes.dex

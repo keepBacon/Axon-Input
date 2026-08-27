@@ -100,6 +100,7 @@ public final class GlobalHtmlWebView extends WebView {
     private int gamepadButtons;
     private int stickShape = GamepadOverlayView.SHAPE_CIRCLE;
     private boolean faceReversed;
+    private boolean faceSymbolIcons;
     private boolean faceYDpsEnabled;
     private boolean faceXDpsEnabled;
     private boolean faceBDpsEnabled;
@@ -243,14 +244,14 @@ public final class GlobalHtmlWebView extends WebView {
     }
 
     public void setDisplaySize(int percent) {
-        int next = Math.max(50, Math.min(150, percent));
+        int next = Math.max(25, Math.min(300, percent));
         if (sizePercent == next) return;
         sizePercent = next;
         scheduleFullState();
     }
 
     public void setDotSizePercent(int percent) {
-        int next = Math.max(50, Math.min(150, percent));
+        int next = Math.max(25, Math.min(300, percent));
         if (dotSizePercent == next) return;
         dotSizePercent = next;
         scheduleFullState();
@@ -464,6 +465,12 @@ public final class GlobalHtmlWebView extends WebView {
         scheduleFullState();
     }
 
+    public void setFaceSymbolIcons(boolean enabled) {
+        if (faceSymbolIcons == enabled) return;
+        faceSymbolIcons = enabled;
+        scheduleFullState();
+    }
+
     public void setFaceDpsConfig(boolean y, boolean x, boolean b, boolean a) {
         if (faceYDpsEnabled == y && faceXDpsEnabled == x
                 && faceBDpsEnabled == b && faceADpsEnabled == a) return;
@@ -576,6 +583,7 @@ public final class GlobalHtmlWebView extends WebView {
         JSONObject config = new JSONObject();
         config.put("stickShape", stickShape == GamepadOverlayView.SHAPE_SQUARE ? "square" : "circle");
         config.put("faceReversed", faceReversed);
+        config.put("faceSymbolIcons", faceSymbolIcons);
         config.put("dotSizePercent", dotSizePercent);
         config.put("showSpace", keyboardShowSpace);
         config.put("showSpaceCps", keyboardShowSpaceDps);

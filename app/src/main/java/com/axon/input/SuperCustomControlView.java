@@ -27,14 +27,14 @@ import java.util.ArrayDeque;
 final class SuperCustomControlView extends FrameLayout {
     /**
      * Diffusion mode mirrors Matrix Card UI feature on/off motion: state changes are interruptible,
-     * continue from the current visual value, and use the same easing, slowed to 380 ms / 144 ms in Axon 1.7.
+     * continue from the current visual value, and use the same calm spatial easing as the settings UI.
      */
     private static final TimeInterpolator CENTRE_FILL_EASE = KeyAppearance::cardFeatureToggleEase;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayDeque<Long> cpsSamples = new ArrayDeque<>();
     private final LinearLayout content;
-    private final TextView label;
+    private final OutlinedTextView label;
     private final TextView cps;
 
     private final Paint surfacePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -90,7 +90,7 @@ final class SuperCustomControlView extends FrameLayout {
         addView(content, new FrameLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
-        label = new TextView(context);
+        label = new OutlinedTextView(context);
         label.setGravity(Gravity.CENTER);
         label.setIncludeFontPadding(false);
         label.setSingleLine(true);
@@ -151,42 +151,54 @@ final class SuperCustomControlView extends FrameLayout {
         lp.height = dp(next.heightDp);
         setLayoutParams(lp);
 
-        // Keep opacity linear and mode-consistent. Non-ripple modes can use the View alpha so
-        // surface/border/text/CPS fade as one component. Ripple mode stays at View alpha 1 so its
-        // independent diffusion opacity is never multiplied by the base-key opacity; base content
-        // is faded explicitly below instead.
+        // Text components are static composition elements, while key components keep the existing
+        // press/ripple semantics. Opacity remains a single top-level multiplier in both cases.
         animate().cancel();
         float baseAlpha = clamp01(next.opacityPercent / 100f);
-        boolean independentRipple = next.motionMode == OverlayState.MOTION_RIPPLE;
+        boolean independentRipple = next.isKeyElement()
+                && next.motionMode == OverlayState.MOTION_RIPPLE;
         setAlpha(independentRipple ? 1f : baseAlpha);
         setScaleX(1f);
         setScaleY(1f);
 
         label.setText(next.labelText == null ? "" : next.labelText);
-        // Imported display fonts must apply to super-custom keys just like the regular native
-        // overlays. Resolve on every apply so a newly imported font refreshes existing configs.
+        // Imported display fonts apply to both key labels and free text components.
         label.setTypeface(FontManager.bold(getContext()));
         cps.setTypeface(FontManager.normal(getContext()));
+        int animatedText = next.currentTextColor();
         int contentColor = independentRipple
-                ? multiplyColorAlpha(next.textColor, next.opacityPercent / 100f)
-                : next.textColor;
+                ? multiplyColorAlpha(animatedText, next.opacityPercent / 100f)
+                : animatedText;
         label.setTextColor(contentColor);
         label.setTextSize(next.textSizeSp);
+        label.setOutline(next.isTextElement() && next.textStrokeEnabled,
+                next.currentTextStrokeColor(), dp(next.textStrokeWidthDp));
         cps.setTextColor(contentColor);
         cps.setTextSize(Math.max(9f, next.textSizeSp * 0.56f));
-        cps.setVisibility(next.cpsEnabled ? View.VISIBLE : View.GONE);
-        setPadding(dp(8), dp(6), dp(8), dp(6));
+        cps.setVisibility(next.isKeyElement() && next.cpsEnabled ? View.VISIBLE : View.GONE);
+        setPadding(next.isTextElement() ? dp(3) : dp(8),
+                next.isTextElement() ? dp(2) : dp(6),
+                next.isTextElement() ? dp(3) : dp(8),
+                next.isTextElement() ? dp(2) : dp(6));
 
-        if (next.motionMode != OverlayState.MOTION_RIPPLE) {
+        if (next.isTextElement() || next.motionMode != OverlayState.MOTION_RIPPLE) {
             cancelRippleAnimator();
             rippleProgress = 0f;
         }
 
-        refreshCps();
+        if (next.isTextElement()) {
+            keyPressed = false;
+            handler.removeCallbacks(cpsRefresh);
+            cpsSamples.clear();
+            cps.setText("");
+        } else {
+            refreshCps();
+        }
         invalidate();
     }
 
     void onBoundKeyEvent(boolean down) {
+        if (spec == null || spec.isTextElement()) return;
         if (down && !keyPressed) {
             long now = SystemClock.uptimeMillis();
             cpsSamples.addLast(now);
@@ -199,6 +211,19 @@ final class SuperCustomControlView extends FrameLayout {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        if (spec == null) return;
+        if (spec.hasAnimatedColors()) {
+            int animatedText = spec.currentTextColor();
+            boolean independentRipple = spec.isKeyElement() && spec.motionMode == OverlayState.MOTION_RIPPLE;
+            int contentColor = independentRipple
+                    ? multiplyColorAlpha(animatedText, spec.opacityPercent / 100f) : animatedText;
+            label.setTextColor(contentColor);
+            cps.setTextColor(contentColor);
+            label.setOutline(spec.isTextElement() && spec.textStrokeEnabled,
+                    spec.currentTextStrokeColor(), dp(spec.textStrokeWidthDp));
+            postInvalidateOnAnimation();
+        }
+        if (spec.isTextElement()) return;
         drawKeySurface(canvas);
         drawCardFeatureStateFill(canvas);
         drawKeyBorder(canvas);
@@ -212,15 +237,16 @@ final class SuperCustomControlView extends FrameLayout {
     }
 
     private void setPressedState(boolean pressed) {
-        if (spec == null || keyPressed == pressed) return;
+        if (spec == null || spec.isTextElement() || keyPressed == pressed) return;
         keyPressed = pressed;
         animate().cancel();
 
         final float baseAlpha = spec.opacityPercent / 100f;
         switch (spec.motionMode) {
             case OverlayState.MOTION_ALPHA:
-                animate().alpha(pressed ? baseAlpha * 0.55f : baseAlpha)
-                        .setDuration(pressed ? 90L : 130L)
+                animate().alpha(pressed ? baseAlpha * 0.62f : baseAlpha)
+                        .setDuration(pressed ? UiMotion.stateMs() : UiMotion.enterMs())
+                        .setInterpolator(UiMotion.easeOut())
                         .start();
                 break;
 
@@ -245,10 +271,11 @@ final class SuperCustomControlView extends FrameLayout {
             default:
                 cancelRippleAnimator();
                 rippleProgress = 0f;
-                animate().scaleX(pressed ? 0.965f : 1f)
-                        .scaleY(pressed ? 0.965f : 1f)
+                animate().scaleX(pressed ? 0.978f : 1f)
+                        .scaleY(pressed ? 0.978f : 1f)
                         .alpha(baseAlpha)
-                        .setDuration(pressed ? 90L : 135L)
+                        .setDuration(pressed ? UiMotion.stateMs() : UiMotion.enterMs())
+                        .setInterpolator(UiMotion.easeOut())
                         .start();
                 break;
         }
@@ -301,14 +328,14 @@ final class SuperCustomControlView extends FrameLayout {
     }
 
     private void drawKeySurface(Canvas canvas) {
-        if (spec == null || getWidth() <= 0 || getHeight() <= 0) return;
+        if (spec == null || spec.isTextElement() || getWidth() <= 0 || getHeight() <= 0) return;
 
         keyBounds.set(0f, 0f, getWidth(), getHeight());
         float corner = resolvedCornerRadius();
 
         int color = idleColor;
         if (spec.motionMode != OverlayState.MOTION_RIPPLE && keyPressed) {
-            color = spec.pressColor;
+            color = spec.currentPressColor();
         }
 
         surfacePaint.reset();
@@ -327,7 +354,7 @@ final class SuperCustomControlView extends FrameLayout {
     }
 
     private void drawCardFeatureStateFill(Canvas canvas) {
-        if (spec == null || spec.motionMode != OverlayState.MOTION_RIPPLE) return;
+        if (spec == null || spec.isTextElement() || spec.motionMode != OverlayState.MOTION_RIPPLE) return;
         if (rippleProgress <= 0f || getWidth() <= 0 || getHeight() <= 0) return;
 
         keyBounds.set(0f, 0f, getWidth(), getHeight());
@@ -335,17 +362,18 @@ final class SuperCustomControlView extends FrameLayout {
         ripplePaint.reset();
         ripplePaint.setAntiAlias(true);
         ripplePaint.setStyle(Paint.Style.FILL);
-        int alpha = Math.round(Color.alpha(spec.pressColor) * spec.diffusionOpacityPercent / 100f);
-        int press = Color.argb(alpha, Color.red(spec.pressColor),
-                Color.green(spec.pressColor), Color.blue(spec.pressColor));
+        int animatedPress = spec.currentPressColor();
+        int alpha = Math.round(Color.alpha(animatedPress) * spec.diffusionOpacityPercent / 100f);
+        int press = Color.argb(alpha, Color.red(animatedPress),
+                Color.green(animatedPress), Color.blue(animatedPress));
         KeyAppearance.drawCentreFill(canvas, keyBounds, KeyAppearance.STYLE_ROUNDED, corner,
                 press, rippleProgress, ripplePaint, keyClipPath);
     }
 
     private void drawKeyBorder(Canvas canvas) {
-        if (spec == null || getWidth() <= 0 || getHeight() <= 0) return;
+        if (spec == null || spec.isTextElement() || getWidth() <= 0 || getHeight() <= 0) return;
         int paletteStroke = UiPalette.overlayStroke(getContext());
-        int source = spec.borderColor != 0 ? spec.borderColor : paletteStroke;
+        int source = spec.currentBorderColor(paletteStroke);
         int alpha = Color.alpha(source);
         if (spec.motionMode == OverlayState.MOTION_RIPPLE) {
             alpha = Math.round(alpha * spec.opacityPercent / 100f);
@@ -397,6 +425,66 @@ final class SuperCustomControlView extends FrameLayout {
         if (value <= 0f) return 0f;
         if (value >= 1f) return 1f;
         return value;
+    }
+
+
+    /**
+     * Single-line TextView with an optional true glyph outline. It only custom-draws when the
+     * free-text component enables stroke, so ordinary key labels retain Android's native layout.
+     */
+    private static final class OutlinedTextView extends TextView {
+        private boolean outlineEnabled;
+        private int outlineColor = Color.BLACK;
+        private float outlineWidthPx;
+
+        OutlinedTextView(Context context) {
+            super(context);
+        }
+
+        void setOutline(boolean enabled, int color, float widthPx) {
+            outlineEnabled = enabled;
+            outlineColor = color;
+            outlineWidthPx = Math.max(0f, widthPx);
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            if (!outlineEnabled || outlineWidthPx <= 0f || getText() == null) {
+                super.onDraw(canvas);
+                return;
+            }
+
+            String value = getText().toString();
+            if (value.isEmpty()) return;
+            Paint paint = getPaint();
+            Paint.Style oldStyle = paint.getStyle();
+            Paint.Align oldAlign = paint.getTextAlign();
+            float oldWidth = paint.getStrokeWidth();
+            int oldColor = paint.getColor();
+            Paint.Join oldJoin = paint.getStrokeJoin();
+
+            paint.setTextAlign(Paint.Align.CENTER);
+            Paint.FontMetrics fm = paint.getFontMetrics();
+            float x = getWidth() * 0.5f;
+            float y = (getHeight() - fm.bottom - fm.top) * 0.5f;
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setStrokeWidth(outlineWidthPx);
+            paint.setColor(outlineColor);
+            canvas.drawText(value, x, y, paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(getCurrentTextColor());
+            canvas.drawText(value, x, y, paint);
+
+            paint.setStyle(oldStyle);
+            paint.setTextAlign(oldAlign);
+            paint.setStrokeWidth(oldWidth);
+            paint.setColor(oldColor);
+            paint.setStrokeJoin(oldJoin);
+        }
     }
 
     private int dp(float value) {

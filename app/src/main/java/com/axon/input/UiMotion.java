@@ -9,23 +9,41 @@ import android.view.animation.Interpolator;
 import android.view.animation.PathInterpolator;
 
 /**
- * Small, shared interaction primitives for the settings UI.
- * Motion is intentionally short: feedback first, decoration second.
+ * Shared motion system for Axon settings surfaces.
+ *
+ * Rules:
+ * 1) Motion is deliberately calm and readable rather than fast/snappy.
+ * 2) Every property animation restarts from the value currently on screen, so a second
+ *    gesture redirects the motion instead of snapping to an endpoint first.
+ * 3) Spatial/state changes use one family of transforms and easing so the interface explains
+ *    where state moved, just like the bottom navigation's moving selection surface.
  */
 public final class UiMotion {
-    private static final long PRESS_MS = 110L;
-    private static final long RELEASE_MS = 140L;
-    private static final long DETAILS_MS = 180L;
-    private static final long PAGE_MS = 190L;
+    private static final long PRESS_MS = 170L;
+    private static final long RELEASE_MS = 270L;
+    private static final long STATE_MS = 320L;
+    private static final long ENTER_MS = 360L;
+    private static final long EXIT_MS = 300L;
+    private static final long DETAILS_MS = 420L;
+    private static final long PAGE_MS = 420L;
+    private static final long SPATIAL_MIN_MS = 260L;
+    private static final long SPATIAL_MAX_MS = 460L;
 
-    private static final Interpolator EASE_OUT = new PathInterpolator(0.23f, 1f, 0.32f, 1f);
-    private static final Interpolator EASE_MOVE = new PathInterpolator(0.32f, 0.72f, 0f, 1f);
-    // Fast response with a long, controlled deceleration. No slow ease-in phase.
-    private static final Interpolator PAGE_EASE = new PathInterpolator(0.20f, 0.92f, 0.20f, 1f);
+    // First-frame response remains immediate; most of the time is spent decelerating into place.
+    private static final Interpolator EASE_OUT = new PathInterpolator(0.16f, 1f, 0.30f, 1f);
+    // Shared spatial curve for indicators, disclosure, page motion and state-surface movement.
+    private static final Interpolator EASE_MOVE = new PathInterpolator(0.20f, 0.82f, 0.20f, 1f);
 
     private UiMotion() {}
 
-    /** Adds a subtle physical press response without consuming the click. */
+    static Interpolator easeOut() { return EASE_OUT; }
+    static Interpolator easeMove() { return EASE_MOVE; }
+    static long stateMs() { return STATE_MS; }
+    static long enterMs() { return ENTER_MS; }
+    static long exitMs() { return EXIT_MS; }
+    static long pageMs() { return PAGE_MS; }
+
+    /** Adds a small, slow compression that always releases from the currently rendered scale. */
     public static void bindPressFeedback(View view) {
         if (view == null) return;
         view.setOnTouchListener((target, event) -> {
@@ -33,8 +51,8 @@ public final class UiMotion {
                 case MotionEvent.ACTION_DOWN:
                     target.animate().cancel();
                     target.animate()
-                            .scaleX(0.985f)
-                            .scaleY(0.985f)
+                            .scaleX(0.978f)
+                            .scaleY(0.978f)
                             .setDuration(PRESS_MS)
                             .setInterpolator(EASE_OUT)
                             .start();
@@ -56,43 +74,80 @@ public final class UiMotion {
         });
     }
 
-    /** Enables compact bounds animation for low-frequency detail expansion. */
+    /**
+     * Slow bounds movement for low-frequency expansion. Parent-hierarchy animation is disabled
+     * so opening one row does not cause unrelated ancestors to drift at the same time.
+     */
     public static void enableLayoutMotion(ViewGroup group) {
         if (group == null) return;
         LayoutTransition transition = new LayoutTransition();
-        transition.setDuration(DETAILS_MS);
+        transition.setAnimateParentHierarchy(false);
+        transition.setDuration(LayoutTransition.CHANGE_APPEARING, DETAILS_MS);
+        transition.setDuration(LayoutTransition.CHANGE_DISAPPEARING, DETAILS_MS);
+        transition.setDuration(LayoutTransition.APPEARING, ENTER_MS);
+        transition.setDuration(LayoutTransition.DISAPPEARING, EXIT_MS);
         transition.setInterpolator(LayoutTransition.CHANGE_APPEARING, EASE_MOVE);
         transition.setInterpolator(LayoutTransition.CHANGE_DISAPPEARING, EASE_MOVE);
         transition.setInterpolator(LayoutTransition.APPEARING, EASE_OUT);
         transition.setInterpolator(LayoutTransition.DISAPPEARING, EASE_OUT);
         transition.setStartDelay(LayoutTransition.APPEARING, 0L);
         transition.setStartDelay(LayoutTransition.DISAPPEARING, 0L);
+        transition.setStartDelay(LayoutTransition.CHANGE_APPEARING, 0L);
+        transition.setStartDelay(LayoutTransition.CHANGE_DISAPPEARING, 0L);
         if (Build.VERSION.SDK_INT >= 16) {
             transition.enableTransitionType(LayoutTransition.CHANGING);
+            transition.setDuration(LayoutTransition.CHANGING, DETAILS_MS);
             transition.setInterpolator(LayoutTransition.CHANGING, EASE_MOVE);
+            transition.setStartDelay(LayoutTransition.CHANGING, 0L);
         }
         group.setLayoutTransition(transition);
     }
 
-    /** Shows or hides a details panel. Its parent owns the low-frequency bounds/fade transition. */
+    /**
+     * Visibility remains layout-driven, while the detail surface itself gets a small continuity
+     * cue. A reversal begins from the current alpha/translation instead of replaying from zero.
+     */
     public static void setDetailsVisible(View details, boolean visible, boolean animated) {
         if (details == null) return;
         int target = visible ? View.VISIBLE : View.GONE;
-        if (details.getVisibility() == target) return;
+        if (details.getVisibility() == target && !animated) return;
 
         details.animate().cancel();
-        details.setAlpha(1f);
-        details.setTranslationY(0f);
-
-        if (!animated && details.getParent() instanceof ViewGroup) {
-            ViewGroup parent = (ViewGroup) details.getParent();
-            LayoutTransition transition = parent.getLayoutTransition();
-            parent.setLayoutTransition(null);
-            details.setVisibility(target);
-            parent.setLayoutTransition(transition);
+        if (!animated) {
+            if (details.getParent() instanceof ViewGroup) {
+                ViewGroup parent = (ViewGroup) details.getParent();
+                LayoutTransition transition = parent.getLayoutTransition();
+                parent.setLayoutTransition(null);
+                details.setVisibility(target);
+                parent.setLayoutTransition(transition);
+            } else {
+                details.setVisibility(target);
+            }
+            details.setAlpha(1f);
+            details.setTranslationY(0f);
             return;
         }
-        details.setVisibility(target);
+
+        final float dy = 4f * details.getResources().getDisplayMetrics().density;
+        if (visible) {
+            if (details.getVisibility() != View.VISIBLE) {
+                details.setAlpha(Math.min(details.getAlpha(), 0.72f));
+                details.setTranslationY(Math.max(details.getTranslationY(), dy));
+                details.setVisibility(View.VISIBLE);
+            }
+            details.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(ENTER_MS)
+                    .setInterpolator(EASE_OUT)
+                    .start();
+        } else {
+            // GONE starts the parent bounds transition immediately; transforms are restored for
+            // the next open so a rapid reopen never inherits a stale half-faded state.
+            details.setVisibility(View.GONE);
+            details.setAlpha(1f);
+            details.setTranslationY(0f);
+        }
     }
 
     public static void rotateDisclosure(View view, boolean expanded, boolean animated) {
@@ -106,16 +161,38 @@ public final class UiMotion {
         view.animate().cancel();
         view.animate()
                 .rotation(target)
-                .setDuration(150L)
-                .setInterpolator(EASE_OUT)
+                .setDuration(STATE_MS)
+                .setInterpolator(EASE_MOVE)
                 .start();
     }
+
     /**
-     * Smooth top-level page transition using two already-laid-out page surfaces.
-     *
-     * Unlike the previous implementation, content is never swapped/re-laid-out at the
-     * midpoint of the animation. Both pages move in the same frame window, which removes
-     * the visible hitch caused by VISIBLE/GONE changes on a large ScrollView tree.
+     * Moves a shared selection/state surface from its current on-screen position. Repeated calls
+     * cancel only the old destination; the current transform is retained and becomes the new start.
+     */
+    public static void moveSelectionSurface(View view, float targetX, float targetY) {
+        if (view == null) return;
+        float dx = targetX - view.getTranslationX();
+        float dy = targetY - view.getTranslationY();
+        float distance = (float) Math.hypot(dx, dy);
+        float density = view.getResources().getDisplayMetrics().density;
+        float reference = Math.max(view.getWidth(), 56f * density);
+        float normalized = Math.min(1f, distance / Math.max(1f, reference));
+        long duration = SPATIAL_MIN_MS
+                + Math.round((SPATIAL_MAX_MS - SPATIAL_MIN_MS) * (float) Math.sqrt(normalized));
+
+        view.animate().cancel();
+        view.animate()
+                .translationX(targetX)
+                .translationY(targetY)
+                .setDuration(duration)
+                .setInterpolator(EASE_MOVE)
+                .start();
+    }
+
+    /**
+     * Two-surface page motion. It deliberately preserves a page's current transform when a prior
+     * page animation is interrupted, so the next selection redirects from what the user can see.
      */
     public static void animatePageTransition(
             View outgoing, View incoming, int direction, Runnable onComplete) {
@@ -124,7 +201,7 @@ public final class UiMotion {
             return;
         }
         if (outgoing == null || !outgoing.isLaidOut() || !incoming.isLaidOut()) {
-            if (outgoing != null) outgoing.setVisibility(View.GONE);
+            if (outgoing != null) outgoing.setVisibility(View.INVISIBLE);
             incoming.setVisibility(View.VISIBLE);
             incoming.setTranslationX(0f);
             incoming.setAlpha(1f);
@@ -134,41 +211,37 @@ public final class UiMotion {
 
         final float density = incoming.getResources().getDisplayMetrics().density;
         final float sign = direction >= 0 ? 1f : -1f;
-        final float incomingTravel = 28f * density;
-        final float outgoingTravel = 8f * density;
+        final float incomingTravel = 24f * density;
+        final float outgoingTravel = 10f * density;
+        final boolean incomingWasVisible = incoming.getVisibility() == View.VISIBLE;
 
         outgoing.animate().cancel();
         incoming.animate().cancel();
 
         outgoing.setVisibility(View.VISIBLE);
-        outgoing.setTranslationX(0f);
-        outgoing.setAlpha(1f);
-
+        if (!incomingWasVisible) {
+            incoming.setTranslationX(sign * incomingTravel);
+            incoming.setAlpha(0.88f);
+        }
         incoming.setVisibility(View.VISIBLE);
-        incoming.setTranslationX(sign * incomingTravel);
-        incoming.setAlpha(1f);
 
-        // The page trees are stable for the whole transition. Temporary hardware layers
-        // keep transform animation off the expensive view hierarchy/layout path.
         outgoing.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         incoming.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
         outgoing.animate()
                 .translationX(-sign * outgoingTravel)
+                .alpha(0.90f)
                 .setDuration(PAGE_MS)
-                .setInterpolator(PAGE_EASE)
+                .setInterpolator(EASE_MOVE)
                 .start();
 
         incoming.animate()
                 .translationX(0f)
+                .alpha(1f)
                 .setDuration(PAGE_MS)
-                .setInterpolator(PAGE_EASE)
+                .setInterpolator(EASE_MOVE)
                 .withEndAction(() -> {
-                    outgoing.animate().cancel();
-                    incoming.animate().cancel();
-                    outgoing.setTranslationX(0f);
                     incoming.setTranslationX(0f);
-                    outgoing.setAlpha(1f);
                     incoming.setAlpha(1f);
                     outgoing.setLayerType(View.LAYER_TYPE_NONE, null);
                     incoming.setLayerType(View.LAYER_TYPE_NONE, null);
@@ -177,16 +250,23 @@ public final class UiMotion {
                 .start();
     }
 
-    /** Cancels page motion and restores transform/layer state for every supplied page. */
-    public static void cancelPageTransition(View... pages) {
+    /** Cancels active page animators but intentionally preserves the current visual state. */
+    public static void interruptPageTransition(View... pages) {
         if (pages == null) return;
         for (View page : pages) {
             if (page == null) continue;
             page.animate().cancel();
-            page.setTranslationX(0f);
-            page.setAlpha(1f);
             page.setLayerType(View.LAYER_TYPE_NONE, null);
         }
     }
 
+    /** Full reset used only after a transition has really reached its destination. */
+    public static void resetPageMotion(View page) {
+        if (page == null) return;
+        page.animate().cancel();
+        page.setTranslationX(0f);
+        page.setTranslationY(0f);
+        page.setAlpha(1f);
+        page.setLayerType(View.LAYER_TYPE_NONE, null);
+    }
 }

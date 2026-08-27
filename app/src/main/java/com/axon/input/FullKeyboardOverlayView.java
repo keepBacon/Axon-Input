@@ -16,6 +16,10 @@ import android.view.View;
 
 /** 输入时显示的只读全键盘。 */
 public final class FullKeyboardOverlayView extends View {
+    public interface OnKeyPickListener {
+        void onKeyPicked(int keyCode);
+    }
+
     public static final int DISPLAY_FULL_KEYBOARD = 21;
     private static final long FLASH_MS = 140L;
     private static final float KEY_GAP_DP = 3f;
@@ -113,6 +117,9 @@ public final class FullKeyboardOverlayView extends View {
     private int textOpacityPercent = 100;
     private int diffusionOpacityPercent = 100;
     private boolean centreFillActive;
+    private OnKeyPickListener keyPickListener;
+    private boolean pickerMode;
+    private int pickerPressedKey = -1;
 
     public FullKeyboardOverlayView(Context context) {
         super(context);
@@ -126,6 +133,18 @@ public final class FullKeyboardOverlayView extends View {
         setClickable(false);
         setFocusable(false);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+    }
+
+    /** Turns the existing full-keyboard renderer into a temporary touch picker. */
+    public void setPickerMode(OnKeyPickListener listener) {
+        keyPickListener = listener;
+        pickerMode = listener != null;
+        pickerPressedKey = -1;
+        setClickable(pickerMode);
+        setFocusable(pickerMode);
+        setImportantForAccessibility(pickerMode
+                ? IMPORTANT_FOR_ACCESSIBILITY_YES : IMPORTANT_FOR_ACCESSIBILITY_NO);
+        invalidate();
     }
 
     public void setKeyAppearance(int style, int color) {
@@ -198,7 +217,59 @@ public final class FullKeyboardOverlayView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        return false;
+        if (!pickerMode || event == null) return false;
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+            pickerPressedKey = findKeyAt(event.getX(), event.getY());
+            invalidate();
+            return true;
+        }
+        if (action == MotionEvent.ACTION_UP) {
+            int key = findKeyAt(event.getX(), event.getY());
+            int downKey = pickerPressedKey;
+            pickerPressedKey = -1;
+            invalidate();
+            if (key >= 0 && key == downKey && keyPickListener != null) {
+                keyPickListener.onKeyPicked(key);
+            }
+            performClick();
+            return true;
+        }
+        if (action == MotionEvent.ACTION_CANCEL) {
+            pickerPressedKey = -1;
+            invalidate();
+            return true;
+        }
+        return true;
+    }
+
+    @Override
+    public boolean performClick() {
+        super.performClick();
+        return true;
+    }
+
+    private int findKeyAt(float touchX, float touchY) {
+        float pad = dp(PANEL_PADDING_DP);
+        float gap = dp(KEY_GAP_DP);
+        float rowHeight = (getHeight() - pad * 2f - gap * (ROWS.length - 1)) / ROWS.length;
+        if (rowHeight <= 1f || touchY < pad || touchY > getHeight() - pad) return -1;
+        int rowIndex = (int) ((touchY - pad) / (rowHeight + gap));
+        if (rowIndex < 0 || rowIndex >= ROWS.length) return -1;
+        float rowTop = pad + rowIndex * (rowHeight + gap);
+        if (touchY > rowTop + rowHeight) return -1;
+        KeySpec[] row = ROWS[rowIndex];
+        float totalWeight = 0f;
+        for (KeySpec key : row) totalWeight += key.weight;
+        float available = getWidth() - pad * 2f - gap * (row.length - 1);
+        float unit = Math.max(1f, available / totalWeight);
+        float x = pad;
+        for (KeySpec key : row) {
+            float width = unit * key.weight;
+            if (touchX >= x && touchX <= x + width) return key.code;
+            x += width + gap;
+        }
+        return -1;
     }
 
     @Override
@@ -234,7 +305,8 @@ public final class FullKeyboardOverlayView extends View {
 
         for (KeySpec key : row) {
             float width = unit * key.weight;
-            boolean pressed = held.get(key.code) || flashUntil.get(key.code, 0L) > now;
+            boolean pressed = held.get(key.code) || flashUntil.get(key.code, 0L) > now
+                    || (pickerMode && pickerPressedKey == key.code);
             rect.set(x, y, x + width, y + height);
             float radius = KeyAppearance.roundedRadius(rect, cornerStrength);
 

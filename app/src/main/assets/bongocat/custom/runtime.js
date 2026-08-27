@@ -57,6 +57,18 @@
   const MVER_WORKAREA_TOP_LEFT = Array.isArray(CONFIG.mverWorkareaTopLeft) ? CONFIG.mverWorkareaTopLeft : [];
   const MVER_WORKAREA_RIGHT_BOTTOM = Array.isArray(CONFIG.mverWorkareaRightBottom) ? CONFIG.mverWorkareaRightBottom : [];
   const MVER_L2D_CORRECT = Math.max(0.01, Number(CONFIG.mverL2dCorrect) || 1);
+  const AXON_LIVE2D_DISPLAY = CONFIG.axonLive2dDisplay === true;
+  let AXON_LIVE2D_DISPLAY_SCALE = Math.max(0.5, Math.min(2.0, Number(CONFIG.axonLive2dDisplayScale) || 1));
+  let AXON_LIVE2D_DISPLAY_OFFSET_X = Math.max(-0.9, Math.min(0.9, Number(CONFIG.axonLive2dDisplayOffsetX) || 0));
+  let AXON_LIVE2D_DISPLAY_OFFSET_Y = Math.max(-0.9, Math.min(0.9, Number(CONFIG.axonLive2dDisplayOffsetY) || 0));
+  let AXON_LIVE2D_HIDE_WATERMARK = CONFIG.axonLive2dHideWatermark === true;
+  const AXON_LIVE2D_WATERMARK_PARAMETERS = Array.isArray(CONFIG.axonLive2dWatermarkParameters)
+    ? CONFIG.axonLive2dWatermarkParameters.map((id) => String(id || '')).filter(Boolean)
+    : [];
+  const AXON_LIVE2D_WATERMARK_PARTS = Array.isArray(CONFIG.axonLive2dWatermarkParts)
+    ? CONFIG.axonLive2dWatermarkParts.map((id) => String(id || '')).filter(Boolean)
+    : [];
+  const AXON_WATERMARK_PART_BASE = new Map();
   const MVER_MOUSE_SCALE = Math.max(0.01, Number(CONFIG.mverMouseScale) || 1);
   const MVER_MOUSE_OFFSET_X = Number(CONFIG.mverMouseOffsetX) || 0;
   const MVER_MOUSE_OFFSET_Y = Number(CONFIG.mverMouseOffsetY) || 0;
@@ -1022,6 +1034,126 @@
     renderer.setOverride('CatParamRightHandDown', state.rightKey ? 1 : 0);
   }
 
+  function setNormalizedFaceParameter(
+    id, normalized, gain = 1, finalPass = true, owner = 'face', priority = 30,
+  ) {
+    if (!renderer) return;
+    const range = renderer.range(id);
+    if (!range) return;
+    const n = Math.max(-1, Math.min(1, Number(normalized) || 0)) * gain;
+    const value = n >= 0 ? n * Math.max(0, range[1]) : n * Math.max(0, -range[0]);
+    renderer.setTrackingTarget(id, value, finalPass, owner, priority);
+  }
+
+  const LIVE2D_MOTION_PARAMETER_IDS = [
+    // Yumi / VTube Studio style parameters adapted from the supplied model.
+    'ParamBodyposX', 'ParamBodyposX2', 'ParamBodyposY',
+    'ParamBodyAngleX2', 'ParamBodyAngleY2', 'ParamBodyAngleZ2',
+    'Paramdown', 'Paramdown1',
+    'ParamarmupL', 'ParamarmupR',
+    // Common community full-body aliases. Missing parameters are ignored by the renderer.
+    'ParamArmL', 'ParamArmR', 'ParamArmAngleL', 'ParamArmAngleR',
+    'ParamShoulderL', 'ParamShoulderR',
+    'ParamHandLX', 'ParamHandLY', 'ParamHandRX', 'ParamHandRY',
+    'ParamHandX_L', 'ParamHandY_L', 'ParamHandX_R', 'ParamHandY_R',
+    'ParamLegL', 'ParamLegR', 'ParamLegMoveL', 'ParamLegMoveR',
+    'ParamFootL', 'ParamFootR',
+  ];
+
+  function setUnitMotionParameter(
+    id, unit, gain = 1, finalPass = true, owner = 'expression', priority = 40,
+  ) {
+    if (!renderer) return;
+    const range = renderer.range(id);
+    if (!range) return;
+    const u = Math.max(0, Math.min(1, Number(unit) || 0)) * gain;
+    const zero = Math.max(range[0], Math.min(range[1], 0));
+    const value = zero + (range[1] - zero) * Math.max(0, Math.min(1, u));
+    renderer.setTrackingTarget(id, value, finalPass, owner, priority);
+  }
+
+  function setSignedMotionAliases(ids, value, gain = 1, finalPass = false) {
+    for (const id of ids) setNormalizedFaceParameter(id, value, gain, finalPass, 'motion', 10);
+  }
+
+  function setUnitMotionAliases(ids, value, gain = 1, finalPass = false) {
+    for (const id of ids) setUnitMotionParameter(id, value, gain, finalPass, 'motion', 10);
+  }
+
+  function applyLive2DMotionTracking(
+    bodyX, bodyY, crouch, leftArmUp, rightArmUp,
+    leftHandX, leftHandY, rightHandX, rightHandY,
+    leftLegMotion, rightLegMotion, confidence,
+  ) {
+    if (!renderer || !AXON_LIVE2D_DISPLAY) return;
+    const weight = 1;
+    const bx = Math.max(-1, Math.min(1, Number(bodyX) || 0)) * weight;
+    const by = Math.max(-1, Math.min(1, Number(bodyY) || 0)) * weight;
+    const down = Math.max(0, Math.min(1, Number(crouch) || 0)) * weight;
+    const armL = Math.max(0, Math.min(1, Number(leftArmUp) || 0)) * weight;
+    const armR = Math.max(0, Math.min(1, Number(rightArmUp) || 0)) * weight;
+    const handLX = Math.max(-1, Math.min(1, Number(leftHandX) || 0)) * weight;
+    const handLY = Math.max(-1, Math.min(1, Number(leftHandY) || 0)) * weight;
+    const handRX = Math.max(-1, Math.min(1, Number(rightHandX) || 0)) * weight;
+    const handRY = Math.max(-1, Math.min(1, Number(rightHandY) || 0)) * weight;
+    const legL = Math.max(0, Math.min(1, Number(leftLegMotion) || 0)) * weight;
+    const legR = Math.max(0, Math.min(1, Number(rightLegMotion) || 0)) * weight;
+
+    // Supplied yumi model: body translation/crouch + authored arm-up toggles + mouth/jaw.
+    setSignedMotionAliases(['ParamBodyposX', 'ParamBodyposX2'], bx, 0.85);
+    setSignedMotionAliases(['ParamBodyposY'], by, 0.75);
+    setSignedMotionAliases(['ParamBodyAngleX2'], bx, 0.62);
+    setSignedMotionAliases(['ParamBodyAngleY2'], by, 0.54);
+    setSignedMotionAliases(['ParamBodyAngleZ2'], bx * by, 0.48);
+    setUnitMotionAliases(['Paramdown', 'Paramdown1'], down, 1.0);
+    setUnitMotionAliases(['ParamarmupL'], armL, 1.0);
+    setUnitMotionAliases(['ParamarmupR'], armR, 1.0);
+
+    // Community model aliases. These calls are no-ops when the imported model lacks the id.
+    setSignedMotionAliases(['ParamArmL', 'ParamArmAngleL'], handLY, 0.85);
+    setSignedMotionAliases(['ParamArmR', 'ParamArmAngleR'], handRY, 0.85);
+    setUnitMotionAliases(['ParamShoulderL'], armL, 0.85);
+    setUnitMotionAliases(['ParamShoulderR'], armR, 0.85);
+    setSignedMotionAliases(['ParamHandLX', 'ParamHandX_L'], handLX, 0.90);
+    setSignedMotionAliases(['ParamHandLY', 'ParamHandY_L'], handLY, 0.90);
+    setSignedMotionAliases(['ParamHandRX', 'ParamHandX_R'], handRX, 0.90);
+    setSignedMotionAliases(['ParamHandRY', 'ParamHandY_R'], handRY, 0.90);
+    setUnitMotionAliases(['ParamLegL', 'ParamLegMoveL', 'ParamFootL'], legL, 0.80);
+    setUnitMotionAliases(['ParamLegR', 'ParamLegMoveR', 'ParamFootR'], legR, 0.80);
+  }
+
+  function clearLive2DMotionTracking() {
+    if (!renderer) return;
+    for (const id of LIVE2D_MOTION_PARAMETER_IDS) renderer.clearTrackingTarget(id, 'motion');
+  }
+
+  function applyLive2DWatermarkVisibility(hidden) {
+    AXON_LIVE2D_HIDE_WATERMARK = Boolean(hidden);
+    if (!renderer) return;
+    for (const id of AXON_LIVE2D_WATERMARK_PARAMETERS) {
+      const range = renderer.range(id);
+      if (!range) continue;
+      // Most VTube Studio watermark toggles are additive expressions around zero. Explicit zero
+      // is safer than minimum (-1 on some models), while falling back to min if zero is invalid.
+      const off = range[0] <= 0 && range[1] >= 0 ? 0 : range[0];
+      if (AXON_LIVE2D_HIDE_WATERMARK) renderer.setOverride(id, off);
+      else renderer.clearOverride(id);
+    }
+    for (const id of AXON_LIVE2D_WATERMARK_PARTS) {
+      const partIndex = renderer.partIndex.get(id);
+      if (partIndex === undefined) continue;
+      if (AXON_LIVE2D_HIDE_WATERMARK) {
+        if (!AXON_WATERMARK_PART_BASE.has(partIndex)) {
+          AXON_WATERMARK_PART_BASE.set(partIndex, renderer.model.parts.opacities[partIndex]);
+        }
+        renderer.model.parts.opacities[partIndex] = 0;
+      } else if (AXON_WATERMARK_PART_BASE.has(partIndex)) {
+        renderer.model.parts.opacities[partIndex] = AXON_WATERMARK_PART_BASE.get(partIndex);
+        AXON_WATERMARK_PART_BASE.delete(partIndex);
+      }
+    }
+  }
+
   function applyPointerOverrides(xRatio, yRatio) {
     if (!renderer) return;
 
@@ -1081,6 +1213,24 @@
     if (IS_MVER) {
       // Existing held sprite keys are not re-bound mid-press; new presses use the reversed mapping.
       syncMverMouseVisual();
+    }
+  }
+
+  function clearLive2DMouseTracking() {
+    state.cursorX = state.targetX = 0.5;
+    state.cursorY = state.targetY = 0.5;
+    state.pointerActive = false;
+    if (!renderer) return;
+    renderer.setDragTarget(0, 0);
+    renderer.clearFrameInput('ParamMouseX');
+    renderer.clearFrameInput('ParamMouseY');
+    // Non-Mver fallback uses persistent overrides for pointer tracking; release only the pointer
+    // parameters here so face/expression/motion capture can immediately regain control.
+    if (!IS_MVER) {
+      for (const id of [
+        'ParamMouseX', 'ParamMouseY', 'ParamAngleX', 'ParamAngleY', 'ParamAngleZ',
+        'ParamEyeBallX', 'ParamEyeBallY',
+      ]) renderer.clearOverride(id);
     }
   }
 
@@ -1206,6 +1356,10 @@
       applyMouseDelta(dx, dy, screenWidth, screenHeight);
     },
 
+    clearMouseTracking() {
+      clearLive2DMouseTracking();
+    },
+
     mouseFrame(mask, pulseMask, dx, dy, screenWidth, screenHeight) {
       state.inputCount += 1;
       state.lastInput = `mouse:${Number(mask) || 0}:${Number(dx) || 0},${Number(dy) || 0}`;
@@ -1237,6 +1391,39 @@
     setGlobalReverse(enabled) {
       state.globalReverse = Boolean(enabled);
       syncGlobalReverse();
+    },
+
+    setHideWatermark(hidden) {
+      applyLive2DWatermarkVisibility(hidden);
+    },
+
+    setMotionTracking(
+      bodyX, bodyY, crouch, leftArmUp, rightArmUp,
+      leftHandX, leftHandY, rightHandX, rightHandY,
+      leftLegMotion, rightLegMotion, confidence,
+    ) {
+      applyLive2DMotionTracking(
+        bodyX, bodyY, crouch, leftArmUp, rightArmUp,
+        leftHandX, leftHandY, rightHandX, rightHandY,
+        leftLegMotion, rightLegMotion, confidence,
+      );
+    },
+
+    clearMotionTracking() {
+      clearLive2DMotionTracking();
+    },
+
+    setDisplayScale(scale) {
+      if (!AXON_LIVE2D_DISPLAY) return;
+      AXON_LIVE2D_DISPLAY_SCALE = Math.max(0.5, Math.min(2.0, Number(scale) || 1));
+      if (renderer) renderer.resize();
+    },
+
+    setDisplayOffset(x, y) {
+      if (!AXON_LIVE2D_DISPLAY) return;
+      AXON_LIVE2D_DISPLAY_OFFSET_X = Math.max(-0.9, Math.min(0.9, Number(x) || 0));
+      AXON_LIVE2D_DISPLAY_OFFSET_Y = Math.max(-0.9, Math.min(0.9, Number(y) || 0));
+      if (renderer) renderer.resize();
     },
 
     clear() {
@@ -1519,8 +1706,19 @@
       this.parameters = model.parameters;
       this.canvasInfo = model.canvasinfo;
       this.paramIndex = new Map();
+      this.paramRanges = new Map();
       this.overrides = new Map();
       this.frameInputs = new Map();
+      // Camera results arrive at ~15-25 Hz. Keep targets separate from rendered values so the
+      // 60 Hz Cubism loop interpolates them instead of visibly stepping every camera frame.
+      this.trackingTargets = new Map();
+      this.trackingValues = new Map();
+      this.trackingFinal = new Set();
+      // A parameter may be driven by multiple capture systems (for example ParamMouthOpenY is
+      // present in both detailed face tracking and full-body tracking). Keep explicit ownership
+      // so a lower-priority asynchronous source cannot overwrite or clear a higher-priority one.
+      this.trackingOwners = new Map();
+      this.trackingPriorities = new Map();
       this.defaults = Array.from(this.parameters.defaultValues);
       // CubismModel::SaveParameters/LoadParameters semantics: retain the authored base state
       // between frames, then apply transient input/blink/expression/breath/physics on top.
@@ -1543,7 +1741,11 @@
       this.dragUserTime = 0;
 
       for (let i = 0; i < this.parameters.count; i++) {
-        this.paramIndex.set(String(this.parameters.ids[i]), i);
+        const id = String(this.parameters.ids[i]);
+        this.paramIndex.set(id, i);
+        // Motion capture queries ranges many times per update. Cache the pair once instead of
+        // allocating a fresh [min,max] array for every alias on every frame.
+        this.paramRanges.set(id, [this.parameters.minimumValues[i], this.parameters.maximumValues[i]]);
       }
       this.partIndex = new Map();
       if (model.parts && model.parts.ids) {
@@ -1657,18 +1859,29 @@
       // l2d_correct > 1 is a deliberate desktop zoom in Mver, but an Android overlay has a
       // hard clipping rectangle. Never let that zoom crop ears/hair/feet; values below 1 are
       // still respected because they intentionally shrink the model.
-      const safeCorrect = IS_MVER ? Math.min(1, MVER_L2D_CORRECT) : 1;
+      const safeCorrect = AXON_LIVE2D_DISPLAY
+        ? AXON_LIVE2D_DISPLAY_SCALE
+        : (IS_MVER ? Math.min(1, MVER_L2D_CORRECT) : 1);
       this.scale = containScale * safeCorrect;
-      const extraX = Math.max(0, width - nativeWidth * this.scale);
-      const extraY = Math.max(0, height - nativeHeight * this.scale);
+      const rawExtraX = width - nativeWidth * this.scale;
+      const rawExtraY = height - nativeHeight * this.scale;
       const offsetXRatio = IS_MVER ? (Number(MVER_L2D_OFFSET[0]) || 0) : 0;
       const offsetYRatio = IS_MVER ? (Number(MVER_L2D_OFFSET[1]) || 0) : 0;
-      const desiredX = extraX * 0.5 + offsetXRatio * width;
-      const desiredY = extraY * 0.5 + offsetYRatio * height;
-      // Clamp the authored offset to the remaining letterbox space so the full Cubism canvas
-      // is always inside the Android WebView. This specifically prevents top-edge ear clipping.
-      this.offsetX = Math.max(0, Math.min(extraX, desiredX));
-      this.offsetY = Math.max(0, Math.min(extraY, desiredY));
+      if (AXON_LIVE2D_DISPLAY) {
+        // Dedicated display mode deliberately supports zoom above 100%. Keep the model centered
+        // when it becomes larger than the viewport instead of pinning the crop to the top-left.
+        this.offsetX = rawExtraX * 0.5 + offsetXRatio * width + AXON_LIVE2D_DISPLAY_OFFSET_X * width * 0.5;
+        this.offsetY = rawExtraY * 0.5 + offsetYRatio * height + AXON_LIVE2D_DISPLAY_OFFSET_Y * height * 0.5;
+      } else {
+        const extraX = Math.max(0, rawExtraX);
+        const extraY = Math.max(0, rawExtraY);
+        const desiredX = extraX * 0.5 + offsetXRatio * width;
+        const desiredY = extraY * 0.5 + offsetYRatio * height;
+        // Clamp the authored offset to the remaining letterbox space so the full Cubism canvas
+        // is always inside the Android WebView. This specifically prevents top-edge ear clipping.
+        this.offsetX = Math.max(0, Math.min(extraX, desiredX));
+        this.offsetY = Math.max(0, Math.min(extraY, desiredY));
+      }
     }
 
     setDragTarget(x, y) {
@@ -1737,9 +1950,7 @@
     }
 
     range(id) {
-      const index = this.paramIndex.get(id);
-      if (index === undefined) return null;
-      return [this.parameters.minimumValues[index], this.parameters.maximumValues[index]];
+      return this.paramRanges.get(id) || null;
     }
 
     clamp(index, value) {
@@ -1755,9 +1966,20 @@
       this.overrides.set(index, this.clamp(index, value));
     }
 
+    clearOverride(id) {
+      const index = this.paramIndex.get(id);
+      if (index === undefined) return;
+      this.overrides.delete(index);
+    }
+
     clearOverrides() {
       this.overrides.clear();
       this.frameInputs.clear();
+      this.trackingTargets.clear();
+      this.trackingValues.clear();
+      this.trackingFinal.clear();
+      this.trackingOwners.clear();
+      this.trackingPriorities.clear();
     }
 
     setFrameInput(id, value) {
@@ -1769,6 +1991,131 @@
     clearFrameInput(id) {
       const index = this.paramIndex.get(id);
       if (index !== undefined) this.frameInputs.delete(index);
+    }
+
+    setTrackingTarget(id, value, finalPass = true, owner = 'generic', priority = 0) {
+      const index = this.paramIndex.get(id);
+      if (index === undefined) return false;
+      const incomingOwner = String(owner || 'generic');
+      const incomingPriority = Number(priority) || 0;
+      const existingOwner = this.trackingOwners.get(index);
+      const existingPriority = this.trackingPriorities.get(index) || 0;
+      // Asynchronous camera paths do not arrive in a deterministic order. Never allow a lower
+      // priority source to steal a target just because its callback happened later in the frame.
+      if (existingOwner !== undefined && existingOwner !== incomingOwner
+          && existingPriority > incomingPriority) return false;
+      const clamped = this.clamp(index, value);
+      this.trackingTargets.set(index, clamped);
+      this.trackingOwners.set(index, incomingOwner);
+      this.trackingPriorities.set(index, incomingPriority);
+      if (!this.trackingValues.has(index)) this.trackingValues.set(index, clamped);
+      if (finalPass) this.trackingFinal.add(index);
+      else this.trackingFinal.delete(index);
+      return true;
+    }
+
+    clearTrackingTarget(id, owner = null) {
+      const index = this.paramIndex.get(id);
+      if (index === undefined) return false;
+      if (owner !== null && this.trackingOwners.get(index) !== String(owner)) return false;
+      // Source-specific releases are eased back toward the authored base instead of deleting the
+      // interpolated value in one frame. A higher-priority/new capture source can still take over
+      // immediately because the temporary release owner has the lowest possible priority.
+      if (owner !== null && this.trackingValues.has(index)) {
+        const base = this.savedParameters[index] ?? this.defaults[index] ?? 0;
+        this.trackingTargets.set(index, this.clamp(index, base));
+        this.trackingOwners.set(index, 'release');
+        this.trackingPriorities.set(index, -100);
+        this.trackingFinal.delete(index);
+        return true;
+      }
+      this.trackingTargets.delete(index);
+      this.trackingValues.delete(index);
+      this.trackingFinal.delete(index);
+      this.trackingOwners.delete(index);
+      this.trackingPriorities.delete(index);
+      return true;
+    }
+
+    trackingRate(index, current, target) {
+      const id = String(this.parameters.ids[index] || '');
+      const min = this.parameters.minimumValues[index];
+      const max = this.parameters.maximumValues[index];
+      const span = Math.max(0.0001, max - min);
+      const normalizedDelta = Math.min(1, Math.abs(target - current) / span * 5);
+      // Small camera noise gets heavy damping; intentional movement automatically accelerates.
+      // This keeps blinks/mouth responsive without letting sub-pixel landmark shimmer shake model.
+      let slow = 7, fast = 15;
+      if (id === 'ParamEyeLOpen' || id === 'ParamEyeROpen') {
+        // Blink closing must be almost immediate; reopening is slightly softer so landmark shimmer
+        // does not make the eyelid chatter around fully-open.
+        slow = target < current ? 18 : 13;
+        fast = target < current ? 42 : 30;
+      } else if (id.includes('EyeBall')) {
+        slow = 12; fast = 26;
+      } else if (id.includes('Mouth') || id.includes('Jaw') || id.includes('guzui') || id.includes('tushe')) {
+        slow = 12; fast = 31;
+      } else if (id.includes('Eye')) {
+        slow = 11; fast = 27;
+      } else if (id.includes('Brow')) {
+        slow = 9; fast = 20;
+      } else if (id.includes('Angle') || id.includes('Body')) {
+        slow = 7; fast = 17;
+      }
+      return slow + (fast - slow) * normalizedDelta;
+    }
+
+    updateTrackingInputs(deltaSeconds) {
+      const dt = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
+      for (const [index, target] of this.trackingTargets) {
+        const current = this.trackingValues.has(index) ? this.trackingValues.get(index) : target;
+        const min = this.parameters.minimumValues[index];
+        const max = this.parameters.maximumValues[index];
+        const span = Math.max(0.0001, max - min);
+        // Ignore microscopic target churn from camera quantization. Release targets are removed
+        // once they have converged so authored motion regains complete control without a hard snap.
+        if (Math.abs(target - current) < span * 0.0009) {
+          if (this.trackingOwners.get(index) === 'release') {
+            this.trackingTargets.delete(index);
+            this.trackingValues.delete(index);
+            this.trackingFinal.delete(index);
+            this.trackingOwners.delete(index);
+            this.trackingPriorities.delete(index);
+          }
+          continue;
+        }
+        const rate = this.trackingOwners.get(index) === 'release'
+          ? Math.min(8, this.trackingRate(index, current, target))
+          : this.trackingRate(index, current, target);
+        const alpha = 1 - Math.exp(-rate * dt);
+        this.trackingValues.set(index, this.clamp(index, current + (target - current) * alpha));
+      }
+    }
+
+    applyTrackingInputs(finalOnly = false) {
+      for (const [index, value] of this.trackingValues) {
+        if (finalOnly && !this.trackingFinal.has(index)) continue;
+        this.parameters.values[index] = value;
+      }
+    }
+
+    hasTrackingTarget(id) {
+      const index = this.paramIndex.get(id);
+      return index !== undefined && this.trackingTargets.has(index);
+    }
+
+    hasFaceEyeTrackingTarget() {
+      const ids = LIVE2D_EYE_BLINK_IDS.length
+        ? LIVE2D_EYE_BLINK_IDS
+        : ['ParamEyeLOpen', 'ParamEyeROpen'];
+      for (const id of ids) {
+        const index = this.paramIndex.get(id);
+        if (index !== undefined
+            && this.trackingTargets.has(index)
+            && this.trackingOwners.get(index) === 'expression') return true;
+      }
+      // A model may declare no EyeBlink group but still use the standard ids.
+      return this.hasTrackingTarget('ParamEyeLOpen') || this.hasTrackingTarget('ParamEyeROpen');
     }
 
     setEyeBlink(value) {
@@ -2243,9 +2590,12 @@
       // Long-term API overrides belong to the saved base, matching Cubism's long-term cache.
       for (const [index, value] of this.overrides) this.parameters.values[index] = value;
       for (let i = 0; i < this.parameters.count; i++) this.savedParameters[i] = this.parameters.values[i];
-      // Current-frame Mver input. Pointer and key states must feed physics every frame, but must
-      // never be baked into SaveParameters or they continue moving after input is released.
+      // Current-frame Mver input. Pointer/key states and camera tracking feed physics every frame,
+      // but must never be baked into SaveParameters. Tracking values are interpolated here at the
+      // renderer frame rate, removing the old 15-20 Hz visible stepping from Camera2 callbacks.
       for (const [index, value] of this.frameInputs) this.parameters.values[index] = value;
+      this.updateTrackingInputs(deltaSeconds);
+      this.applyTrackingInputs(false);
       const mouseLeftDown = (state.mouseVisualButtons & 1) ? 1 : 0;
       const mouseRightDown = (state.mouseVisualButtons & 2) ? 1 : 0;
       this.setValue('ParamMouseLeftDown', mouseLeftDown);
@@ -2256,7 +2606,7 @@
 
       // l2dcat/Cubism late updater order: blink (only without active motion) -> expression
       // -> look/drag -> breath -> physics.
-      if (!motionUpdated) this.applyEyeBlink(this.eyeBlink);
+      if (!motionUpdated && !this.hasFaceEyeTrackingTarget()) this.applyEyeBlink(this.eyeBlink);
       this.applyMverExpression(now);
       if (IS_MVER) this.applyMverDragLateUpdate();
 
@@ -2272,6 +2622,26 @@
       this.applyMverPhysics(deltaSeconds);
       // Cubism framework applies Pose after Physics/LipSync and before model.update().
       this.applyPose(deltaSeconds);
+      // Face/head channels are direct performer controls. Reapply them after blink/expression/physics
+      // so authored idle effects cannot wipe out real eye, brow, lip or profile tracking.
+      this.applyTrackingInputs(true);
+      // Watermark suppression is intentionally last. Hide both the declared toggle parameter and
+      // any DisplayInfo parts explicitly named 水印/watermark; this fixes models where the visible
+      // artwork is a dedicated part rather than a pure parameter switch.
+      if (AXON_LIVE2D_HIDE_WATERMARK) {
+        for (const id of AXON_LIVE2D_WATERMARK_PARAMETERS) {
+          const index = this.paramIndex.get(id);
+          if (index !== undefined) {
+            const min = this.parameters.minimumValues[index];
+            const max = this.parameters.maximumValues[index];
+            this.parameters.values[index] = min <= 0 && max >= 0 ? 0 : min;
+          }
+        }
+        for (const id of AXON_LIVE2D_WATERMARK_PARTS) {
+          const partIndex = this.partIndex.get(id);
+          if (partIndex !== undefined) this.model.parts.opacities[partIndex] = 0;
+        }
+      }
     }
 
     bindGeometry(program, drawableIndex) {
@@ -2435,6 +2805,7 @@
       if (!model) throw new Error('model init failed');
 
       renderer = new CoreRenderer(core, model, textureImages);
+      applyLive2DWatermarkVisibility(AXON_LIVE2D_HIDE_WATERMARK);
       // Match Mver 0.1.6 compositor semantics: l2d_horizontal_flip is not a visual canvas
       // mirror. The desk/background and full-frame hand overlays are already authored in final
       // coordinates, so only keep the model in its native orientation.

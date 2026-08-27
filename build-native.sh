@@ -6,12 +6,14 @@ JNI_SRC="$ROOT/native/keyengine.cpp"
 PROXY_SRC="$ROOT/native/sensitivityproxy.cpp"
 GAMEPAD_MONITOR_SRC="$ROOT/native/gamepadmonitor.cpp"
 KEYHOLD_SRC="$ROOT/native/keyhold.cpp"
+KEYMAPPER_SRC="$ROOT/native/keymapper.cpp"
 TOUCH_MONITOR_SRC="$ROOT/native/touchmonitor.cpp"
 OUT_DIR="$ROOT/app/src/main/jniLibs/arm64-v8a"
 JNI_LIB="$OUT_DIR/libkeyengine.so"
 PROXY_BIN="$OUT_DIR/libsensitivityproxy.so"
 GAMEPAD_MONITOR_BIN="$OUT_DIR/libgamepadmonitor.so"
 KEYHOLD_BIN="$OUT_DIR/libkeyhold.so"
+KEYMAPPER_BIN="$OUT_DIR/libkeymapper.so"
 TOUCH_MONITOR_BIN="$OUT_DIR/libtouchmonitor.so"
 
 case "$(uname -m)" in
@@ -70,6 +72,14 @@ clang++ \
     "$KEYHOLD_SRC" -o "$KEYHOLD_BIN"
 chmod 755 "$KEYHOLD_BIN"
 
+echo "[Axon Input] C++20 gamepad keyboard mapper -> libkeymapper.so"
+clang++ \
+    -std=c++20 -fPIE -pie -O2 \
+    -fno-exceptions -fno-rtti -nostdlib++ \
+    -Wl,--no-undefined \
+    "$KEYMAPPER_SRC" -o "$KEYMAPPER_BIN"
+chmod 755 "$KEYMAPPER_BIN"
+
 if command -v readelf >/dev/null 2>&1; then
     echo "[Axon Input] JNI dependencies:"
     readelf -d "$JNI_LIB" | grep NEEDED || true
@@ -81,6 +91,8 @@ if command -v readelf >/dev/null 2>&1; then
     readelf -d "$TOUCH_MONITOR_BIN" | grep NEEDED || true
     echo "[Axon Input] Force-hold dependencies:"
     readelf -d "$KEYHOLD_BIN" | grep NEEDED || true
+    echo "[Axon Input] Gamepad mapper dependencies:"
+    readelf -d "$KEYMAPPER_BIN" | grep NEEDED || true
 fi
 
 echo "[Axon Input] Native build complete"

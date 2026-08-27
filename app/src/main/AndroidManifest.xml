@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.axon.input"
-    android:versionCode="12"
-    android:versionName="1.8">
+    android:versionCode="13"
+    android:versionName="1.9">
 
     <uses-sdk
         android:minSdkVersion="26"
         android:targetSdkVersion="36" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
 
     <application
         android:name=".AxonApplication"
@@ -52,6 +56,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+
+        <service
+            android:name=".Live2DMotionTrackingService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
 
         <service
             android:name=".AxonInputAccessibilityService"

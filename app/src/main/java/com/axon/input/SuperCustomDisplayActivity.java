@@ -80,6 +80,7 @@ public final class SuperCustomDisplayActivity extends Activity {
     private FrameLayout canvas;
     private TextView addButton;
     private TextView floatingMediaButton;
+    private TextView textButton;
     private FloatingMediaPreviewController floatingMediaPreviewController;
     private String pendingMediaHotkeyId;
     private TextView capturePrompt;
@@ -242,6 +243,24 @@ public final class SuperCustomDisplayActivity extends Activity {
         mediaButtonLp.topMargin = dp(138);
         canvas.addView(floatingMediaButton, mediaButtonLp);
 
+        textButton = new TextView(this);
+        textButton.setText(R.string.super_custom_add_text);
+        textButton.setContentDescription(getString(R.string.super_custom_add_text));
+        textButton.setTextSize(11f);
+        textButton.setGravity(Gravity.CENTER);
+        textButton.setTextColor(UiPalette.textPrimary(this));
+        textButton.setIncludeFontPadding(false);
+        textButton.setClickable(true);
+        textButton.setFocusable(true);
+        textButton.setBackground(UiChrome.ripple(this, UiPalette.surface(this), 12f));
+        UiMotion.bindPressFeedback(textButton);
+        textButton.setOnClickListener(v -> beginTextControlCreation());
+        FrameLayout.LayoutParams textButtonLp = new FrameLayout.LayoutParams(dp(48), dp(48));
+        textButtonLp.gravity = Gravity.TOP | Gravity.START;
+        textButtonLp.leftMargin = dp(16);
+        textButtonLp.topMargin = dp(194);
+        canvas.addView(textButton, textButtonLp);
+
         selectionGuide = new SelectionGuideView(this);
         selectionGuide.setVisibility(View.GONE);
         selectionGuide.setClickable(false);
@@ -277,6 +296,7 @@ public final class SuperCustomDisplayActivity extends Activity {
             int topInset = Math.max(0, insets.getSystemWindowInsetTop());
             setEditorChromeTop(addButton, topInset + dp(82));
             setEditorChromeTop(floatingMediaButton, topInset + dp(138));
+            setEditorChromeTop(textButton, topInset + dp(194));
             setEditorChromeTop(selectionPanel, topInset + dp(10));
             setEditorChromeTop(idleActionPanel, topInset + dp(10));
             return insets;
@@ -564,7 +584,7 @@ public final class SuperCustomDisplayActivity extends Activity {
 
         TextView startLabel = mediaLabel(getString(R.string.floating_video_clip_start_format, 0f), false);
         content.addView(startLabel, wrapParams(0));
-        SeekBar startSeek = new SeekBar(this);
+        SeekBar startSeek = new LagSeekBar(this);
         startSeek.setMax(steps);
         startSeek.setProgress(0);
         tintSeekBar(startSeek);
@@ -574,7 +594,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         TextView endLabel = mediaLabel(getString(R.string.floating_video_clip_end_format,
                 safeDuration / 1000f), false);
         content.addView(endLabel, wrapParams(0));
-        SeekBar endSeek = new SeekBar(this);
+        SeekBar endSeek = new LagSeekBar(this);
         endSeek.setMax(steps);
         endSeek.setProgress(steps);
         tintSeekBar(endSeek);
@@ -706,7 +726,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         TextView strengthLabel = mediaLabel(getString(R.string.floating_media_chroma_strength,
                 strength[0]), false);
         content.addView(strengthLabel, wrapParams(0));
-        SeekBar strengthSeek = new SeekBar(this);
+        SeekBar strengthSeek = new LagSeekBar(this);
         strengthSeek.setMax(FloatingMediaStore.CHROMA_STRENGTH_MAX);
         strengthSeek.setProgress(strength[0]);
         strengthSeek.setEnabled(enabled[0]);
@@ -802,7 +822,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
         SeekControl size = addSeekControl(content, R.string.floating_media_size_label,
-                50, 300, working.sizePercent, "%");
+                25, 500, working.sizePercent, "%");
         SeekControl opacity = addSeekControl(content, R.string.floating_media_opacity_label,
                 0, 100, working.opacityPercent, "%");
 
@@ -1060,7 +1080,15 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (FloatingMediaStore.hotkeyConflicts(this, mediaId, inputCode)) return true;
         if (OverlayState.isForceHoldEnabled(this)
                 && inputCode == OverlayState.getForceHoldTriggerKeyCode(this)) return true;
-        return inputCode == OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this);
+        return inputCode == OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this)
+                || inputCode == OverlayState.getHideDisplayHotkeyInputCode(this);
+    }
+
+    private void beginTextControlCreation() {
+        boolean dark = OverlayState.getUiTheme(this) == OverlayState.UI_THEME_BLACK;
+        SuperCustomControlSpec spec = SuperCustomControlSpec.createText(dark);
+        fitTextBounds(spec);
+        showControlEditor(null, spec);
     }
 
     private void beginKeyCapture() {
@@ -1073,6 +1101,25 @@ public final class SuperCustomDisplayActivity extends Activity {
 
     private void beginSelectedKeyRebind() {
         if (selectedBinding == null) return;
+        if (selectedBinding.spec.isTextElement()) {
+            showTextEditor(getString(R.string.super_custom_edit_text_title),
+                    selectedBinding.spec.labelText, value -> {
+                        String normalized = value == null ? "" : value.trim();
+                        if (normalized.isEmpty()) {
+                            Toast.makeText(this, R.string.super_custom_text_empty, Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        selectedBinding.spec.labelText = normalized;
+                        fitTextBounds(selectedBinding.spec);
+                        selectedBinding.view.applySpec(selectedBinding.spec);
+                        applyControlPosition(selectedBinding);
+                        updateSelectionPanel();
+                        updateSelectionGuides();
+                        persistActiveWorkspace();
+                        AxonInputAccessibilityService.refreshActiveService();
+                    });
+            return;
+        }
         mainHandler.removeCallbacks(rebindTimeout);
         captureMode = CAPTURE_REBIND;
         rebindTarget = selectedBinding;
@@ -1252,7 +1299,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         }
 
         for (ControlBinding binding : controls) {
-            if (binding.spec.keyCode == inputCode) {
+            if (binding.spec.isKeyElement() && binding.spec.keyCode == inputCode) {
                 if (!pressed || firstPress) binding.view.onBoundKeyEvent(pressed);
             }
         }
@@ -1290,6 +1337,10 @@ public final class SuperCustomDisplayActivity extends Activity {
 
 
     private void showControlEditor(ControlBinding editing, SuperCustomControlSpec spec) {
+        if (spec != null && spec.isTextElement()) {
+            showTextControlEditor(editing, spec);
+            return;
+        }
         Dialog dialog = new Dialog(this);
         controlEditorDialog = dialog;
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -1358,21 +1409,21 @@ public final class SuperCustomDisplayActivity extends Activity {
                 getString(R.string.motion_none)});
         left.addView(labeledChoice(R.string.super_custom_press_motion, motionSpinner), wrapParams(dp(5)));
 
-        SeekControl corner = addSeekControl(left, R.string.super_custom_corner, 0, 36, spec.cornerDp, " dp");
+        SeekControl corner = addSeekControl(left, R.string.super_custom_corner, 0, 80, spec.cornerDp, " dp");
         SeekControl opacity = addSeekControl(left, R.string.super_custom_opacity, 0, 100,
                 spec.opacityPercent, "%");
         SeekControl diffusionOpacity = addSeekControl(left, R.string.super_custom_diffusion_opacity, 0, 100,
                 spec.diffusionOpacityPercent, "%");
-        SeekControl width = addSeekControl(left, R.string.super_custom_width, 44, 240,
+        SeekControl width = addSeekControl(left, R.string.super_custom_width, 28, 420,
                 spec.widthDp, " dp");
-        SeekControl height = addSeekControl(left, R.string.super_custom_length, 32, 160,
+        SeekControl height = addSeekControl(left, R.string.super_custom_length, 24, 300,
                 spec.heightDp, " dp");
 
         ColorRow pressColor = addColorRow(left, R.string.super_custom_press_color, spec.pressColor);
         int resolvedBorderColor = spec.borderColor != 0 ? spec.borderColor : UiPalette.overlayStroke(this);
         ColorRow borderColor = addColorRow(left, R.string.super_custom_border_color, resolvedBorderColor);
         ColorRow textColor = addColorRow(left, R.string.super_custom_text_color, spec.textColor);
-        SeekControl textSize = addSeekControl(left, R.string.super_custom_text_size, 10, 36,
+        SeekControl textSize = addSeekControl(left, R.string.super_custom_text_size, 8, 96,
                 spec.textSizeSp, " sp");
 
         TextView addonsLabel = smallSectionLabel(R.string.super_custom_addons);
@@ -1457,23 +1508,30 @@ public final class SuperCustomDisplayActivity extends Activity {
             refreshPreview.run();
         });
 
-        pressColor.row.setOnClickListener(v -> showColorEditor(spec.pressColor, color -> {
-            spec.pressColor = color;
-            pressColor.color = color;
-            pressColor.dot.setBackground(circleDrawable(color));
+        pressColor.dot.setBackground(sequenceDrawable(spec.pressColors, spec.pressColor));
+        pressColor.row.setOnClickListener(v -> showColorEditor(spec.pressColor, spec.pressColors, colors -> {
+            spec.pressColor = colors[0];
+            spec.pressColors = ColorSequence.encode(colors, spec.pressColor);
+            pressColor.color = colors[0];
+            pressColor.dot.setBackground(sequenceDrawable(spec.pressColors, spec.pressColor));
             refreshPreview.run();
         }));
+        borderColor.dot.setBackground(sequenceDrawable(spec.borderColors,
+                spec.borderColor != 0 ? spec.borderColor : UiPalette.overlayStroke(this)));
         borderColor.row.setOnClickListener(v -> showColorEditor(
-                spec.borderColor != 0 ? spec.borderColor : UiPalette.overlayStroke(this), color -> {
-            spec.borderColor = color;
-            borderColor.color = color;
-            borderColor.dot.setBackground(circleDrawable(color));
+                spec.borderColor != 0 ? spec.borderColor : UiPalette.overlayStroke(this), spec.borderColors, colors -> {
+            spec.borderColor = colors[0];
+            spec.borderColors = ColorSequence.encode(colors, spec.borderColor);
+            borderColor.color = colors[0];
+            borderColor.dot.setBackground(sequenceDrawable(spec.borderColors, spec.borderColor));
             refreshPreview.run();
         }));
-        textColor.row.setOnClickListener(v -> showColorEditor(spec.textColor, color -> {
-            spec.textColor = color;
-            textColor.color = color;
-            textColor.dot.setBackground(circleDrawable(color));
+        textColor.dot.setBackground(sequenceDrawable(spec.textColors, spec.textColor));
+        textColor.row.setOnClickListener(v -> showColorEditor(spec.textColor, spec.textColors, colors -> {
+            spec.textColor = colors[0];
+            spec.textColors = ColorSequence.encode(colors, spec.textColor);
+            textColor.color = colors[0];
+            textColor.dot.setBackground(sequenceDrawable(spec.textColors, spec.textColor));
             refreshPreview.run();
         }));
 
@@ -1531,7 +1589,198 @@ public final class SuperCustomDisplayActivity extends Activity {
         resizeEditorWindow(dialog);
     }
 
+    private void showTextControlEditor(ControlBinding editing, SuperCustomControlSpec spec) {
+        fitTextBounds(spec);
+        Dialog dialog = new Dialog(this);
+        controlEditorDialog = dialog;
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setPadding(dp(14), dp(14), dp(14), dp(12));
+        shell.setBackground(UiChrome.surface(this, UiPalette.surface(this), 18f));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(6), dp(4), dp(6), dp(10));
+        scroll.addView(root, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        shell.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        TextView section = smallSectionLabel(R.string.super_custom_text_component);
+        section.setGravity(Gravity.START);
+        root.addView(section, wrapParams(dp(8)));
+
+        LinearLayout contentRow = new LinearLayout(this);
+        contentRow.setOrientation(LinearLayout.HORIZONTAL);
+        contentRow.setGravity(Gravity.CENTER_VERTICAL);
+        contentRow.setPadding(dp(2), dp(4), dp(2), dp(4));
+        contentRow.setClickable(true);
+        contentRow.setFocusable(true);
+        UiMotion.bindPressFeedback(contentRow);
+        TextView contentTitle = new TextView(this);
+        contentTitle.setText(R.string.super_custom_text_content);
+        contentTitle.setTextColor(UiPalette.textSecondary(this));
+        contentTitle.setTextSize(12f);
+        contentTitle.setGravity(Gravity.CENTER_VERTICAL);
+        TextView contentValue = new TextView(this);
+        contentValue.setTextColor(UiPalette.accent(this));
+        contentValue.setTextSize(12f);
+        contentValue.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        contentValue.setSingleLine(true);
+        contentValue.setMaxEms(14);
+        contentRow.addView(contentTitle, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        contentRow.addView(contentValue, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
+        root.addView(contentRow, wrapParams(dp(2)));
+
+        SeekControl opacity = addSeekControl(root, R.string.super_custom_opacity, 0, 100,
+                spec.opacityPercent, "%");
+        SeekControl textSize = addSeekControl(root, R.string.super_custom_text_size, 8, 96,
+                spec.textSizeSp, " sp");
+        ColorRow textColor = addColorRow(root, R.string.super_custom_text_color, spec.textColor);
+
+        Switch strokeSwitch = themedSwitch(R.string.super_custom_text_stroke);
+        strokeSwitch.setTextSize(13f);
+        root.addView(strokeSwitch, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        SeekControl strokeWidth = addSeekControl(root, R.string.super_custom_text_stroke_width,
+                1, 24, spec.textStrokeWidthDp, " dp");
+        ColorRow strokeColor = addColorRow(root, R.string.super_custom_text_stroke_color,
+                spec.textStrokeColor);
+        strokeColor.dot.setBackground(sequenceDrawable(spec.textStrokeColors, spec.textStrokeColor));
+
+        TextView previewLabel = smallSectionLabel(R.string.super_custom_text_preview);
+        previewLabel.setGravity(Gravity.START);
+        root.addView(previewLabel, wrapParams(dp(6)));
+
+        FrameLayout previewArea = new FrameLayout(this);
+        previewArea.setPadding(dp(12), dp(12), dp(12), dp(12));
+        previewArea.setBackground(UiChrome.nestedSurface(this));
+        root.addView(previewArea, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(132)));
+
+        SuperCustomControlView preview = new SuperCustomControlView(this);
+        preview.setInteractivePreview(false);
+        FrameLayout.LayoutParams previewLp = new FrameLayout.LayoutParams(
+                dp(spec.widthDp), dp(spec.heightDp));
+        previewLp.gravity = Gravity.CENTER;
+        previewArea.addView(preview, previewLp);
+
+        Runnable refresh = () -> {
+            spec.opacityPercent = opacity.seek.getProgress();
+            spec.textSizeSp = textSize.seek.getProgress();
+            spec.textColor = textColor.color;
+            spec.textStrokeEnabled = strokeSwitch.isChecked();
+            spec.textStrokeWidthDp = strokeWidth.seek.getProgress();
+            spec.textStrokeColor = strokeColor.color;
+            fitTextBounds(spec);
+            contentValue.setText(spec.labelText == null ? "" : spec.labelText);
+            setSeekControlEnabled(strokeWidth, spec.textStrokeEnabled);
+            strokeColor.row.setEnabled(spec.textStrokeEnabled);
+            strokeColor.row.setAlpha(spec.textStrokeEnabled ? 1f : UiChrome.DISABLED_ALPHA);
+            preview.applySpec(spec);
+            FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) preview.getLayoutParams();
+            p.width = dp(spec.widthDp);
+            p.height = dp(spec.heightDp);
+            p.gravity = Gravity.CENTER;
+            preview.setLayoutParams(p);
+        };
+
+        strokeSwitch.setChecked(spec.textStrokeEnabled);
+        bindSeekRefresh(opacity, refresh);
+        bindSeekRefresh(textSize, refresh);
+        bindSeekRefresh(strokeWidth, refresh);
+        strokeSwitch.setOnCheckedChangeListener((button, checked) -> {
+            spec.textStrokeEnabled = checked;
+            refresh.run();
+        });
+        contentRow.setOnClickListener(v -> showTextEditor(
+                getString(R.string.super_custom_edit_text_title), spec.labelText, value -> {
+                    spec.labelText = value;
+                    refresh.run();
+                }));
+        textColor.dot.setBackground(sequenceDrawable(spec.textColors, spec.textColor));
+        textColor.row.setOnClickListener(v -> showColorEditor(spec.textColor, spec.textColors, colors -> {
+            spec.textColor = colors[0];
+            spec.textColors = ColorSequence.encode(colors, spec.textColor);
+            textColor.color = colors[0];
+            textColor.dot.setBackground(sequenceDrawable(spec.textColors, spec.textColor));
+            refresh.run();
+        }));
+        strokeColor.row.setOnClickListener(v -> {
+            if (!spec.textStrokeEnabled) return;
+            showColorEditor(spec.textStrokeColor, spec.textStrokeColors, colors -> {
+                spec.textStrokeColor = colors[0];
+                spec.textStrokeColors = ColorSequence.encode(colors, spec.textStrokeColor);
+                strokeColor.color = colors[0];
+                strokeColor.dot.setBackground(sequenceDrawable(spec.textStrokeColors, spec.textStrokeColor));
+                refresh.run();
+            });
+        });
+
+        LinearLayout footer = new LinearLayout(this);
+        footer.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        footer.setPadding(0, dp(8), 0, 0);
+        Button confirm = actionButton(R.string.super_custom_confirm);
+        footer.addView(confirm, new LinearLayout.LayoutParams(dp(104), dp(44)));
+        shell.addView(footer, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        confirm.setOnClickListener(v -> {
+            refresh.run();
+            String value = spec.labelText == null ? "" : spec.labelText.trim();
+            if (value.isEmpty()) {
+                Toast.makeText(this, R.string.super_custom_text_empty, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            spec.labelText = value;
+            fitTextBounds(spec);
+            if (editing == null) createControl(spec.copy());
+            else applyEditedControl(editing, spec.copy());
+            persistActiveWorkspace();
+            AxonInputAccessibilityService.refreshActiveService();
+            dialog.dismiss();
+        });
+
+        refresh.run();
+        dialog.setContentView(shell);
+        dialog.setOnDismissListener(d -> {
+            if (controlEditorDialog == dialog) controlEditorDialog = null;
+        });
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams attrs = window.getAttributes();
+            attrs.dimAmount = 0.30f;
+            window.setAttributes(attrs);
+        }
+        dialog.show();
+        resizeEditorWindow(dialog);
+    }
+
+    private void fitTextBounds(SuperCustomControlSpec spec) {
+        if (spec == null || !spec.isTextElement()) return;
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setTypeface(FontManager.bold(this));
+        paint.setTextSize(spec.textSizeSp * getResources().getDisplayMetrics().scaledDensity);
+        String value = spec.labelText == null || spec.labelText.isEmpty() ? "文本" : spec.labelText;
+        Paint.FontMetrics fm = paint.getFontMetrics();
+        float outline = spec.textStrokeEnabled ? dp(spec.textStrokeWidthDp) : 0f;
+        float widthPx = paint.measureText(value) + dp(14) + outline * 2f;
+        float heightPx = (fm.bottom - fm.top) + dp(10) + outline * 2f;
+        float density = Math.max(0.1f, getResources().getDisplayMetrics().density);
+        spec.widthDp = clamp(Math.round(widthPx / density), 40, 560);
+        spec.heightDp = clamp(Math.round(heightPx / density), 28, 180);
+    }
+
     private void createControl(SuperCustomControlSpec spec) {
+        if (spec != null && spec.isTextElement()) fitTextBounds(spec);
         SuperCustomControlView view = new SuperCustomControlView(this);
         view.setInteractivePreview(false);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(spec.widthDp), dp(spec.heightDp));
@@ -1624,6 +1873,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (idleActionPanel != null) idleActionPanel.setVisibility(View.GONE);
         if (addButton != null) addButton.setVisibility(View.GONE);
         if (floatingMediaButton != null) floatingMediaButton.setVisibility(View.GONE);
+        if (textButton != null) textButton.setVisibility(View.GONE);
         if (selectionGuide != null) selectionGuide.setVisibility(View.VISIBLE);
         updateSelectionPanel();
         updateSelectionGuides();
@@ -1640,6 +1890,7 @@ public final class SuperCustomDisplayActivity extends Activity {
         }
         if (addButton != null) addButton.setVisibility(View.VISIBLE);
         if (floatingMediaButton != null) floatingMediaButton.setVisibility(View.VISIBLE);
+        if (textButton != null) textButton.setVisibility(View.VISIBLE);
         finishCapture();
     }
 
@@ -1649,12 +1900,18 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (idleActionPanel != null && idleActionPanel.getVisibility() == View.VISIBLE) idleActionPanel.bringToFront();
         if (addButton != null && addButton.getVisibility() == View.VISIBLE) addButton.bringToFront();
         if (floatingMediaButton != null && floatingMediaButton.getVisibility() == View.VISIBLE) floatingMediaButton.bringToFront();
+        if (textButton != null && textButton.getVisibility() == View.VISIBLE) textButton.bringToFront();
         if (capturePrompt != null && capturePrompt.getVisibility() == View.VISIBLE) capturePrompt.bringToFront();
     }
 
     private void updateSelectionPanel() {
         if (selectedBinding == null) return;
-        selectedKeyValue.setText(InputBinding.label(selectedBinding.spec.keyCode));
+        if (selectedBinding.spec.isTextElement()) {
+            String text = selectedBinding.spec.labelText == null ? "" : selectedBinding.spec.labelText;
+            selectedKeyValue.setText(getString(R.string.super_custom_selected_text_value, text));
+        } else {
+            selectedKeyValue.setText(InputBinding.label(selectedBinding.spec.keyCode));
+        }
         selectedXValue.setText(String.valueOf(selectedBinding.spec.centerXPx));
         selectedYValue.setText(String.valueOf(selectedBinding.spec.centerYPx));
     }
@@ -1767,7 +2024,7 @@ public final class SuperCustomDisplayActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         block.addView(header, wrapParams(0));
 
-        SeekBar seek = new SeekBar(this);
+        SeekBar seek = new LagSeekBar(this);
         seek.setMin(min);
         seek.setMax(max);
         seek.setProgress(initial);
@@ -1831,7 +2088,7 @@ public final class SuperCustomDisplayActivity extends Activity {
     }
 
     private Spinner choiceSpinner(String[] items) {
-        Spinner spinner = new Spinner(this);
+        Spinner spinner = new AnimatedChoiceSpinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
                 android.R.layout.simple_spinner_item, items) {
             @Override public View getView(int position, View convertView, ViewGroup parent) {
@@ -1847,7 +2104,12 @@ public final class SuperCustomDisplayActivity extends Activity {
         spinner.setPadding(0, 0, 0, 0);
         spinner.setBackground(UiChrome.controlRipple(this));
         spinner.setPopupBackgroundDrawable(UiChrome.popupSurface(this));
-        spinner.setDropDownVerticalOffset(dp(4));
+        spinner.setDropDownHorizontalOffset(0);
+        spinner.setDropDownVerticalOffset(0);
+        spinner.post(() -> {
+            if (spinner.getWidth() > 0) spinner.setDropDownWidth(spinner.getWidth());
+        });
+        UiMotion.bindPressFeedback(spinner);
         return spinner;
     }
 
@@ -1868,7 +2130,7 @@ public final class SuperCustomDisplayActivity extends Activity {
     }
 
     private Switch themedSwitch(int textRes) {
-        Switch sw = new Switch(this);
+        Switch sw = new MotionSwitch(this);
         sw.setText(textRes);
         sw.setTextColor(UiPalette.textPrimary(this));
         sw.setTextSize(14f);
@@ -1924,53 +2186,22 @@ public final class SuperCustomDisplayActivity extends Activity {
                 .show();
     }
 
-    private void showColorEditor(int initial, ColorCallback callback) {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(8), dp(18), 0);
+    private void showColorEditor(int initial, String encoded, MultiColorCallback callback) {
+        int[] initialColors = ColorSequence.decode(encoded, initial);
+        MultiColorPickerDialog.show(this, getString(R.string.super_custom_color_title), initialColors,
+                callback::onColors);
+    }
 
-        int[] channels = new int[]{Color.red(initial), Color.green(initial), Color.blue(initial)};
-        TextView preview = new TextView(this);
-        preview.setGravity(Gravity.CENTER);
-        preview.setTextSize(12f);
-        preview.setTextColor(UiPalette.textPrimary(this));
-        preview.setPadding(dp(8), dp(10), dp(8), dp(10));
-        root.addView(preview, wrapParams(dp(8)));
-
-        String[] names = new String[]{"R", "G", "B"};
-        for (int i = 0; i < 3; i++) {
-            final int index = i;
-            TextView label = new TextView(this);
-            label.setTextColor(UiPalette.textSecondary(this));
-            label.setTextSize(12f);
-            root.addView(label, wrapParams(0));
-            SeekBar bar = new SeekBar(this);
-            bar.setMax(255);
-            bar.setProgress(channels[i]);
-            tintSeekBar(bar);
-            root.addView(bar, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
-            Runnable updateLabel = () -> label.setText(names[index] + "  " + channels[index]);
-            updateLabel.run();
-            bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                    channels[index] = progress;
-                    updateLabel.run();
-                    updateColorPreview(preview, channels);
-                }
-                @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-                @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-            });
+    private android.graphics.drawable.GradientDrawable sequenceDrawable(String encoded, int fallback) {
+        int[] colors = ColorSequence.decode(encoded, fallback);
+        android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
+        drawable.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        if (colors.length == 1) drawable.setColor(colors[0]);
+        else {
+            drawable.setOrientation(android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT);
+            drawable.setColors(colors);
         }
-        updateColorPreview(preview, channels);
-
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.super_custom_color_title)
-                .setView(root)
-                .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton(android.R.string.ok, (dialog, which) ->
-                        callback.onColor(Color.rgb(channels[0], channels[1], channels[2])))
-                .show();
+        return drawable;
     }
 
     private void updateColorPreview(TextView preview, int[] channels) {
@@ -2251,6 +2482,6 @@ public final class SuperCustomDisplayActivity extends Activity {
         }
     }
 
-    private interface ColorCallback { void onColor(int color); }
+    private interface MultiColorCallback { void onColors(int[] colors); }
     private interface TextCallback { void onText(String value); }
 }

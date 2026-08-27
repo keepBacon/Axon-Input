@@ -24,17 +24,49 @@ public final class OverlayState {
     public static final int DPS_TARGET_MOUSE_BACK = 0x10003;
     public static final int DPS_TARGET_MOUSE_FORWARD = 0x10004;
     public static final int DPS_TARGET_GAMEPAD_BASE = 0x20000; // legacy v1.6 encoding
+    public static final int HIDE_DISPLAY_NONE = 0;
+    public static final int HIDE_DISPLAY_KEYBOARD = 1;
+    public static final int HIDE_DISPLAY_FULL_KEYBOARD = 2;
+    public static final int HIDE_DISPLAY_MOUSE = 3;
+    public static final int HIDE_DISPLAY_KEYBOARD_CAT = 4;
+    public static final int HIDE_DISPLAY_KEY_PROMPT = 5;
+    public static final int HIDE_DISPLAY_MOUSE_TRAJECTORY = 6;
+    public static final int HIDE_DISPLAY_CUSTOM = 7;
+    public static final int HIDE_DISPLAY_SUPER_CUSTOM = 8;
+    public static final int HIDE_DISPLAY_TOUCH = 9;
+    public static final int HIDE_DISPLAY_DPS = 10;
+    public static final int HIDE_DISPLAY_GAMEPAD_LEFT_STICK = 11;
+    public static final int HIDE_DISPLAY_GAMEPAD_RIGHT_STICK = 12;
+    public static final int HIDE_DISPLAY_GAMEPAD_FACE = 13;
+    public static final int HIDE_DISPLAY_GAMEPAD_DPAD = 14;
+    public static final int HIDE_DISPLAY_GAMEPAD_LEFT_SHOULDER = 15;
+    public static final int HIDE_DISPLAY_GAMEPAD_RIGHT_SHOULDER = 16;
+    public static final int HIDE_DISPLAY_GAMEPAD_BACK = 17;
     private static final int DPS_TARGET_GAMEPAD_EXT_BASE = 0x02000000;
     private static final String DURABLE_PREFS = "key_display_durable";
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_MOUSE_ENABLED = "mouse_enabled";
     private static final String KEY_KEYBOARD_CAT_ENABLED = "keyboard_cat_enabled";
+    private static final String KEY_LIVE2D_ENABLED = "live2d_display_enabled";
+    private static final String KEY_LIVE2D_SIZE = "live2d_display_size";
+    private static final String KEY_LIVE2D_MOTION_TRACKING = "live2d_motion_tracking_enabled";
+    private static final String KEY_LIVE2D_MOUSE_CAPTURE = "live2d_mouse_capture_enabled";
+    private static final String KEY_LIVE2D_HIDE_WATERMARK = "live2d_hide_watermark";
+    // Normalized Live2D visual offset, stored as thousandths of half-screen width/height.
+    // This moves only the model inside the full-screen renderer; the accessibility window itself
+    // remains full-display so Cubism can keep its existing projection/canvas sizing.
+    private static final String KEY_LIVE2D_OFFSET_X = "live2d_display_offset_x_milli";
+    private static final String KEY_LIVE2D_OFFSET_Y = "live2d_display_offset_y_milli";
     private static final String KEY_KEYBOARD_CAT_MOUSE_MODE = "keyboard_cat_mouse_mode";
     private static final String KEY_KEYBOARD_CAT_GLOBAL_REVERSE = "keyboard_cat_global_reverse";
     private static final String KEY_KEYBOARD_CAT_STYLE_ID = "keyboard_cat_style_id";
     private static final String KEY_KEYBOARD_CAT_DEBUG_EXPRESSION = "keyboard_cat_debug_expression";
     private static final String KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_KEY_CODE = "keyboard_cat_expression_hotkey_key_code";
     private static final String KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_SELECTION_PREFIX = "keyboard_cat_expression_hotkey_selection_";
+    private static final String KEY_HIDE_DISPLAY_HOTKEY_ENABLED = "hide_display_hotkey_enabled";
+    private static final String KEY_HIDE_DISPLAY_HOTKEY_INPUT = "hide_display_hotkey_input";
+    private static final String KEY_HIDE_DISPLAY_HOTKEY_TARGETS = "hide_display_hotkey_targets";
+    private static final String KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS = "hide_display_hotkey_hidden_targets";
     private static final String KEY_INPUT_FULL_KEYBOARD_ENABLED = "input_full_keyboard_enabled";
     private static final String KEY_KEY_PROMPT_ENABLED = "key_prompt_enabled";
     private static final String KEY_MOUSE_TRAJECTORY_ENABLED = "mouse_trajectory_enabled";
@@ -159,6 +191,7 @@ public final class OverlayState {
     private static final String KEY_GAMEPAD_LEFT_STICK_SHAPE = "gamepad_left_stick_shape";
     private static final String KEY_GAMEPAD_RIGHT_STICK_SHAPE = "gamepad_right_stick_shape";
     private static final String KEY_GAMEPAD_FACE_REVERSED = "gamepad_face_reversed";
+    private static final String KEY_GAMEPAD_FACE_SYMBOL_ICONS = "gamepad_face_symbol_icons";
     private static final String KEY_GAMEPAD_LEFT_STICK_SIZE = "gamepad_left_stick_size";
     private static final String KEY_GAMEPAD_RIGHT_STICK_SIZE = "gamepad_right_stick_size";
     private static final String KEY_GAMEPAD_LEFT_STICK_DOT_SIZE = "gamepad_left_stick_dot_size";
@@ -221,19 +254,19 @@ public final class OverlayState {
     private static final int DEFAULT_GAMEPAD_DPAD_Y = 42;
     private static final int DEFAULT_COLUMNS = 4;
     private static final int MIN_COLUMNS = 1;
-    private static final int MAX_COLUMNS = 8;
+    private static final int MAX_COLUMNS = 12;
     private static final int MAX_CUSTOM_KEYS = 64;
     private static final int DEFAULT_SIZE = 100;
     private static final int DEFAULT_KEYBOARD_SPACING = 8;
     private static final int DEFAULT_CUSTOM_SPACING = 6;
     private static final int DEFAULT_GAMEPAD_FACE_SPACING = 8;
     private static final int MIN_KEY_SPACING = 0;
-    private static final int MAX_KEY_SPACING = 16;
+    private static final int MAX_KEY_SPACING = 40;
     private static final int DEFAULT_OPACITY = 100;
     private static final int DEFAULT_MOUSE_TRAJECTORY_LEFT_COLOR = 0xffff3b30;
     private static final int DEFAULT_MOUSE_TRAJECTORY_RIGHT_COLOR = 0xff34c759;
-    private static final int MIN_SIZE = 50;
-    private static final int MAX_SIZE = 150;
+    private static final int MIN_SIZE = 25;
+    private static final int MAX_SIZE = 300;
 
     private OverlayState() {}
 
@@ -366,6 +399,164 @@ public final class OverlayState {
     private static String keyboardCatExpressionSelectionKey(String styleId) {
         String value = styleId == null || styleId.isEmpty() ? BongoCatStyleManager.BUILTIN_ID : styleId;
         return KEY_KEYBOARD_CAT_EXPRESSION_HOTKEY_SELECTION_PREFIX + value;
+    }
+
+    public static boolean isHideDisplayHotkeyEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_HIDE_DISPLAY_HOTKEY_ENABLED, false);
+    }
+
+    public static void setHideDisplayHotkeyEnabled(Context context, boolean enabled) {
+        SharedPreferences values = prefs(context);
+        boolean current = values.getBoolean(KEY_HIDE_DISPLAY_HOTKEY_ENABLED, false);
+        if (current == enabled) return;
+        SharedPreferences.Editor editor = values.edit().putBoolean(KEY_HIDE_DISPLAY_HOTKEY_ENABLED, enabled);
+        if (!enabled) editor.remove(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS);
+        editor.apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static int getHideDisplayHotkeyInputCode(Context context) {
+        return prefs(context).getInt(KEY_HIDE_DISPLAY_HOTKEY_INPUT, -1);
+    }
+
+    public static void setHideDisplayHotkeyInputCode(Context context, int inputCode) {
+        SharedPreferences values = prefs(context);
+        int next = InputBinding.isValid(inputCode) ? inputCode : -1;
+        int current = values.getInt(KEY_HIDE_DISPLAY_HOTKEY_INPUT, -1);
+        if (current == next) return;
+        SharedPreferences.Editor editor = values.edit();
+        if (next >= 0) editor.putInt(KEY_HIDE_DISPLAY_HOTKEY_INPUT, next);
+        else editor.remove(KEY_HIDE_DISPLAY_HOTKEY_INPUT);
+        editor.apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static Set<Integer> getHideDisplayHotkeyTargets(Context context) {
+        return decodeHideDisplayTargets(prefs(context).getStringSet(KEY_HIDE_DISPLAY_HOTKEY_TARGETS, null));
+    }
+
+    public static void setHideDisplayHotkeyTargets(Context context, Set<Integer> targets) {
+        LinkedHashSet<Integer> clean = new LinkedHashSet<>();
+        if (targets != null) {
+            for (Integer target : targets) {
+                if (target != null && isKnownHideDisplayTarget(target)
+                        && isHideDisplayTargetEnabled(context, target)) clean.add(target);
+            }
+        }
+        Set<Integer> current = getHideDisplayHotkeyTargets(context);
+        if (current.equals(clean)) return;
+        SharedPreferences.Editor editor = prefs(context).edit();
+        if (clean.isEmpty()) editor.remove(KEY_HIDE_DISPLAY_HOTKEY_TARGETS);
+        else editor.putStringSet(KEY_HIDE_DISPLAY_HOTKEY_TARGETS, encodeHideDisplayTargets(clean));
+        Set<Integer> hidden = getHiddenDisplayHotkeyTargets(context);
+        hidden.retainAll(clean);
+        if (hidden.isEmpty()) editor.remove(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS);
+        else editor.putStringSet(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS, encodeHideDisplayTargets(hidden));
+        editor.apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static Set<Integer> getHiddenDisplayHotkeyTargets(Context context) {
+        return decodeHideDisplayTargets(prefs(context).getStringSet(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS, null));
+    }
+
+    public static boolean isHideDisplayTargetHidden(Context context, int target) {
+        return target != HIDE_DISPLAY_NONE && getHiddenDisplayHotkeyTargets(context).contains(target);
+    }
+
+    /** Toggle all selected overlay windows together; feature enable switches remain untouched. */
+    public static boolean toggleHideDisplayTargets(Context context) {
+        if (!isHideDisplayHotkeyEnabled(context)) return false;
+        LinkedHashSet<Integer> selected = new LinkedHashSet<>(getHideDisplayHotkeyTargets(context));
+        selected.removeIf(target -> !isHideDisplayTargetEnabled(context, target));
+        if (selected.isEmpty()) return false;
+        LinkedHashSet<Integer> hidden = new LinkedHashSet<>(getHiddenDisplayHotkeyTargets(context));
+        boolean allHidden = hidden.containsAll(selected);
+        if (allHidden) hidden.removeAll(selected);
+        else hidden.addAll(selected);
+        SharedPreferences.Editor editor = prefs(context).edit();
+        if (hidden.isEmpty()) editor.remove(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS);
+        else editor.putStringSet(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS, encodeHideDisplayTargets(hidden));
+        editor.apply();
+        AxonInputAccessibilityService.refreshActiveService();
+        return !allHidden;
+    }
+
+    public static void clearHiddenDisplayHotkeyTargets(Context context) {
+        if (!prefs(context).contains(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS)) return;
+        prefs(context).edit().remove(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS).apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static boolean isHideDisplayTargetEnabled(Context context, int target) {
+        switch (target) {
+            case HIDE_DISPLAY_KEYBOARD: return isEnabled(context);
+            case HIDE_DISPLAY_FULL_KEYBOARD: return isInputFullKeyboardEnabled(context);
+            case HIDE_DISPLAY_MOUSE: return isMouseEnabled(context);
+            case HIDE_DISPLAY_KEYBOARD_CAT: return isKeyboardCatEnabled(context);
+            case HIDE_DISPLAY_KEY_PROMPT: return isKeyPromptEnabled(context);
+            case HIDE_DISPLAY_MOUSE_TRAJECTORY: return isMouseTrajectoryEnabled(context);
+            case HIDE_DISPLAY_CUSTOM: return isCustomEnabled(context);
+            case HIDE_DISPLAY_SUPER_CUSTOM: return isSuperCustomEnabled(context);
+            case HIDE_DISPLAY_TOUCH: return TouchDisplayStore.isEnabled(context);
+            case HIDE_DISPLAY_DPS: return isDpsEnabled(context);
+            case HIDE_DISPLAY_GAMEPAD_LEFT_STICK: return isGamepadLeftStickEnabled(context);
+            case HIDE_DISPLAY_GAMEPAD_RIGHT_STICK: return isGamepadRightStickEnabled(context);
+            case HIDE_DISPLAY_GAMEPAD_FACE: return isGamepadFaceEnabled(context);
+            case HIDE_DISPLAY_GAMEPAD_DPAD: return isGamepadDpadEnabled(context);
+            case HIDE_DISPLAY_GAMEPAD_LEFT_SHOULDER: return isGamepadLeftShoulderEnabled(context);
+            case HIDE_DISPLAY_GAMEPAD_RIGHT_SHOULDER: return isGamepadRightShoulderEnabled(context);
+            case HIDE_DISPLAY_GAMEPAD_BACK: return isGamepadBackEnabled(context);
+            default: return false;
+        }
+    }
+
+    public static List<Integer> getEnabledHideDisplayTargets(Context context) {
+        ArrayList<Integer> targets = new ArrayList<>();
+        for (int target = HIDE_DISPLAY_KEYBOARD; target <= HIDE_DISPLAY_GAMEPAD_BACK; target++) {
+            if (isHideDisplayTargetEnabled(context, target)) targets.add(target);
+        }
+        return targets;
+    }
+
+    /** Remove selection/hidden flags for displays that have since been switched off. */
+    public static void sanitizeHiddenDisplayHotkeyTargets(Context context) {
+        Set<Integer> selected = getHideDisplayHotkeyTargets(context);
+        LinkedHashSet<Integer> validSelected = new LinkedHashSet<>();
+        for (int target : selected) if (isHideDisplayTargetEnabled(context, target)) validSelected.add(target);
+        Set<Integer> hidden = getHiddenDisplayHotkeyTargets(context);
+        LinkedHashSet<Integer> validHidden = new LinkedHashSet<>();
+        for (int target : hidden) if (validSelected.contains(target)) validHidden.add(target);
+        if (selected.equals(validSelected) && hidden.equals(validHidden)) return;
+        SharedPreferences.Editor editor = prefs(context).edit();
+        if (validSelected.isEmpty()) editor.remove(KEY_HIDE_DISPLAY_HOTKEY_TARGETS);
+        else editor.putStringSet(KEY_HIDE_DISPLAY_HOTKEY_TARGETS, encodeHideDisplayTargets(validSelected));
+        if (validHidden.isEmpty()) editor.remove(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS);
+        else editor.putStringSet(KEY_HIDE_DISPLAY_HOTKEY_HIDDEN_TARGETS, encodeHideDisplayTargets(validHidden));
+        editor.apply();
+    }
+
+    private static LinkedHashSet<Integer> decodeHideDisplayTargets(Set<String> stored) {
+        LinkedHashSet<Integer> out = new LinkedHashSet<>();
+        if (stored == null) return out;
+        for (String raw : stored) {
+            try {
+                int target = Integer.parseInt(raw);
+                if (isKnownHideDisplayTarget(target)) out.add(target);
+            } catch (Throwable ignored) {
+            }
+        }
+        return out;
+    }
+
+    private static LinkedHashSet<String> encodeHideDisplayTargets(Set<Integer> targets) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        if (targets != null) for (Integer target : targets) if (target != null) out.add(String.valueOf(target));
+        return out;
+    }
+
+    private static boolean isKnownHideDisplayTarget(int target) {
+        return target >= HIDE_DISPLAY_KEYBOARD && target <= HIDE_DISPLAY_GAMEPAD_BACK;
     }
 
     public static boolean isKeyPromptEnabled(Context context) {
@@ -605,9 +796,85 @@ public final class OverlayState {
                 || isGamepadBackEnabled(context);
     }
 
+    public static boolean isLive2DEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_LIVE2D_ENABLED, false);
+    }
+
+    public static void setLive2DEnabled(Context context, boolean enabled) {
+        if (PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_LIVE2D_ENABLED, enabled)) {
+            AxonInputAccessibilityService.refreshActiveService();
+        }
+    }
+
+    public static int getLive2DSize(Context context) {
+        int value = prefs(context).getInt(KEY_LIVE2D_SIZE, 100);
+        return Math.max(25, Math.min(400, value));
+    }
+
+    public static void setLive2DSize(Context context, int percent) {
+        int value = Math.max(25, Math.min(400, percent));
+        if (PreferenceWriter.putIntIfChanged(prefs(context), KEY_LIVE2D_SIZE, value)) {
+            AxonInputAccessibilityService.refreshLive2DSize();
+        }
+    }
+
+    public static boolean isLive2DMotionTrackingEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_LIVE2D_MOTION_TRACKING, false);
+    }
+
+    public static void setLive2DMotionTrackingEnabled(Context context, boolean enabled) {
+        PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_LIVE2D_MOTION_TRACKING, enabled);
+        if (!enabled) Live2DMotionTracker.clear();
+    }
+
+    public static boolean isLive2DMouseCaptureEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_LIVE2D_MOUSE_CAPTURE, false);
+    }
+
+    public static void setLive2DMouseCaptureEnabled(Context context, boolean enabled) {
+        if (PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_LIVE2D_MOUSE_CAPTURE, enabled)) {
+            if (!enabled) Live2DMouseTracker.clear();
+            AxonInputAccessibilityService.refreshActiveService();
+        }
+    }
+
+
+    public static boolean isLive2DHideWatermarkEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_LIVE2D_HIDE_WATERMARK, true);
+    }
+
+    public static void setLive2DHideWatermarkEnabled(Context context, boolean enabled) {
+        if (PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_LIVE2D_HIDE_WATERMARK, enabled)) {
+            AxonInputAccessibilityService.refreshLive2DWatermark();
+        }
+    }
+
+    public static float getLive2DOffsetX(Context context) {
+        return clampLive2DOffset(prefs(context).getInt(KEY_LIVE2D_OFFSET_X, 0) / 1000f);
+    }
+
+    public static float getLive2DOffsetY(Context context) {
+        return clampLive2DOffset(prefs(context).getInt(KEY_LIVE2D_OFFSET_Y, 0) / 1000f);
+    }
+
+    /** Persist drag position without triggering a full overlay rebuild on every gesture end. */
+    public static void saveLive2DOffset(Context context, float x, float y) {
+        int ix = Math.round(clampLive2DOffset(x) * 1000f);
+        int iy = Math.round(clampLive2DOffset(y) * 1000f);
+        SharedPreferences values = prefs(context);
+        if (values.getInt(KEY_LIVE2D_OFFSET_X, Integer.MIN_VALUE) == ix
+                && values.getInt(KEY_LIVE2D_OFFSET_Y, Integer.MIN_VALUE) == iy) return;
+        values.edit().putInt(KEY_LIVE2D_OFFSET_X, ix).putInt(KEY_LIVE2D_OFFSET_Y, iy).apply();
+    }
+
+    private static float clampLive2DOffset(float value) {
+        // Keep a usable part of the model inside the display so drag mode can always recover it.
+        return Math.max(-0.90f, Math.min(0.90f, value));
+    }
+
     public static boolean isAnyDisplayEnabled(Context context) {
         return isEnabled(context) || isInputFullKeyboardEnabled(context) || isMouseEnabled(context)
-                || isKeyboardCatEnabled(context) || isKeyPromptEnabled(context)
+                || isKeyboardCatEnabled(context) || isLive2DEnabled(context) || isKeyPromptEnabled(context)
                 || isCustomEnabled(context) || isSuperCustomEnabled(context) || TouchDisplayStore.isEnabled(context)
                 || isMouseTrajectoryEnabled(context)
                 || isDpsEnabled(context) || isAnyGamepadDisplayEnabled(context);
@@ -649,6 +916,37 @@ public final class OverlayState {
     /** 根任务退出时清理运行配置。手动保存配置和密码授权不删除。 */
     public static void endAppSession(Context context) {
         prefs(context).edit().clear().commit();
+        Live2DMotionTrackingService.stop(context);
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    /**
+     * Live2D is explicitly allowed to outlive the Activity task. Preserve only the Live2D
+     * runtime controls (plus the global drag toggle used to move it) while clearing every other
+     * session-only display/input setting. This keeps the old task-exit cleanup semantics for the
+     * rest of Axon instead of accidentally leaving all overlays active.
+     */
+    public static void endAppSessionPreservingLive2D(Context context) {
+        SharedPreferences values = prefs(context);
+        boolean enabled = values.getBoolean(KEY_LIVE2D_ENABLED, false);
+        int size = values.getInt(KEY_LIVE2D_SIZE, 100);
+        boolean motion = values.getBoolean(KEY_LIVE2D_MOTION_TRACKING, false);
+        boolean mouse = values.getBoolean(KEY_LIVE2D_MOUSE_CAPTURE, false);
+        boolean hideWatermark = values.getBoolean(KEY_LIVE2D_HIDE_WATERMARK, true);
+        int offsetX = values.getInt(KEY_LIVE2D_OFFSET_X, 0);
+        int offsetY = values.getInt(KEY_LIVE2D_OFFSET_Y, 0);
+        boolean drag = values.getBoolean(KEY_DRAG_ENABLED, false);
+
+        values.edit().clear()
+                .putBoolean(KEY_LIVE2D_ENABLED, enabled)
+                .putInt(KEY_LIVE2D_SIZE, size)
+                .putBoolean(KEY_LIVE2D_MOTION_TRACKING, motion)
+                .putBoolean(KEY_LIVE2D_MOUSE_CAPTURE, mouse)
+                .putBoolean(KEY_LIVE2D_HIDE_WATERMARK, hideWatermark)
+                .putInt(KEY_LIVE2D_OFFSET_X, offsetX)
+                .putInt(KEY_LIVE2D_OFFSET_Y, offsetY)
+                .putBoolean(KEY_DRAG_ENABLED, drag)
+                .commit();
         AxonInputAccessibilityService.refreshActiveService();
     }
 
@@ -843,20 +1141,68 @@ public final class OverlayState {
         setBooleanAndRefresh(context, KEY_MOUSE_TRAJECTORY_RIGHT_COLOR_ENABLED, enabled);
     }
 
+    private static String colorSequenceKey(String baseKey) {
+        return baseKey + "_colors";
+    }
+
+    private static int[] getColorSequence(Context context, String baseKey, int fallback) {
+        SharedPreferences values = prefs(context);
+        int legacy = values.getInt(baseKey, fallback);
+        return ColorSequence.decode(values.getString(colorSequenceKey(baseKey), null), legacy);
+    }
+
+    private static int getAnimatedColor(Context context, String baseKey, int fallback) {
+        return ColorSequence.current(getColorSequence(context, baseKey, fallback));
+    }
+
+    private static void setColorSequence(Context context, String baseKey, int[] colors, int fallback) {
+        int[] normalized = ColorSequence.normalize(colors, fallback);
+        SharedPreferences values = prefs(context);
+        values.edit()
+                .putInt(baseKey, normalized[0])
+                .putString(colorSequenceKey(baseKey), ColorSequence.encode(normalized, fallback))
+                .apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    public static boolean hasAnimatedColors(Context context) {
+        SharedPreferences values = prefs(context);
+        for (String key : values.getAll().keySet()) {
+            if (key.endsWith("_colors") && ColorSequence.animated(values.getString(key, null))) return true;
+        }
+        return false;
+    }
+
     public static int getMouseTrajectoryLeftColor(Context context) {
-        return prefs(context).getInt(KEY_MOUSE_TRAJECTORY_LEFT_COLOR, DEFAULT_MOUSE_TRAJECTORY_LEFT_COLOR);
+        return getAnimatedColor(context, KEY_MOUSE_TRAJECTORY_LEFT_COLOR, DEFAULT_MOUSE_TRAJECTORY_LEFT_COLOR);
+    }
+
+    public static int[] getMouseTrajectoryLeftColors(Context context) {
+        return getColorSequence(context, KEY_MOUSE_TRAJECTORY_LEFT_COLOR, DEFAULT_MOUSE_TRAJECTORY_LEFT_COLOR);
     }
 
     public static void setMouseTrajectoryLeftColor(Context context, int color) {
-        setIntAndRefresh(context, KEY_MOUSE_TRAJECTORY_LEFT_COLOR, 0xff000000 | (color & 0x00ffffff));
+        setMouseTrajectoryLeftColors(context, new int[]{color});
+    }
+
+    public static void setMouseTrajectoryLeftColors(Context context, int[] colors) {
+        setColorSequence(context, KEY_MOUSE_TRAJECTORY_LEFT_COLOR, colors, DEFAULT_MOUSE_TRAJECTORY_LEFT_COLOR);
     }
 
     public static int getMouseTrajectoryRightColor(Context context) {
-        return prefs(context).getInt(KEY_MOUSE_TRAJECTORY_RIGHT_COLOR, DEFAULT_MOUSE_TRAJECTORY_RIGHT_COLOR);
+        return getAnimatedColor(context, KEY_MOUSE_TRAJECTORY_RIGHT_COLOR, DEFAULT_MOUSE_TRAJECTORY_RIGHT_COLOR);
+    }
+
+    public static int[] getMouseTrajectoryRightColors(Context context) {
+        return getColorSequence(context, KEY_MOUSE_TRAJECTORY_RIGHT_COLOR, DEFAULT_MOUSE_TRAJECTORY_RIGHT_COLOR);
     }
 
     public static void setMouseTrajectoryRightColor(Context context, int color) {
-        setIntAndRefresh(context, KEY_MOUSE_TRAJECTORY_RIGHT_COLOR, 0xff000000 | (color & 0x00ffffff));
+        setMouseTrajectoryRightColors(context, new int[]{color});
+    }
+
+    public static void setMouseTrajectoryRightColors(Context context, int[] colors) {
+        setColorSequence(context, KEY_MOUSE_TRAJECTORY_RIGHT_COLOR, colors, DEFAULT_MOUSE_TRAJECTORY_RIGHT_COLOR);
     }
 
     public static int getGamepadLeftStickShape(Context context) {
@@ -899,6 +1245,14 @@ public final class OverlayState {
 
     public static void setGamepadFaceReversed(Context context, boolean reversed) {
         setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_REVERSED, reversed);
+    }
+
+    public static boolean isGamepadFaceSymbolIcons(Context context) {
+        return prefs(context).getBoolean(KEY_GAMEPAD_FACE_SYMBOL_ICONS, false);
+    }
+
+    public static void setGamepadFaceSymbolIcons(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_GAMEPAD_FACE_SYMBOL_ICONS, enabled);
     }
 
     public static int getGamepadDisplaySize(Context context, int displayType) {
@@ -1046,7 +1400,13 @@ public final class OverlayState {
         String key = keyBaseColorKey(displayType);
         int fallback = defaultKeyBaseColor(context, displayType);
         if (key == null) return fallback;
-        return 0xff000000 | (prefs(context).getInt(key, fallback) & 0x00ffffff);
+        return getAnimatedColor(context, key, fallback);
+    }
+
+    public static int[] getKeyBaseColors(Context context, int displayType) {
+        String key = keyBaseColorKey(displayType);
+        int fallback = defaultKeyBaseColor(context, displayType);
+        return key == null ? new int[]{fallback} : getColorSequence(context, key, fallback);
     }
 
     private static int defaultKeyBaseColor(Context context, int displayType) {
@@ -1061,50 +1421,79 @@ public final class OverlayState {
     }
 
     public static void setKeyBaseColor(Context context, int displayType, int color) {
+        setKeyBaseColors(context, displayType, new int[]{color});
+    }
+
+    public static void setKeyBaseColors(Context context, int displayType, int[] colors) {
         String key = keyBaseColorKey(displayType);
         if (key == null) return;
-        setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
+        setColorSequence(context, key, colors, defaultKeyBaseColor(context, displayType));
     }
 
     public static int getKeyBorderColor(Context context, int displayType) {
         String key = keyBorderColorKey(displayType);
         int fallback = UiPalette.overlayStroke(context);
         if (key == null) return fallback;
-        int stored = prefs(context).getInt(key, fallback & 0x00ffffff);
-        // Border opacity is controlled separately by the stroke-opacity setting. Keep the
-        // palette's restrained base alpha so changing hue does not turn every key into a hard outline.
+        int stored = getAnimatedColor(context, key, fallback);
         return android.graphics.Color.argb(android.graphics.Color.alpha(fallback),
                 android.graphics.Color.red(stored),
                 android.graphics.Color.green(stored),
                 android.graphics.Color.blue(stored));
     }
 
+    public static int[] getKeyBorderColors(Context context, int displayType) {
+        String key = keyBorderColorKey(displayType);
+        int fallback = UiPalette.overlayStroke(context);
+        return key == null ? new int[]{fallback} : getColorSequence(context, key, fallback);
+    }
+
     public static void setKeyBorderColor(Context context, int displayType, int color) {
+        setKeyBorderColors(context, displayType, new int[]{color});
+    }
+
+    public static void setKeyBorderColors(Context context, int displayType, int[] colors) {
         String key = keyBorderColorKey(displayType);
         if (key == null) return;
-        setIntAndRefresh(context, key, color & 0x00ffffff);
+        setColorSequence(context, key, colors, UiPalette.overlayStroke(context));
     }
 
     public static int getKeyPressColor(Context context, int displayType) {
         String key = keyPressColorKey(displayType);
-        if (key == null) return UiPalette.overlayKeyPressed(context);
-        return 0xff000000 | (prefs(context).getInt(key, UiPalette.overlayKeyPressed(context)) & 0x00ffffff);
+        int fallback = UiPalette.overlayKeyPressed(context);
+        if (key == null) return fallback;
+        return getAnimatedColor(context, key, fallback);
+    }
+
+    public static int[] getKeyPressColors(Context context, int displayType) {
+        String key = keyPressColorKey(displayType);
+        int fallback = UiPalette.overlayKeyPressed(context);
+        return key == null ? new int[]{fallback} : getColorSequence(context, key, fallback);
     }
 
     public static void setKeyPressColor(Context context, int displayType, int color) {
+        setKeyPressColors(context, displayType, new int[]{color});
+    }
+
+    public static void setKeyPressColors(Context context, int displayType, int[] colors) {
         String key = keyPressColorKey(displayType);
         if (key == null) return;
-        setIntAndRefresh(context, key, 0xff000000 | (color & 0x00ffffff));
+        setColorSequence(context, key, colors, UiPalette.overlayKeyPressed(context));
     }
 
     public static int getKeyboardTextColor(Context context) {
-        return 0xff000000 | (prefs(context).getInt(
-                KEY_KEYBOARD_TEXT_COLOR, UiPalette.overlayTextIdle(context)) & 0x00ffffff);
+        return getAnimatedColor(context, KEY_KEYBOARD_TEXT_COLOR, UiPalette.overlayTextIdle(context));
+    }
+
+    public static int[] getKeyboardTextColors(Context context) {
+        return getColorSequence(context, KEY_KEYBOARD_TEXT_COLOR, UiPalette.overlayTextIdle(context));
     }
 
     public static void setKeyboardTextColor(Context context, int color) {
-        setIntAndRefresh(context, KEY_KEYBOARD_TEXT_COLOR,
-                0xff000000 | (color & 0x00ffffff));
+        setKeyboardTextColors(context, new int[]{color});
+    }
+
+    public static void setKeyboardTextColors(Context context, int[] colors) {
+        setColorSequence(context, KEY_KEYBOARD_TEXT_COLOR, colors, UiPalette.overlayTextIdle(context));
     }
 
     private static String keyStyleKey(int displayType) {

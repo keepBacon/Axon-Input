@@ -423,7 +423,7 @@ public final class SensitivityProxyController {
     }
 
     private int clamp(int value) {
-        return Math.max(1, Math.min(500, value));
+        return Math.max(1, Math.min(1000, value));
     }
 
     private String q(String value) {

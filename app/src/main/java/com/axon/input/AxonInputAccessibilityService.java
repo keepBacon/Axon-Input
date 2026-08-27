@@ -1,5 +1,6 @@
 package com.axon.input;
 
+import android.annotation.SuppressLint;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Intent;
@@ -16,6 +17,7 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.View;
 import android.view.WindowManager;
@@ -74,6 +76,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private static final int FULL_KEYBOARD_MAX_WIDTH_DP = 720;
     private static final int FULL_KEYBOARD_MIN_HEIGHT_DP = 150;
     private static final int FULL_KEYBOARD_MAX_HEIGHT_DP = 260;
+    // Keep a safe native render buffer below the old 50% minimum. The visible content may
+    // still scale to 25%, but strokes, CPS text and press motion are no longer clipped by a
+    // WindowManager surface that became too small to contain them.
+    private static final int MIN_OVERLAY_RENDER_BUFFER_PERCENT = 50;
     private static final int[] GAMEPAD_CPS_PRIORITY = {
             GamepadOverlayView.BTN_SOUTH, GamepadOverlayView.BTN_EAST,
             GamepadOverlayView.BTN_WEST, GamepadOverlayView.BTN_NORTH,
@@ -119,6 +125,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private Vader5ProUsbMonitor vader5UsbMonitor;
     private SensitivityProxyController sensitivityController;
     private ForceHoldController forceHoldController;
+    private GamepadKeyMapper gamepadKeyMapper;
     private boolean mouseTickerRunning;
     private boolean mouseMonitorActive;
     private boolean touchMonitorActive;
@@ -193,6 +200,18 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private KeyboardCatOverlayView keyboardCatView;
     private WindowManager.LayoutParams keyboardCatParams;
     private boolean keyboardCatAttached;
+
+    private Live2DOverlayView live2dView;
+    private WindowManager.LayoutParams live2dParams;
+    private boolean live2dAttached;
+    private int live2dAttachRetryCount;
+    private View live2dDragHandle;
+    private WindowManager.LayoutParams live2dDragHandleParams;
+    private boolean live2dMouseCaptureEnabled;
+    private float live2dDragStartRawX;
+    private float live2dDragStartRawY;
+    private float live2dDragStartOffsetX;
+    private float live2dDragStartOffsetY;
     private boolean keyboardCatRemoving;
     private int keyboardCatAttachRetryCount;
     private float keyboardCatDragStartRawX;
@@ -264,6 +283,15 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             }
             pushDpsToViews(SystemClock.uptimeMillis());
             mainHandler.postDelayed(this, 100L);
+        }
+    };
+
+    private boolean colorTickerRunning;
+    private final Runnable colorTicker = new Runnable() {
+        @Override public void run() {
+            if (!colorTickerRunning) return;
+            refreshAnimatedDisplayColors();
+            mainHandler.postDelayed(this, 50L);
         }
     };
 
@@ -339,9 +367,100 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         service.requestSavedStateRefresh();
     }
 
+    /** Live2D size is a renderer-only parameter; do not rebuild every overlay while dragging it. */
+    public static void refreshLive2DSize() {
+        AxonInputAccessibilityService service = activeService;
+        if (service == null) return;
+        service.mainHandler.post(() -> {
+            if (service.live2dView != null && service.live2dAttached) {
+                service.live2dView.setDisplayScalePercent(OverlayState.getLive2DSize(service));
+                service.updateLive2DDragHandleLayout();
+            }
+        });
+    }
+
+    /** Watermark visibility is also renderer-only; update the active Live2D runtime in place. */
+    public static void refreshLive2DWatermark() {
+        AxonInputAccessibilityService service = activeService;
+        if (service == null) return;
+        service.mainHandler.post(() -> {
+            if (service.live2dView != null && service.live2dAttached) {
+                service.live2dView.setHideWatermark(OverlayState.isLive2DHideWatermarkEnabled(service));
+            }
+        });
+    }
+
+    /**
+     * Foreground/in-app and accessibility-overlay renderers are mutually exclusive.  This refresh
+     * intentionally bypasses the coalesced full saved-state queue: Activity onPause/onResume can
+     * otherwise race an already queued refresh and leave Live2D with no owner after app handoff.
+     */
+    public static void refreshLive2DOwnership() {
+        AxonInputAccessibilityService service = activeService;
+        if (service == null) return;
+        service.mainHandler.post(() ->
+                service.syncLive2DWindow(OverlayState.isLive2DEnabled(service)));
+    }
+
     private void requestSavedStateRefresh() {
+        ensureColorTicker();
         if (!savedStateRefreshScheduled.compareAndSet(false, true)) return;
         mainHandler.post(applySavedStateRunnable);
+    }
+
+    private void ensureColorTicker() {
+        if (!OverlayState.hasAnimatedColors(this)) {
+            colorTickerRunning = false;
+            mainHandler.removeCallbacks(colorTicker);
+            return;
+        }
+        if (colorTickerRunning) return;
+        colorTickerRunning = true;
+        mainHandler.post(colorTicker);
+    }
+
+    private void refreshAnimatedDisplayColors() {
+        refreshWindowColors(keyboardWindow);
+        refreshWindowColors(mouseWindow);
+        refreshWindowColors(customWindow);
+        refreshGamepadColors(faceWindow);
+        refreshGamepadColors(dpadWindow);
+        refreshGamepadColors(leftShoulderWindow);
+        refreshGamepadColors(rightShoulderWindow);
+        refreshGamepadColors(backWindow);
+        if (inputFullKeyboardView != null && inputFullKeyboardAttached) {
+            inputFullKeyboardView.setKeyAppearance(
+                    OverlayState.getKeyStyle(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD),
+                    OverlayState.getKeyPressColor(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD));
+            inputFullKeyboardView.setKeyBaseColor(OverlayState.getKeyBaseColor(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD));
+            inputFullKeyboardView.setKeyBorderColor(OverlayState.getKeyBorderColor(this, FullKeyboardOverlayView.DISPLAY_FULL_KEYBOARD));
+        }
+        if (keyPromptView != null && keyPromptAttached) {
+            keyPromptView.setKeyAppearance(OverlayState.getKeyStyle(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT),
+                    OverlayState.getKeyPressColor(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+            keyPromptView.setKeyBaseColor(OverlayState.getKeyBaseColor(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+            keyPromptView.setKeyBorderColor(OverlayState.getKeyBorderColor(this, KeyPromptOverlayView.DISPLAY_KEY_PROMPT));
+        }
+        if (trajectoryView != null && trajectoryAttached) {
+            trajectoryView.setButtonColorConfig(
+                    OverlayState.isMouseTrajectoryLeftColorEnabled(this), OverlayState.getMouseTrajectoryLeftColor(this),
+                    OverlayState.isMouseTrajectoryRightColorEnabled(this), OverlayState.getMouseTrajectoryRightColor(this));
+        }
+    }
+
+    private void refreshWindowColors(DisplayWindow window) {
+        if (window == null || !window.attached || window.view == null) return;
+        window.view.setKeyAppearance(OverlayState.getKeyStyle(this, window.type), OverlayState.getKeyPressColor(this, window.type));
+        window.view.setKeyBaseColor(OverlayState.getKeyBaseColor(this, window.type));
+        window.view.setKeyBorderColor(OverlayState.getKeyBorderColor(this, window.type));
+        if (window.type == KeyOverlayView.DISPLAY_KEYBOARD) window.view.setTextColor(OverlayState.getKeyboardTextColor(this));
+    }
+
+    private void refreshGamepadColors(GamepadWindow window) {
+        if (window == null || !window.attached || window.view == null) return;
+        window.view.setKeyAppearance(OverlayState.getKeyStyle(this, window.type), OverlayState.getKeyPressColor(this, window.type));
+        window.view.setKeyBaseColor(OverlayState.getKeyBaseColor(this, window.type));
+        window.view.setKeyBorderColor(OverlayState.getKeyBorderColor(this, window.type));
     }
 
     public static String getTouchMonitorStatus() {
@@ -431,6 +550,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             service.removeWindowImmediate(service.customWindow);
             service.removeWindowImmediate(service.mouseWindow);
             service.removeKeyboardCatImmediate();
+            service.removeLive2DImmediate();
             if (service.floatingMediaController != null) service.floatingMediaController.removeAll();
             service.removeSuperCustomImmediate();
             service.removeKeyPromptImmediate();
@@ -457,6 +577,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         floatingMediaController = new FloatingMediaOverlayController(this);
         floatingMediaController.setWindowManager(windowManager);
         activeService = this;
+        ensureColorTicker();
         homePackage = resolveHomePackage();
         String foreground = currentForegroundPackage();
         if (!foreground.isEmpty()) lastForegroundPackage = foreground;
@@ -488,6 +609,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             clearForcedHoldVisual();
             Toast.makeText(this, R.string.force_hold_start_failed, Toast.LENGTH_SHORT).show();
         }));
+        gamepadKeyMapper = new GamepadKeyMapper(this);
         if (!RootBridge.isRootActive() || TouchDisplayStore.isEnabled(this)) ShizukuBridge.addListener(this);
         // Root 是全局首选通道；探测完成后重新应用输入状态。显示悬浮层本身仍立即创建。
         RootBridge.ensureActivated(this, rootActive -> {
@@ -529,6 +651,14 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                 // rebuild or hide the editor while the user is actively adjusting regions.
                 lastForegroundPackage = foreground;
             }
+        }
+
+        // Window changes are a reliable second ownership signal on ROMs that delay Activity
+        // lifecycle callbacks. Keep Live2D attached outside Axon even when the normal saved-state
+        // refresh was coalesced during the app -> game transition.
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            syncLive2DWindow(OverlayState.isLive2DEnabled(this));
         }
 
         if (!inputRuntimeConfig.fullKeyboardEnabled) {
@@ -588,10 +718,21 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
         // 手柄按键使用统一绑定编码。标准按钮状态仍交给 applyGamepadState 合并，
         // 避免 Android KeyEvent 与 evdev 同一按键被计算两次。
-        if (isPhysicalGamepadEvent(event)) {
+        if (isPhysicalGamepadEvent(event)
+                || (gamepadKeyMapper != null && InputBinding.isGamepadEventForMapping(event)
+                && (gamepadKeyMapper.hasMapping(InputBinding.fromGamepadEvent(event))
+                || gamepadKeyMapper.isPressEngaged(InputBinding.fromGamepadEvent(event))))) {
             int logicalBit = resolveGamepadAndroidBit(event, pressed);
             int inputCode = logicalBit != 0 ? InputBinding.gamepad(logicalBit) : InputBinding.fromGamepadEvent(event);
-            if (logicalBit == 0 && inputCode >= 0) {
+            boolean mappedConsumed = false;
+            if (inputCode >= 0 && gamepadKeyMapper != null
+                    && !MainActivity.isNonDpsBindingCaptureActive()
+                    && (gamepadKeyMapper.hasMapping(inputCode)
+                    || gamepadKeyMapper.isPressEngaged(inputCode))) {
+                mappedConsumed = gamepadKeyMapper.dispatch(
+                        inputCode, pressed, firstPress, pressed && !firstPress);
+            }
+            if (logicalBit == 0 && inputCode >= 0 && !gamepadKeyMapperHasMapping(inputCode)) {
                 handleBoundInputEvent(inputCode, pressed, firstPress, event.getEventTime());
                 if (firstPress) handleDirectDpsBindingInput(inputCode, event.getEventTime());
             }
@@ -607,7 +748,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                 else androidGamepadButtons &= ~logicalBit;
                 applyGamepadState(gamepadLx, gamepadLy, gamepadRx, gamepadRy, gamepadLt, gamepadRt, rawGamepadButtons);
             }
-            return false;
+            return mappedConsumed;
         }
 
         InputRuntimeConfig config = inputRuntimeConfig;
@@ -676,11 +817,20 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         return false;
     }
 
+    private boolean gamepadKeyMapperHasMapping(int inputCode) {
+        return gamepadKeyMapper != null && gamepadKeyMapper.hasMapping(inputCode);
+    }
+
     /** 所有已绑定快捷动作的统一触发入口；永远不消费物理输入。 */
     private void handleBoundInputEvent(int inputCode, boolean pressed, boolean firstPress, long eventTime) {
         if (inputCode < 0) return;
 
         InputRuntimeConfig config = inputRuntimeConfig;
+        if (firstPress && config.hideDisplayHotkey >= 0 && inputCode == config.hideDisplayHotkey) {
+            OverlayState.toggleHideDisplayTargets(this);
+            // This is an Axon action hotkey. Never let stale/conflicting bindings trigger a second action.
+            return;
+        }
         if (config.forceHoldEnabled && inputCode == config.forceHoldTriggerKey
                 && firstPress && forceHoldController != null) {
             int targetInput = config.forceHoldTargetKey;
@@ -1004,6 +1154,12 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (keyboardCatView != null && inputRuntimeConfig.keyboardCatEnabled) {
             keyboardCatView.addMouseMotion(dx, dy);
         }
+        if (live2dMouseCaptureEnabled) {
+            // Reuse the exact same physical REL_X/REL_Y stream already consumed by Axon. This is
+            // also fed by SensitivityProxyController while overclock mode owns the evdev device,
+            // so Live2D mouse capture never needs a second input monitor.
+            Live2DMouseTracker.addMotion(dx, dy);
+        }
     }
 
     private static int saturatingAdd(int current, int delta) {
@@ -1256,7 +1412,19 @@ public final class AxonInputAccessibilityService extends AccessibilityService
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        OverlayState.endAppSession(this);
+        // Live2D is a persistent display behavior: removing Axon's Activity task must not tear down
+        // the accessibility renderer. Preserve only its controls; every other session overlay still
+        // follows the original cleanup behavior.
+        if (OverlayState.isLive2DEnabled(this) && Live2DModelStore.exists(this)) {
+            OverlayState.endAppSessionPreservingLive2D(this);
+            inputRuntimeConfig = InputRuntimeConfig.load(this);
+            syncLive2DWindow(true);
+            if (OverlayState.isLive2DMotionTrackingEnabled(this)) {
+                Live2DMotionTrackingService.start(this);
+            }
+        } else {
+            OverlayState.endAppSession(this);
+        }
         super.onTaskRemoved(rootIntent);
     }
 
@@ -1270,6 +1438,8 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         stopGamepadMonitor();
         stopVader5UsbMonitor();
         stopDpsTicker();
+        colorTickerRunning = false;
+        mainHandler.removeCallbacks(colorTicker);
         if (sensitivityController != null) {
             sensitivityController.destroy();
             sensitivityController = null;
@@ -1277,6 +1447,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (forceHoldController != null) {
             forceHoldController.destroy();
             forceHoldController = null;
+        }
+        if (gamepadKeyMapper != null) {
+            gamepadKeyMapper.destroy();
+            gamepadKeyMapper = null;
         }
         forceHoldVisualActive = false;
         forceHoldVisualKeyCode = -1;
@@ -1291,6 +1465,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         removeWindowImmediate(customWindow);
         removeWindowImmediate(mouseWindow);
         removeKeyboardCatImmediate();
+        removeLive2DImmediate();
         if (floatingMediaController != null) {
             floatingMediaController.removeAll();
             floatingMediaController = null;
@@ -1374,40 +1549,61 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         InputRuntimeConfig config = InputRuntimeConfig.load(this);
         inputRuntimeConfig = config;
         gamepadRuntimeConfig = GamepadRuntimeConfig.load(this);
+        live2dMouseCaptureEnabled = OverlayState.isLive2DEnabled(this)
+                && OverlayState.isLive2DMouseCaptureEnabled(this);
         globalHtmlActive = GlobalHtmlStore.isEnabled(this) && GlobalHtmlStore.exists(this);
         globalHtmlContent = globalHtmlActive ? GlobalHtmlStore.load(this) : "";
         if (globalHtmlContent.isEmpty()) globalHtmlActive = false;
 
-        syncWindow(keyboardWindow, config.keyboardEnabled);
-        syncWindow(customWindow, config.customEnabled);
-        syncWindow(mouseWindow, config.mouseEnabled);
-        syncKeyboardCatWindow(config.keyboardCatEnabled);
+        OverlayState.sanitizeHiddenDisplayHotkeyTargets(this);
+        java.util.Set<Integer> hiddenDisplayTargets = OverlayState.getHiddenDisplayHotkeyTargets(this);
+        syncWindow(keyboardWindow, config.keyboardEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_KEYBOARD));
+        syncWindow(customWindow, config.customEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_CUSTOM));
+        syncWindow(mouseWindow, config.mouseEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_MOUSE));
+        syncKeyboardCatWindow(config.keyboardCatEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_KEYBOARD_CAT));
+        syncLive2DWindow(OverlayState.isLive2DEnabled(this));
         if (floatingMediaController != null) {
             floatingMediaController.sync(config.superCustomEnabled, config.dragEnabled);
         }
-        syncSuperCustomWindow(config.superCustomEnabled);
+        syncSuperCustomWindow(config.superCustomEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_SUPER_CUSTOM));
         reloadTouchRegionCache();
         boolean touchDisplayEnabled = TouchDisplayStore.isEnabled(this);
         if (!touchDisplayEnabled && touchRegionEditorAttached) {
             removeTouchRegionEditorImmediate(true);
         }
-        syncTouchDisplayWindow(touchDisplayEnabled);
+        syncTouchDisplayWindow(touchDisplayEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_TOUCH));
         syncInputFullKeyboardVisibility();
-        syncKeyPromptWindow(config.keyPromptEnabled);
+        syncKeyPromptWindow(config.keyPromptEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_KEY_PROMPT));
         int nextDpsTarget = config.dpsTargetKey;
         if (nextDpsTarget != activeDpsTargetKeyCode) {
             activeDpsTargetKeyCode = nextDpsTarget;
             dpsTracker.resetChannel(DpsTracker.TARGET);
         }
-        syncDpsWindow(config.dpsEnabled);
-        syncTrajectoryWindow(config.mouseTrajectoryEnabled);
-        syncGamepadWindow(leftStickWindow, OverlayState.isGamepadLeftStickEnabled(this));
-        syncGamepadWindow(rightStickWindow, OverlayState.isGamepadRightStickEnabled(this));
-        syncGamepadWindow(faceWindow, OverlayState.isGamepadFaceEnabled(this));
-        syncGamepadWindow(dpadWindow, OverlayState.isGamepadDpadEnabled(this));
-        syncGamepadWindow(leftShoulderWindow, OverlayState.isGamepadLeftShoulderEnabled(this));
-        syncGamepadWindow(rightShoulderWindow, OverlayState.isGamepadRightShoulderEnabled(this));
-        syncGamepadWindow(backWindow, OverlayState.isGamepadBackEnabled(this));
+        syncDpsWindow(config.dpsEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_DPS));
+        syncTrajectoryWindow(config.mouseTrajectoryEnabled
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_MOUSE_TRAJECTORY));
+        syncGamepadWindow(leftStickWindow, OverlayState.isGamepadLeftStickEnabled(this)
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_GAMEPAD_LEFT_STICK));
+        syncGamepadWindow(rightStickWindow, OverlayState.isGamepadRightStickEnabled(this)
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_GAMEPAD_RIGHT_STICK));
+        syncGamepadWindow(faceWindow, OverlayState.isGamepadFaceEnabled(this)
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_GAMEPAD_FACE));
+        syncGamepadWindow(dpadWindow, OverlayState.isGamepadDpadEnabled(this)
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_GAMEPAD_DPAD));
+        syncGamepadWindow(leftShoulderWindow, OverlayState.isGamepadLeftShoulderEnabled(this)
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_GAMEPAD_LEFT_SHOULDER));
+        syncGamepadWindow(rightShoulderWindow, OverlayState.isGamepadRightShoulderEnabled(this)
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_GAMEPAD_RIGHT_SHOULDER));
+        syncGamepadWindow(backWindow, OverlayState.isGamepadBackEnabled(this)
+                && !hiddenDisplayTargets.contains(OverlayState.HIDE_DISPLAY_GAMEPAD_BACK));
         syncVader5UsbMonitor();
 
         boolean forceHoldEnabled = config.forceHoldEnabled;
@@ -1419,6 +1615,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         }
         if (forceHoldController != null) {
             forceHoldController.applyConfiguration(forceHoldEnabled, forceHoldTargetKey, forceHoldTargetScan);
+        }
+        if (gamepadKeyMapper != null) {
+            gamepadKeyMapper.applyMappings(GamepadMappingStore.load(this));
         }
         if (forceHoldVisualActive) {
             applyForcedHoldVisualState(forceHoldVisualKeyCode, true);
@@ -1463,7 +1662,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     }
 
     private void syncInputFullKeyboardVisibility() {
-        boolean show = inputRuntimeConfig.fullKeyboardEnabled && isInputMethodWindowVisible();
+        boolean show = inputRuntimeConfig.fullKeyboardEnabled && isInputMethodWindowVisible()
+                && !OverlayState.isHideDisplayTargetHidden(
+                        this, OverlayState.HIDE_DISPLAY_FULL_KEYBOARD);
         if (!show) {
             removeInputFullKeyboardImmediate();
             return;
@@ -1713,6 +1914,10 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         windowManager.updateViewLayout(window.view, window.params);
     }
 
+    private int renderBufferPercent(int requestedPercent) {
+        return Math.max(MIN_OVERLAY_RENDER_BUFFER_PERCENT, requestedPercent);
+    }
+
     private int windowFlags() {
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -1727,7 +1932,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (type == KeyOverlayView.DISPLAY_MOUSE) base = MOUSE_WIDTH_DP;
         else if (type == KeyOverlayView.DISPLAY_CUSTOM) base = CUSTOM_WIDTH_DP;
         else base = KEYBOARD_WIDTH_DP;
-        return Math.max(1, dp(base * displaySizePercent(type) / 100f));
+        return Math.max(1, dp(base * renderBufferPercent(displaySizePercent(type)) / 100f));
     }
 
     private int displayHeightPx(int type) {
@@ -1742,7 +1947,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             if (showSpace || showMouseButtons) base += 52 + spacingExtra;
             if (showSpace && showMouseButtons) base += 52 + spacingExtra;
         }
-        return Math.max(1, dp(base * displaySizePercent(type) / 100f));
+        return Math.max(1, dp(base * renderBufferPercent(displaySizePercent(type)) / 100f));
     }
 
     private int displaySizePercent(int type) {
@@ -1812,6 +2017,232 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         if (customWindow.view == source) return customWindow;
         if (mouseWindow.view == source) return mouseWindow;
         return null;
+    }
+
+    private void syncLive2DWindow(boolean enabled) {
+        /*
+         * Live2D has one long-lived owner whenever AccessibilityService is connected.
+         * Do NOT hand the renderer back and forth between MainActivity and the service:
+         * rebuilding a WebView/moc3/texture stack during app transitions is both expensive and
+         * unreliable on ROMs that reorder Activity and accessibility window callbacks.
+         * TYPE_ACCESSIBILITY_OVERLAY is valid above Axon's own Activity as well as other apps, so
+         * keeping this single renderer attached makes the app -> game transition a no-op.
+         */
+        if (!enabled || !Live2DModelStore.exists(this)) {
+            live2dAttachRetryCount = 0;
+            removeLive2DImmediate();
+            return;
+        }
+        String version = Live2DModelStore.getVersion(this);
+        if (live2dView != null && live2dAttached && version.equals(live2dView.getLoadedVersion())) {
+            live2dView.setDisplayScalePercent(OverlayState.getLive2DSize(this));
+            live2dView.setDisplayOffsetNormalized(
+                    OverlayState.getLive2DOffsetX(this), OverlayState.getLive2DOffsetY(this));
+            live2dView.setHideWatermark(OverlayState.isLive2DHideWatermarkEnabled(this));
+            updateLive2DInteraction();
+            return;
+        }
+        removeLive2DImmediate();
+        ensureLive2DWindow();
+    }
+
+    private void ensureLive2DWindow() {
+        if (live2dAttached || !Live2DModelStore.exists(this) || windowManager == null) return;
+        Live2DOverlayView view = null;
+        try {
+            view = new Live2DOverlayView(this);
+            view.setDisplayScalePercent(OverlayState.getLive2DSize(this));
+            view.setDisplayOffsetNormalized(
+                    OverlayState.getLive2DOffsetX(this), OverlayState.getLive2DOffsetY(this));
+            // The full-screen renderer is always NOT_TOUCHABLE. Dragging uses a separate,
+            // model-sized accessibility overlay created with public WindowManager APIs only.
+            view.setDragListener(null);
+            view.setDragEnabled(false);
+            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    live2dWindowFlags(),
+                    PixelFormat.TRANSLUCENT);
+            params.gravity = Gravity.TOP | Gravity.START;
+            params.x = 0;
+            params.y = 0;
+            params.setTitle("AxonInputLive2D");
+            windowManager.addView(view, params);
+            live2dView = view;
+            live2dParams = params;
+            live2dAttached = true;
+            live2dAttachRetryCount = 0;
+            updateLive2DInteraction();
+            view.loadCurrentModel();
+            // If MainActivity created its temporary fallback before AccessibilityService bound,
+            // retire that fallback now. From here on the accessibility renderer is the sole owner.
+            MainActivity.onExternalLive2DRendererReady();
+        } catch (Throwable error) {
+            Log.e(TAG, "Live2D overlay attach failed", error);
+            if (view != null) {
+                try { view.release(); } catch (Throwable ignored) {}
+                try { windowManager.removeViewImmediate(view); } catch (Throwable ignored) {}
+            }
+            live2dView = null;
+            live2dParams = null;
+            live2dAttached = false;
+            // Some ROMs reject an accessibility overlay during the exact window-transition frame.
+            // Retry without waiting for another accessibility event; otherwise a single failed add
+            // leaves Live2D invisible until the next unrelated state refresh.
+            if (OverlayState.isLive2DEnabled(this) && Live2DModelStore.exists(this)
+                    && live2dAttachRetryCount < 4) {
+                final int attempt = ++live2dAttachRetryCount;
+                final long delay = attempt == 1 ? 120L : attempt == 2 ? 280L
+                        : attempt == 3 ? 520L : 900L;
+                mainHandler.postDelayed(() -> {
+                    if (!live2dAttached && OverlayState.isLive2DEnabled(this)
+                            && Live2DModelStore.exists(this)) {
+                        ensureLive2DWindow();
+                    }
+                }, delay);
+            }
+        }
+    }
+
+    private int live2dWindowFlags() {
+        return WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+    }
+
+    private int live2dDragHandleFlags() {
+        return WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+    }
+
+    private void updateLive2DInteraction() {
+        if (!live2dAttached || live2dView == null || live2dParams == null || windowManager == null) {
+            removeLive2DDragHandle();
+            return;
+        }
+        // Never make the full-screen WebView touchable; otherwise it would swallow game input.
+        live2dView.setDragEnabled(false);
+        int nextFlags = live2dWindowFlags();
+        if (live2dParams.flags != nextFlags) {
+            live2dParams.flags = nextFlags;
+            try { windowManager.updateViewLayout(live2dView, live2dParams); } catch (Throwable ignored) {}
+        }
+        if (inputRuntimeConfig.dragEnabled) ensureLive2DDragHandle();
+        else removeLive2DDragHandle();
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void ensureLive2DDragHandle() {
+        if (!live2dAttached || live2dView == null || windowManager == null || !inputRuntimeConfig.dragEnabled) return;
+        if (live2dDragHandle == null) {
+            View handle = new View(this);
+            handle.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+            handle.setOnTouchListener((v, event) -> {
+                if (event == null || live2dView == null || !inputRuntimeConfig.dragEnabled) return false;
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        live2dDragStartRawX = event.getRawX();
+                        live2dDragStartRawY = event.getRawY();
+                        live2dDragStartOffsetX = live2dView.getDisplayOffsetX();
+                        live2dDragStartOffsetY = live2dView.getDisplayOffsetY();
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        int sw = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+                        int sh = Math.max(1, getResources().getDisplayMetrics().heightPixels);
+                        float nextX = live2dDragStartOffsetX + ((event.getRawX() - live2dDragStartRawX) * 2f / sw);
+                        float nextY = live2dDragStartOffsetY + ((event.getRawY() - live2dDragStartRawY) * 2f / sh);
+                        live2dView.setDisplayOffsetNormalized(nextX, nextY);
+                        updateLive2DDragHandleLayout();
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        OverlayState.saveLive2DOffset(
+                                AxonInputAccessibilityService.this,
+                                live2dView.getDisplayOffsetX(), live2dView.getDisplayOffsetY());
+                        updateLive2DDragHandleLayout();
+                        return true;
+                    default:
+                        return true;
+                }
+            });
+            live2dDragHandle = handle;
+        }
+        if (live2dDragHandleParams == null) {
+            live2dDragHandleParams = buildLive2DDragHandleParams();
+            try { windowManager.addView(live2dDragHandle, live2dDragHandleParams); }
+            catch (Throwable error) {
+                Log.w(TAG, "Live2D drag handle attach failed", error);
+                live2dDragHandleParams = null;
+                return;
+            }
+        }
+        updateLive2DDragHandleLayout();
+    }
+
+    private WindowManager.LayoutParams buildLive2DDragHandleParams() {
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                1, 1,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                live2dDragHandleFlags(),
+                PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.setTitle("AxonInputLive2DDrag");
+        applyLive2DDragHandleGeometry(params);
+        return params;
+    }
+
+    private void applyLive2DDragHandleGeometry(WindowManager.LayoutParams params) {
+        if (params == null) return;
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int screenW = Math.max(1, dm.widthPixels);
+        int screenH = Math.max(1, dm.heightPixels);
+        float scale = Math.max(0.5f, Math.min(2.0f, OverlayState.getLive2DSize(this) / 100f));
+        int minSize = Math.max(96, Math.round(dm.density * 144f));
+        int width = Math.max(minSize, Math.min(screenW, Math.round(screenW * 0.56f * scale)));
+        int height = Math.max(minSize, Math.min(screenH, Math.round(screenH * 0.76f * scale)));
+        float offsetX = live2dView == null ? OverlayState.getLive2DOffsetX(this) : live2dView.getDisplayOffsetX();
+        float offsetY = live2dView == null ? OverlayState.getLive2DOffsetY(this) : live2dView.getDisplayOffsetY();
+        int centerX = Math.round(screenW * (0.5f + offsetX * 0.5f));
+        int centerY = Math.round(screenH * (0.5f + offsetY * 0.5f));
+        params.width = width;
+        params.height = height;
+        params.x = Math.max(0, Math.min(screenW - width, centerX - width / 2));
+        params.y = Math.max(0, Math.min(screenH - height, centerY - height / 2));
+    }
+
+    private void updateLive2DDragHandleLayout() {
+        if (live2dDragHandle == null || live2dDragHandleParams == null || windowManager == null) return;
+        applyLive2DDragHandleGeometry(live2dDragHandleParams);
+        try { windowManager.updateViewLayout(live2dDragHandle, live2dDragHandleParams); } catch (Throwable ignored) {}
+    }
+
+    private void removeLive2DDragHandle() {
+        View handle = live2dDragHandle;
+        live2dDragHandle = null;
+        live2dDragHandleParams = null;
+        if (handle != null && windowManager != null) {
+            try { windowManager.removeViewImmediate(handle); } catch (Throwable ignored) {}
+        }
+    }
+
+    private void removeLive2DImmediate() {
+        removeLive2DDragHandle();
+        Live2DOverlayView view = live2dView;
+        live2dView = null;
+        live2dParams = null;
+        boolean attached = live2dAttached;
+        live2dAttached = false;
+        if (view == null) return;
+        try { view.release(); } catch (Throwable ignored) {}
+        if (attached && windowManager != null) {
+            try { windowManager.removeViewImmediate(view); } catch (Throwable ignored) {}
+        }
     }
 
     private void syncKeyboardCatWindow(boolean enabled) {
@@ -2046,6 +2477,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
         } else if (window.type == GamepadOverlayView.DISPLAY_FACE) {
             window.view.setFaceSpacing(OverlayState.getGamepadFaceSpacing(this));
             window.view.setFaceReversed(OverlayState.isGamepadFaceReversed(this));
+            window.view.setFaceSymbolIcons(OverlayState.isGamepadFaceSymbolIcons(this));
             window.view.setFaceDpsVisibility(
                     GamepadSettingsStore.isFaceYDpsEnabled(this),
                     GamepadSettingsStore.isFaceXDpsEnabled(this),
@@ -2072,7 +2504,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                 : (type == GamepadOverlayView.DISPLAY_BACK ? GAMEPAD_BACK_WIDTH_DP
                 : (type == GamepadOverlayView.DISPLAY_DPAD ? GAMEPAD_DPAD_SIZE_DP
                 : (type == GamepadOverlayView.DISPLAY_FACE ? GAMEPAD_FACE_SIZE_DP : GAMEPAD_STICK_SIZE_DP)));
-        return Math.max(1, dp(base * OverlayState.getGamepadDisplaySize(this, type) / 100f));
+        return Math.max(1, dp(base * renderBufferPercent(OverlayState.getGamepadDisplaySize(this, type)) / 100f));
     }
 
     private int gamepadHeightPx(int type) {
@@ -2082,7 +2514,7 @@ public final class AxonInputAccessibilityService extends AccessibilityService
                 : (type == GamepadOverlayView.DISPLAY_BACK ? GAMEPAD_BACK_HEIGHT_DP
                 : (type == GamepadOverlayView.DISPLAY_DPAD ? GAMEPAD_DPAD_SIZE_DP
                 : (type == GamepadOverlayView.DISPLAY_FACE ? GAMEPAD_FACE_SIZE_DP : GAMEPAD_STICK_SIZE_DP)));
-        return Math.max(1, dp(base * OverlayState.getGamepadDisplaySize(this, type) / 100f));
+        return Math.max(1, dp(base * renderBufferPercent(OverlayState.getGamepadDisplaySize(this, type)) / 100f));
     }
 
     private void updateGamepadWindowLayout(GamepadWindow window) {
@@ -2324,7 +2756,9 @@ public final class AxonInputAccessibilityService extends AccessibilityService
             changed &= ~bit;
             boolean pressed = (current & bit) != 0;
             int inputCode = InputBinding.gamepad(bit);
-            handleBoundInputEvent(inputCode, pressed, pressed, now);
+            if (!gamepadKeyMapperHasMapping(inputCode)) {
+                handleBoundInputEvent(inputCode, pressed, pressed, now);
+            }
             if (superCustomView != null && inputRuntimeConfig.superCustomEnabled) {
                 superCustomView.setInputPressed(inputCode, pressed);
             }
@@ -2998,11 +3432,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     }
 
     private int keyPromptWidthPx() {
-        return Math.max(1, dp(KEY_PROMPT_WIDTH_DP * OverlayState.getKeyPromptSize(this) / 100f));
+        return Math.max(1, dp(KEY_PROMPT_WIDTH_DP * renderBufferPercent(OverlayState.getKeyPromptSize(this)) / 100f));
     }
 
     private int keyPromptHeightPx() {
-        return Math.max(1, dp(KEY_PROMPT_HEIGHT_DP * OverlayState.getKeyPromptSize(this) / 100f));
+        return Math.max(1, dp(KEY_PROMPT_HEIGHT_DP * renderBufferPercent(OverlayState.getKeyPromptSize(this)) / 100f));
     }
 
     private void applyKeyPromptPosition() {
@@ -3191,11 +3625,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     }
 
     private int trajectoryWidthPx() {
-        return Math.max(1, dp(TRAJECTORY_SIZE_DP * OverlayState.getMouseTrajectorySize(this) / 100f));
+        return Math.max(1, dp(TRAJECTORY_SIZE_DP * renderBufferPercent(OverlayState.getMouseTrajectorySize(this)) / 100f));
     }
 
     private int trajectoryHeightPx() {
-        return Math.max(1, dp(TRAJECTORY_SIZE_DP * OverlayState.getMouseTrajectorySize(this) / 100f));
+        return Math.max(1, dp(TRAJECTORY_SIZE_DP * renderBufferPercent(OverlayState.getMouseTrajectorySize(this)) / 100f));
     }
 
     private void applyTrajectoryPosition() {
@@ -3270,7 +3704,11 @@ public final class AxonInputAccessibilityService extends AccessibilityService
     private boolean needsMouseMonitor() {
         boolean bindingActive = MainActivity.isBindingActivityActive()
                 || SuperCustomDisplayActivity.isBindingActivityActive();
-        return inputRuntimeConfig.needsMouseMonitor(bindingActive);
+        // When sensitivity proxying is disabled, Live2D mouse capture shares the existing global
+        // getevent monitor. If sensitivity is enabled the proxy callback feeds onMouseMotion(), so
+        // InputRuntimeConfig intentionally keeps the normal monitor stopped to avoid duplicates.
+        return inputRuntimeConfig.needsMouseMonitor(bindingActive)
+                || (!inputRuntimeConfig.sensitivityEnabled && live2dMouseCaptureEnabled);
     }
 
     private boolean needsGamepadMonitor() {

@@ -237,7 +237,7 @@ public final class NativeKeyCanvasView extends View {
     }
 
     public void setKeySpacing(int spacingDp) {
-        int value = Math.max(0, Math.min(16, spacingDp));
+        int value = Math.max(0, Math.min(40, spacingDp));
         if (displayType == DISPLAY_KEYBOARD || displayType == DISPLAY_TOUCH) {
             if (keyboardSpacingDp == value) return;
             keyboardSpacingDp = value;
@@ -525,7 +525,7 @@ public final class NativeKeyCanvasView extends View {
         float top = dp(5);
 
         // 窗口进入和退出使用 92% 到 100% 缩放。拖动时压缩 1.6%。
-        float windowScale = 0.92f + 0.08f * clamp(windowProgress, 0f, 1.08f);
+        float windowScale = 0.97f + 0.03f * clamp(windowProgress, 0f, 1f);
         float dragScale = 1f - 0.016f * clamp(dragProgress, 0f, 1.05f);
         canvas.scale(windowScale * dragScale, windowScale * dragScale, centerX, centerY);
         canvas.scale(displayScale, displayScale, centerX, top);
@@ -604,7 +604,7 @@ public final class NativeKeyCanvasView extends View {
     }
 
     private void drawCustomKeys(Canvas canvas, float top) {
-        float contentScale = 0.92f + 0.08f * clamp(revealProgress, 0f, 1.08f);
+        float contentScale = 0.97f + 0.03f * clamp(revealProgress, 0f, 1f);
         int save = canvas.save();
         canvas.scale(contentScale, contentScale, getWidth() * 0.5f, top + dp(customBaseHeightDp()) * 0.5f);
 
@@ -846,19 +846,19 @@ public final class NativeKeyCanvasView extends View {
             }
         }
 
-        active |= advanceScalarSpring(dragProgress, dragVelocity, dragging ? 1f : 0f, dt, 420f, 34f);
+        active |= advanceScalarSpring(dragProgress, dragVelocity, dragging ? 1f : 0f, dt, 135f, 23f);
         dragProgress = springScratch[0];
         dragVelocity = springScratch[1];
 
-        active |= advanceScalarSpring(revealProgress, revealVelocity, 1f, dt, 360f, 30f);
+        active |= advanceScalarSpring(revealProgress, revealVelocity, 1f, dt, 105f, 20.5f);
         revealProgress = springScratch[0];
         revealVelocity = springScratch[1];
 
-        active |= advanceScalarSpring(displayScale, displayScaleVelocity, displayScaleTarget, dt, 260f, 28f);
+        active |= advanceScalarSpring(displayScale, displayScaleVelocity, displayScaleTarget, dt, 90f, 19f);
         displayScale = springScratch[0];
         displayScaleVelocity = springScratch[1];
 
-        active |= advanceScalarSpring(windowProgress, windowVelocity, windowTarget, dt, 320f, 28f);
+        active |= advanceScalarSpring(windowProgress, windowVelocity, windowTarget, dt, 100f, 20f);
         windowProgress = springScratch[0];
         windowVelocity = springScratch[1];
 
@@ -867,8 +867,8 @@ public final class NativeKeyCanvasView extends View {
 
     private boolean advancePressSpring(float[] values, float[] velocities, boolean[] goals, int index, float dt) {
         float goal = goals[index] ? 1f : 0f;
-        float stiffness = goals[index] ? 620f : 390f;
-        float damping = goals[index] ? 40f : 30f;
+        float stiffness = goals[index] ? 180f : 145f;
+        float damping = goals[index] ? 27f : 24f;
 
         float x = values[index];
         float v = velocities[index];
@@ -908,7 +908,7 @@ public final class NativeKeyCanvasView extends View {
 
     private float pressScale(float pressProgress) {
         if (animationMode != OverlayState.MOTION_SIZE) return 1f;
-        return clamp(1f - 0.055f * pressProgress, 0.935f, 1.012f);
+        return clamp(1f - 0.028f * pressProgress, 0.972f, 1f);
     }
 
     private int withMotionAlpha(int color, float pressProgress, int layerOpacityPercent) {

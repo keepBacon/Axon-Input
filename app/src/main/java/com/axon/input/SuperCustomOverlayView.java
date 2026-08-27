@@ -29,7 +29,8 @@ final class SuperCustomOverlayView extends FrameLayout {
         if (specs == null) return;
 
         for (SuperCustomControlSpec source : specs) {
-            if (source == null || !InputBinding.isValid(source.keyCode)) continue;
+            if (source == null) continue;
+            if (source.isKeyElement() && !InputBinding.isValid(source.keyCode)) continue;
             SuperCustomControlSpec spec = source.copy();
             SuperCustomControlView view = new SuperCustomControlView(getContext());
             view.setInteractivePreview(false);
@@ -47,7 +48,9 @@ final class SuperCustomOverlayView extends FrameLayout {
     void setInputPressed(int inputCode, boolean pressed) {
         if (inputCode < 0) return;
         for (RuntimeBinding binding : bindings) {
-            if (binding.spec.keyCode == inputCode) binding.view.onBoundKeyEvent(pressed);
+            if (binding.spec.isKeyElement() && binding.spec.keyCode == inputCode) {
+                binding.view.onBoundKeyEvent(pressed);
+            }
         }
     }
 

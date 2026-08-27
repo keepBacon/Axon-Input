@@ -5,24 +5,18 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
-import android.view.animation.PathInterpolator;
 
-/** 按键形状、按下颜色和扩散动画。 */
+/** 按键形状、按下颜色和状态填充动画。 */
 final class KeyAppearance {
     static final int STYLE_ROUNDED = 0;
     static final int STYLE_SQUARE = 1;
     static final int STYLE_CIRCLE = 2;
-    // v1.7: user requested 0.5x speed relative to the first Matrix migration.
-    // Matrix source is 190/72 ms; Axon intentionally doubles both to 380/144 ms.
-    static final long CARD_FEATURE_TOGGLE_MS = 380L;
-    static final long RIPPLE_MIN_MS = 144L;
-    static final int DEFAULT_CORNER_STRENGTH = 40;
 
-    // Matrix Card UI feature-toggle motion. Keep this curve and timing aligned with
-    // ClickUiView.animateCardFeatureState(): 380 ms full travel, 144 ms minimum,
-    // cubic-bezier(0.18, 0.94, 0.28, 1).
-    private static final PathInterpolator CARD_FEATURE_TOGGLE_EASE =
-            new PathInterpolator(0.18f, 0.94f, 0.28f, 1f);
+    // One calm, readable state transition. Duration scales with remaining distance so reversing
+    // mid-animation never forces a full-length replay from an endpoint.
+    static final long CARD_FEATURE_TOGGLE_MS = 460L;
+    static final long RIPPLE_MIN_MS = 190L;
+    static final int DEFAULT_CORNER_STRENGTH = 40;
 
     private KeyAppearance() {}
 
@@ -53,9 +47,9 @@ final class KeyAppearance {
     }
 
     /**
-     * Matrix Card UI feature-state fill. This is NOT a radial ripple. The whole key-shaped state
-     * surface grows from the centre toward the final bounds, matching ClickUiView's centred
-     * scratchRectD expansion.
+     * State surface expands continuously from the current reveal value. This remains compatible
+     * with the existing key visuals, but all bounce/overshoot has been removed: state only moves
+     * toward the destination the user requested.
      */
     static void drawCentreFill(Canvas canvas, RectF area, int style, float radius,
                                int pressColor, float progress, Paint paint, Path clipPath) {
@@ -99,16 +93,13 @@ final class KeyAppearance {
         canvas.restoreToCount(save);
     }
 
-    /** Matrix Card UI feature-toggle easing. Input and output are clamped to [0, 1]. */
+    /** Shared project spatial easing. */
     static float cardFeatureToggleEase(float input) {
         float t = Math.max(0f, Math.min(1f, input));
-        return CARD_FEATURE_TOGGLE_EASE.getInterpolation(t);
+        return UiMotion.easeMove().getInterpolation(t);
     }
 
-    /**
-     * Matches Matrix Card UI interruption semantics: duration scales with the remaining visual
-     * distance, but never drops below 144 ms for a real state change in the 0.5x-speed Axon variant.
-     */
+    /** Duration is proportional to the remaining visual distance, with a calm minimum. */
     static long cardFeatureToggleDuration(float from, float to) {
         float distance = Math.abs(Math.max(0f, Math.min(1f, to))
                 - Math.max(0f, Math.min(1f, from)));
@@ -116,16 +107,15 @@ final class KeyAppearance {
         return Math.max(RIPPLE_MIN_MS, Math.round(CARD_FEATURE_TOGGLE_MS * distance));
     }
 
-    /** Matrix Card UI uses smoothstep on the animated state to produce the actual spread. */
+    /** Smooth monotonic reveal, no overshoot. */
     static float cardFeatureSpread(float stateReveal) {
         float p = Math.max(0f, Math.min(1f, stateReveal));
         return p * p * (3f - 2f * p);
     }
 
-    /** Exact card feature-state micro-bounce from Matrix ClickUiView. */
+    /** Kept for callers, but the unified motion system intentionally removes bounce. */
     static float cardFeatureBounce(float stateReveal) {
-        float p = Math.max(0f, Math.min(1f, stateReveal));
-        return 1f + 0.048f * (float) Math.sin(Math.PI * p);
+        return 1f;
     }
 
     static float centreTextMix(float fillProgress) {

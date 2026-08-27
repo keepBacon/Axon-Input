@@ -132,14 +132,14 @@ public final class KeyPromptOverlayView extends FrameLayout {
         setLayerType(View.LAYER_TYPE_HARDWARE, null);
         textPaint.setTextAlign(Paint.Align.CENTER);
         hostProgress = 0f;
-        setScaleX(0.94f);
-        setScaleY(0.94f);
+        setScaleX(0.97f);
+        setScaleY(0.97f);
         setAlpha(0f);
         postFrame();
     }
 
     public void setDisplaySize(int percent) {
-        displaySizePercent = Math.max(50, Math.min(150, percent));
+        displaySizePercent = Math.max(25, Math.min(300, percent));
         if (htmlView != null) htmlView.setDisplaySize(displaySizePercent);
         invalidate();
     }
@@ -432,7 +432,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
 
         boolean moving = false;
         float hostBefore = hostProgress;
-        float hostAccel = (hostTarget - hostProgress) * 260f - hostVelocity * 30f;
+        float hostAccel = (hostTarget - hostProgress) * 105f - hostVelocity * 20.5f;
         hostVelocity += hostAccel * dt;
         hostProgress += hostVelocity * dt;
         if (hostTarget == 0f && hostProgress < 0f) hostProgress = 0f;
@@ -445,15 +445,15 @@ public final class KeyPromptOverlayView extends FrameLayout {
         }
         if (hostBefore != hostProgress) {
             float eased = 1f - (float) Math.pow(1f - clamp01(hostProgress), 3f);
-            float scale = 0.94f + 0.06f * eased;
+            float scale = 0.97f + 0.03f * eased;
             setScaleX(scale);
             setScaleY(scale);
             setAlpha(eased);
         }
 
-        float revealIn = factor(dt, 18f);
-        float revealOut = factor(dt, 12f);
-        float position = factor(dt, 20f);
+        float revealIn = factor(dt, 7.0f);
+        float revealOut = factor(dt, 5.5f);
+        float position = factor(dt, 8.0f);
         boolean htmlStateChanged = false;
         for (int i = entries.size() - 1; i >= 0; i--) {
             Entry entry = entries.get(i);

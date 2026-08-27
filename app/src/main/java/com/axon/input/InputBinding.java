@@ -108,6 +108,20 @@ public final class InputBinding {
         return (source || mapped) && !device.isVirtual();
     }
 
+    /**
+     * Mapping path also accepts a non-Axon virtual gamepad. This is required when Axon's sensitivity
+     * proxy has EVIOCGRABbed the physical controller and re-emits it through uinput.
+     */
+    public static boolean isGamepadEventForMapping(KeyEvent event) {
+        if (event == null) return false;
+        InputDevice device = event.getDevice();
+        if (device == null || isAxonVirtualDevice(device)) return false;
+        int sources = event.getSource();
+        boolean source = (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+        return source || fromGamepadEvent(event) >= 0;
+    }
+
     public static boolean isPhysicalMouseEvent(MotionEvent event) {
         if (event == null) return false;
         InputDevice device = event.getDevice();

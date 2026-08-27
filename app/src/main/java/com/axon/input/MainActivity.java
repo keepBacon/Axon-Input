@@ -1,16 +1,18 @@
 package com.axon.input;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.res.ColorStateList;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.Drawable;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
@@ -65,14 +67,18 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private static final int FONT_IMPORT_REQUEST = 6203;
     private static final int BONGOCAT_STYLE_IMPORT_REQUEST = 6204;
     private static final int SUPER_CUSTOM_IMPORT_REQUEST = 6205;
-    private static final int SIZE_MIN = 50;
-    private static final int SIZE_MAX = 150;
+    private static final int LIVE2D_MODEL_IMPORT_REQUEST = 6206;
+    private static final int LIVE2D_MOTION_CAMERA_PERMISSION_REQUEST = 6208;
+    private static final int SIZE_MIN = 25;
+    private static final int SIZE_MAX = 300;
+    private static final int LIVE2D_SIZE_MIN = 25;
+    private static final int LIVE2D_SIZE_MAX = 400;
     private static final int OPACITY_MAX = 100;
-    private static final int KEY_SPACING_MAX = 16;
+    private static final int KEY_SPACING_MAX = 40;
     private static final int SENSITIVITY_FINE_MAX = 200;
     private static final int SENSITIVITY_HIGH_STEP = 5;
-    private static final int SENSITIVITY_MAX = 500;
-    private static final int SENSITIVITY_SEEKBAR_MAX = 259;
+    private static final int SENSITIVITY_MAX = 1000;
+    private static final int SENSITIVITY_SEEKBAR_MAX = 359;
     private static final String KOOK_CHANNEL_URL = "https://kook.vip/GYYrsE";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -83,8 +89,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     // transitions never mutate a large layout tree in the middle of an animation.
     private FrameLayout sectionPagerHost;
     private ScrollView[] sectionPageViews;
-    private TextView[] sectionNavigationItems;
-    private HorizontalScrollView sectionNavigationView;
+    private SectionNavigationItem[] sectionNavigationItems;
+    private SectionNavigationBar sectionNavigationView;
     private int selectedSectionPage;
     private int displayedSectionPage;
     private int sectionPageTransitionToken;
@@ -151,8 +157,37 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private int forceHoldTargetScanPending = -1;
     private boolean keyboardCatExpressionHotkeyCaptureArmed;
     private int keyboardCatExpressionHotkeyPreviousKeyCode = -1;
+    private boolean hideDisplayHotkeyCaptureArmed;
+    private int hideDisplayHotkeyPreviousInputCode = -1;
+    private Switch hideDisplayHotkeySwitch;
+    private LinearLayout hideDisplayHotkeyDetails;
+    private Button hideDisplayHotkeyButton;
+    private Button hideDisplayTargetSelectionButton;
+
+    private Button gamepadMappingAddButton;
+    private LinearLayout gamepadMappingList;
+    private TextView gamepadMappingStatusText;
+    private boolean gamepadMappingCaptureArmed;
+    private int pendingGamepadMappingSource = -1;
+    private AlertDialog gamepadMappingKeyboardDialog;
     private int keyboardCatExpressionHotkeyCapturedKeyCode = -1;
     private static volatile MainActivity activeBindingActivity;
+
+    public static boolean isAppForeground() {
+        MainActivity activity = activeBindingActivity;
+        return activity != null && activity.activityResumed && !activity.isFinishing();
+    }
+
+    /** Called by the connected AccessibilityService after its persistent Live2D overlay attaches. */
+    static void onExternalLive2DRendererReady() {
+        MainActivity activity = activeBindingActivity;
+        if (activity == null || activity.isFinishing()) return;
+        activity.runOnUiThread(() -> {
+            if (AxonInputAccessibilityService.isServiceConnected()) {
+                activity.removeInAppLive2D();
+            }
+        });
+    }
     private int bindableMouseButtonsDown;
     private long bindableMouseLastEventTime = -1L;
     private int bindableMouseLastActionButton;
@@ -217,6 +252,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private Spinner gamepadLeftStickShapeSpinner;
     private Spinner gamepadRightStickShapeSpinner;
     private Switch gamepadFaceReverseSwitch;
+    private Switch gamepadFaceSymbolSwitch;
     private Switch gamepadFaceYDpsSwitch;
     private Switch gamepadFaceXDpsSwitch;
     private Switch gamepadFaceBDpsSwitch;
@@ -238,12 +274,27 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private final SparseArray<View> keyPressColorDots = new SparseArray<>();
     private View keyboardTextColorDot;
     private Switch globalHtmlSwitch;
+    private Spinner globalHtmlChoiceSpinner;
     private Spinner globalHtmlFontSpinner;
+    private final List<GlobalHtmlStore.HtmlInfo> globalHtmlChoices = new ArrayList<>();
     private Button globalHtmlImportButton;
     private TextView globalHtmlStatusText;
     private LinearLayout globalHtmlDetails;
+    private Switch live2dSwitch;
+    private LinearLayout live2dDetails;
+    private TextView live2dSizeLabel;
+    private SeekBar live2dSizeSeekBar;
+    private Switch live2dMotionTrackingSwitch;
+    private Switch live2dMouseCaptureSwitch;
+    private Switch live2dHideWatermarkSwitch;
+    private Button live2dImportButton;
+    private FrameLayout activityRoot;
+    private Live2DOverlayView inAppLive2dView;
+    private String inAppLive2dVersion = "";
+    private boolean activityResumed;
     private Switch fontSwitch;
     private Spinner fontChoiceSpinner;
+    private final List<FontManager.FontInfo> importedFontChoices = new ArrayList<>();
     private LinearLayout fontDetails;
     private Button fontImportButton;
     private TextView fontStatusText;
@@ -319,14 +370,14 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.TOP);
-        root.setPadding(dp(20), dp(8), dp(20), dp(36));
+        root.setPadding(dp(18), dp(8), dp(18), dp(28));
         root.setBackgroundColor(UiPalette.background(this));
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setMinimumHeight(dp(58));
-        header.setPadding(dp(20), dp(4), dp(20), dp(4));
+        header.setMinimumHeight(dp(54));
+        header.setPadding(dp(18), dp(3), dp(18), dp(3));
         TextView title = createTitle();
         title.setText(R.string.app_name);
         header.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -474,12 +525,14 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         mouseTrajectoryLeftColorSwitch = createSwitch(R.string.mouse_trajectory_left_color);
         mouseTrajectoryLeftColorSwitch.setTextSize(14f);
         mouseTrajectoryLeftColorDot = createColorDot(OverlayState.getMouseTrajectoryLeftColor(this));
+        updateColorDotSequence(mouseTrajectoryLeftColorDot, OverlayState.getMouseTrajectoryLeftColors(this));
         mouseTrajectoryDetails.addView(
                 createTrajectoryColorRow(mouseTrajectoryLeftColorDot, mouseTrajectoryLeftColorSwitch, true),
                 supportingParams(dp(2)));
         mouseTrajectoryRightColorSwitch = createSwitch(R.string.mouse_trajectory_right_color);
         mouseTrajectoryRightColorSwitch.setTextSize(14f);
         mouseTrajectoryRightColorDot = createColorDot(OverlayState.getMouseTrajectoryRightColor(this));
+        updateColorDotSequence(mouseTrajectoryRightColorDot, OverlayState.getMouseTrajectoryRightColors(this));
         mouseTrajectoryDetails.addView(
                 createTrajectoryColorRow(mouseTrajectoryRightColorDot, mouseTrajectoryRightColorSwitch, false),
                 supportingParams(dp(2)));
@@ -509,8 +562,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         columnsLabel = createLabel();
         customDetails.addView(columnsLabel, supportingParams(0));
 
-        columnsSeekBar = new SeekBar(this);
-        columnsSeekBar.setMax(7);
+        columnsSeekBar = new LagSeekBar(this);
+        columnsSeekBar.setMax(11);
         styleSeekBar(columnsSeekBar);
         customDetails.addView(columnsSeekBar, seekBarLayoutParams(dp(4)));
         root.addView(createFeatureGroup(customDisplaySwitch, customDetails), contentParams(dp(14)));
@@ -571,6 +624,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadFaceReverseSwitch = createSwitch(R.string.gamepad_face_reverse);
         gamepadFaceReverseSwitch.setTextSize(14f);
         gamepadFaceDetails.addView(gamepadFaceReverseSwitch, switchParams(dp(2)));
+        gamepadFaceSymbolSwitch = createSwitch(R.string.gamepad_face_symbol_icons);
+        gamepadFaceSymbolSwitch.setTextSize(14f);
+        gamepadFaceDetails.addView(gamepadFaceSymbolSwitch, switchParams(dp(2)));
         gamepadFaceYDpsSwitch = createSwitch(R.string.gamepad_face_y_dps);
         gamepadFaceYDpsSwitch.setTextSize(14f);
         gamepadFaceDetails.addView(gamepadFaceYDpsSwitch, switchParams(dp(2)));
@@ -691,6 +747,26 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         sensitivityDetails.addView(sensitivityStatusText, supportingParams(0));
         root.addView(createFeatureGroup(sensitivitySwitch, sensitivityDetails), contentParams(dp(14)));
 
+        LinearLayout gamepadMappingGroup = new LinearLayout(this);
+        gamepadMappingGroup.setOrientation(LinearLayout.VERTICAL);
+        gamepadMappingGroup.setPadding(dp(14), dp(10), dp(14), dp(12));
+        gamepadMappingGroup.setBackground(UiChrome.card(this));
+        TextView gamepadMappingTitle = createLabel();
+        gamepadMappingTitle.setText(R.string.gamepad_mapping_title);
+        gamepadMappingGroup.addView(gamepadMappingTitle, supportingParams(dp(6)));
+        gamepadMappingAddButton = createConfigButton(
+                R.string.gamepad_mapping_add, v -> startGamepadMappingCapture());
+        gamepadMappingGroup.addView(gamepadMappingAddButton, supportingParams(dp(4)));
+        gamepadMappingStatusText = createSupportingText();
+        gamepadMappingGroup.addView(gamepadMappingStatusText, supportingParams(dp(4)));
+        gamepadMappingList = new LinearLayout(this);
+        gamepadMappingList.setOrientation(LinearLayout.VERTICAL);
+        gamepadMappingGroup.addView(gamepadMappingList, supportingParams(dp(4)));
+        TextView gamepadMappingHint = createSupportingText();
+        gamepadMappingHint.setText(R.string.gamepad_mapping_hint);
+        gamepadMappingGroup.addView(gamepadMappingHint, supportingParams(0));
+        root.addView(gamepadMappingGroup, contentParams(dp(10)));
+
         forceHoldSwitch = createSwitch(R.string.force_hold_switch_label);
         forceHoldDetails = createDetailsContainer();
         forceHoldStatusText = createSupportingText();
@@ -704,6 +780,19 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         behaviorSection.setText(R.string.section_behavior);
         root.addView(behaviorSection, contentParams(dp(8)));
+
+        hideDisplayHotkeySwitch = createSwitch(R.string.hide_display_hotkey_switch_label);
+        hideDisplayHotkeyDetails = createDetailsContainer();
+        hideDisplayHotkeyButton = createConfigButton(
+                R.string.hide_display_hotkey_unbound, v -> toggleHideDisplayHotkeyCapture());
+        hideDisplayHotkeyDetails.addView(hideDisplayHotkeyButton, supportingParams(dp(4)));
+        hideDisplayTargetSelectionButton = createConfigButton(
+                R.string.hide_display_target_select, v -> showHideDisplayTargetSelectionDialog());
+        hideDisplayHotkeyDetails.addView(hideDisplayTargetSelectionButton, supportingParams(dp(4)));
+        TextView hideDisplayHotkeyHint = createSupportingText();
+        hideDisplayHotkeyHint.setText(R.string.hide_display_hotkey_hint);
+        hideDisplayHotkeyDetails.addView(hideDisplayHotkeyHint, supportingParams(0));
+        root.addView(createFeatureGroup(hideDisplayHotkeySwitch, hideDisplayHotkeyDetails), contentParams(dp(10)));
 
         touchDisplaySwitch = createSwitch(R.string.touch_display_switch_label);
         touchDisplayDetails = createDetailsContainer();
@@ -749,12 +838,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         fontSwitch = createSwitch(R.string.font_switch_label);
         fontDetails = createDetailsContainer();
-        fontChoiceSpinner = createChoiceSpinner(new String[]{
-                getString(R.string.font_choice_system),
-                getString(R.string.font_choice_sans),
-                getString(R.string.font_choice_serif),
-                getString(R.string.font_choice_monospace),
-                getString(R.string.font_choice_imported)});
+        fontChoiceSpinner = createChoiceSpinner(new String[]{getString(R.string.font_import_none)});
         fontDetails.addView(createInlineChoiceRow(
                 R.string.font_choice_label, fontChoiceSpinner), supportingParams(dp(4)));
         fontImportButton = new Button(this);
@@ -826,6 +910,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         globalHtmlSwitch = createSwitch(R.string.global_html_switch_label);
         globalHtmlDetails = createDetailsContainer();
+        globalHtmlChoiceSpinner = createChoiceSpinner(new String[]{getString(R.string.global_html_not_imported)});
+        globalHtmlDetails.addView(createInlineChoiceRow(
+                R.string.global_html_choice_label, globalHtmlChoiceSpinner), supportingParams(dp(4)));
         globalHtmlFontSpinner = createChoiceSpinner(new String[]{
                 getString(R.string.global_html_font_page),
                 getString(R.string.global_html_font_follow)});
@@ -845,6 +932,32 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         globalHtmlStatusText = createSupportingText();
         globalHtmlDetails.addView(globalHtmlStatusText, supportingParams(dp(6)));
         root.addView(createFeatureGroup(globalHtmlSwitch, globalHtmlDetails), contentParams(dp(10)));
+
+        live2dSwitch = createSwitch(R.string.live2d_switch_label);
+        live2dDetails = createDetailsContainer();
+        live2dSizeLabel = createLabel();
+        live2dSizeSeekBar = new LagSeekBar(this);
+        live2dSizeSeekBar.setMax(LIVE2D_SIZE_MAX - LIVE2D_SIZE_MIN);
+        live2dSizeSeekBar.setPadding(0, 0, 0, 0);
+        styleSeekBar(live2dSizeSeekBar);
+        live2dDetails.addView(live2dSizeLabel, supportingParams(dp(2)));
+        live2dDetails.addView(live2dSizeSeekBar, seekBarLayoutParams(dp(4)));
+        live2dMotionTrackingSwitch = createSwitch(R.string.live2d_motion_tracking);
+        live2dDetails.addView(live2dMotionTrackingSwitch, supportingParams(dp(2)));
+        live2dMouseCaptureSwitch = createSwitch(R.string.live2d_mouse_capture);
+        live2dDetails.addView(live2dMouseCaptureSwitch, supportingParams(dp(2)));
+        live2dHideWatermarkSwitch = createSwitch(R.string.live2d_hide_watermark);
+        live2dDetails.addView(live2dHideWatermarkSwitch, supportingParams(dp(2)));
+        live2dImportButton = new Button(this);
+        live2dImportButton.setText(R.string.live2d_import_model);
+        live2dImportButton.setAllCaps(false);
+        live2dImportButton.setTextSize(13f);
+        live2dImportButton.setMinHeight(dp(44));
+        live2dImportButton.setMinimumHeight(dp(44));
+        styleActionButton(live2dImportButton);
+        // Live2D keeps size, optional full-motion tracking, physical-mouse tracking, watermark suppression and import.
+        live2dDetails.addView(live2dImportButton, supportingParams(dp(2)));
+        root.addView(createFeatureGroup(live2dSwitch, live2dDetails), contentParams(dp(10)));
 
         autoHideSwitch = createSwitch(R.string.auto_hide_label);
         root.addView(createSwitchGroup(autoHideSwitch), contentParams(dp(14)));
@@ -881,7 +994,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         sectionPageViews = splitContentIntoSectionPages(root, sectionPages);
         sectionPagerHost = createSectionPagerHost(sectionPageViews);
 
-        HorizontalScrollView sectionNav = createSectionNavigation(
+        SectionNavigationBar sectionNav = createSectionNavigation(
                 new int[]{R.string.section_appearance, R.string.section_keyboard_mouse,
                         R.string.section_super_custom, R.string.section_gamepad,
                         R.string.section_sensitivity, R.string.section_behavior,
@@ -889,15 +1002,20 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 sectionPages.length);
         sectionNavigationView = sectionNav;
         selectSectionPage(0, false);
-        page.addView(sectionNav, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
+
+        // Content owns the visual hierarchy; primary navigation stays reachable at the bottom.
+        page.addView(sectionPagerHost, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         View navDivider = new View(this);
         navDivider.setBackgroundColor(UiPalette.divider(this));
         page.addView(navDivider, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
-        page.addView(sectionPagerHost, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        setContentView(page);
+        page.addView(sectionNav, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(64)));
+        activityRoot = new FrameLayout(this);
+        activityRoot.addView(page, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(activityRoot);
         UiChrome.applySafeInsets(page, 0, 0, 0, 0);
 
         themeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -970,6 +1088,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         superCustomDisplaySwitch.setOnCheckedChangeListener((button, enabled) -> {
             if (internalChange) return;
             OverlayState.setSuperCustomEnabled(MainActivity.this, enabled);
+            refreshHideDisplayHotkeyUi();
             handleDisplayModeChanged();
         });
         bindFeatureSwitch(gamepadLeftStickSwitch, gamepadLeftStickDetails,
@@ -1081,6 +1200,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         bindSimpleSwitch(gamepadFaceReverseSwitch,
                 enabled -> OverlayState.setGamepadFaceReversed(this, enabled));
+        bindSimpleSwitch(gamepadFaceSymbolSwitch,
+                enabled -> OverlayState.setGamepadFaceSymbolIcons(this, enabled));
         bindSimpleSwitch(gamepadFaceYDpsSwitch,
                 enabled -> GamepadSettingsStore.setFaceYDpsEnabled(this, enabled));
         bindSimpleSwitch(gamepadFaceXDpsSwitch,
@@ -1171,6 +1292,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 OverlayState.setDpsEnabled(this, false);
             }
             updateDpsTargetUi();
+            refreshHideDisplayHotkeyUi();
             handleDisplayModeChanged();
         });
 
@@ -1188,6 +1310,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
             // 每次开启都重新录入两颗键，避免旧绑定被误触发。
             cancelKeyboardCatExpressionHotkeyCapture(true);
+            cancelHideDisplayHotkeyCapture(true);
             OverlayState.setForceHoldEnabled(MainActivity.this, false);
             OverlayState.clearForceHoldBinding(MainActivity.this);
             forceHoldCaptureStep = 1;
@@ -1195,6 +1318,13 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             forceHoldTargetScanPending = -1;
             updateForceHoldUi();
             Toast.makeText(MainActivity.this, R.string.force_hold_wait_target, Toast.LENGTH_SHORT).show();
+        });
+
+        bindFeatureSwitch(hideDisplayHotkeySwitch, hideDisplayHotkeyDetails, enabled -> {
+            if (!enabled) cancelHideDisplayHotkeyCapture(true);
+            OverlayState.setHideDisplayHotkeyEnabled(MainActivity.this, enabled);
+            refreshHideDisplayHotkeyUi();
+            if (enabled) ensureAccessibility();
         });
 
         bindSimpleSwitch(dragSwitch,
@@ -1219,6 +1349,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             } else {
                 updateTouchDisplayStatusUi();
             }
+            refreshHideDisplayHotkeyUi();
         });
         touchDisplayEditRegionsButton.setOnClickListener(v -> {
             ensureAccessibility();
@@ -1246,6 +1377,14 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 Toast.makeText(this, R.string.global_html_import_first, Toast.LENGTH_SHORT).show();
             }
         });
+        globalHtmlChoiceSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (internalChange || position < 0 || position >= globalHtmlChoices.size()) return;
+                GlobalHtmlStore.setSelectedId(MainActivity.this, globalHtmlChoices.get(position).id);
+                syncGlobalHtmlUi();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
         globalHtmlFontSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 if (internalChange) return;
@@ -1255,24 +1394,82 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         });
         globalHtmlImportButton.setOnClickListener(v -> openGlobalHtmlPicker());
 
+        live2dSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            if (enabled && !Live2DModelStore.exists(MainActivity.this)) {
+                OverlayState.setLive2DEnabled(MainActivity.this, false);
+                internalChange = true;
+                live2dSwitch.setChecked(false);
+                internalChange = false;
+                Toast.makeText(MainActivity.this, R.string.live2d_import_first, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            OverlayState.setLive2DEnabled(MainActivity.this, enabled);
+            syncInAppLive2D();
+            syncLive2DTrackingService();
+            handleDisplayModeChanged();
+        });
+        live2dSizeSeekBar.setOnSeekBarChangeListener(boundedListener(
+                live2dSizeLabel, R.string.live2d_size_format,
+                LIVE2D_SIZE_MIN, LIVE2D_SIZE_MAX, value -> {
+                    OverlayState.setLive2DSize(MainActivity.this, value);
+                    if (inAppLive2dView != null) inAppLive2dView.setDisplayScalePercent(value);
+                }));
+        live2dMotionTrackingSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            if (enabled) {
+                if (!Live2DModelStore.exists(MainActivity.this)) {
+                    internalChange = true;
+                    live2dMotionTrackingSwitch.setChecked(false);
+                    internalChange = false;
+                    Toast.makeText(MainActivity.this, R.string.live2d_import_first, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    internalChange = true;
+                    live2dMotionTrackingSwitch.setChecked(false);
+                    internalChange = false;
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, LIVE2D_MOTION_CAMERA_PERMISSION_REQUEST);
+                    return;
+                }
+            }
+            OverlayState.setLive2DMotionTrackingEnabled(MainActivity.this, enabled);
+            syncLive2DTrackingService();
+        });
+        live2dMouseCaptureSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            if (enabled && !Live2DModelStore.exists(MainActivity.this)) {
+                internalChange = true;
+                live2dMouseCaptureSwitch.setChecked(false);
+                internalChange = false;
+                Toast.makeText(MainActivity.this, R.string.live2d_import_first, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            OverlayState.setLive2DMouseCaptureEnabled(MainActivity.this, enabled);
+        });
+        live2dHideWatermarkSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            if (internalChange) return;
+            OverlayState.setLive2DHideWatermarkEnabled(MainActivity.this, enabled);
+            if (inAppLive2dView != null) inAppLive2dView.setHideWatermark(enabled);
+        });
+        live2dImportButton.setOnClickListener(v -> openLive2DModelPicker());
+
         fontSwitch.setOnCheckedChangeListener((button, enabled) -> {
             if (internalChange) return;
             FontManager.setEnabled(MainActivity.this, enabled);
+            if (enabled && FontManager.hasImportedFont(MainActivity.this)) {
+                FontManager.setChoice(MainActivity.this, FontManager.CHOICE_IMPORTED);
+            } else if (enabled) {
+                Toast.makeText(MainActivity.this, R.string.font_import_first, Toast.LENGTH_SHORT).show();
+            }
+            syncFontChoices();
             syncFontUi();
             AxonInputAccessibilityService.refreshTheme();
         });
         fontChoiceSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (internalChange) return;
-                if (position == FontManager.CHOICE_IMPORTED && !FontManager.hasImportedFont(MainActivity.this)) {
-                    Toast.makeText(MainActivity.this, R.string.font_import_first, Toast.LENGTH_SHORT).show();
-                    internalChange = true;
-                    fontChoiceSpinner.setSelection(FontManager.CHOICE_SYSTEM, false);
-                    internalChange = false;
-                    FontManager.setChoice(MainActivity.this, FontManager.CHOICE_SYSTEM);
-                } else {
-                    FontManager.setChoice(MainActivity.this, position);
-                }
+                if (internalChange || position < 0 || position >= importedFontChoices.size()) return;
+                FontManager.setSelectedImportedId(MainActivity.this, importedFontChoices.get(position).id);
                 syncFontUi();
                 if (FontManager.isEnabled(MainActivity.this)) {
                     AxonInputAccessibilityService.refreshTheme();
@@ -1310,6 +1507,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             }
             // 每次开启都重新录入，避免错误映射残留。只有两个按键都录入完成后才真正生效。
             GamepadSettingsStore.setCustomSwapEnabled(MainActivity.this, false);
+            cancelHideDisplayHotkeyCapture(true);
+            cancelKeyboardCatExpressionHotkeyCapture(true);
             gamepadCustomSwapCaptureStep = 1;
             gamepadCustomSwapFirstPending = 0;
             updateGamepadCustomSwapUi();
@@ -1346,7 +1545,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         if (event == null) return false;
 
         boolean firstDown = event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0;
-        if (isPhysicalGamepadEvent(event)) {
+        if (isPhysicalGamepadEvent(event)
+                || (gamepadMappingCaptureArmed && InputBinding.isGamepadEventForMapping(event))) {
             updateBindableGamepadKeyEvent(event);
             return super.dispatchKeyEvent(event);
         }
@@ -1385,6 +1585,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private void updateBindableGamepadMotionEvent(MotionEvent event) {
         if (!InputBinding.isPhysicalGamepadMotionEvent(event)) return;
+        // Mapping must be backed by AccessibilityService.onKeyEvent so the original button can be consumed.
+        // Axis-only trigger/hat motion remains observable for displays but is not offered as a remap source.
+        if (gamepadMappingCaptureArmed) return;
         int before = bindableGamepadButtonsDown();
         bindableGamepadMotionButtonsDown = InputBinding.gamepadButtonsFromMotionEvent(event);
         int after = bindableGamepadButtonsDown();
@@ -1493,6 +1696,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         MainActivity activity = activeBindingActivity;
         boolean mainCapture = activity != null && !activity.isFinishing() && !activity.isDestroyed()
                 && (activity.keyboardCatExpressionHotkeyCaptureArmed
+                || activity.hideDisplayHotkeyCaptureArmed
+                || activity.gamepadMappingCaptureArmed
                 || activity.forceHoldCaptureStep != 0
                 || activity.gamepadCustomSwapCaptureStep != 0);
         return mainCapture || SuperCustomDisplayActivity.isInputCaptureActive();
@@ -1517,9 +1722,41 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private void handleBindableInputPressed(int inputCode, int evdevCode) {
         if (inputCode < 0) return;
 
+        if (gamepadMappingCaptureArmed) {
+            if (!InputBinding.isGamepad(inputCode)) {
+                Toast.makeText(this, R.string.gamepad_mapping_gamepad_only, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if ((OverlayState.isForceHoldEnabled(this)
+                    && inputCode == OverlayState.getForceHoldTriggerKeyCode(this))
+                    || inputCode == OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this)
+                    || (OverlayState.isHideDisplayHotkeyEnabled(this)
+                    && inputCode == OverlayState.getHideDisplayHotkeyInputCode(this))
+                    || FloatingMediaStore.hotkeyConflicts(this, null, inputCode)) {
+                Toast.makeText(this, R.string.gamepad_mapping_source_conflict, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            onGamepadMappingSourceCaptured(inputCode);
+            return;
+        }
+
+        if (hideDisplayHotkeyCaptureArmed) {
+            if (hideDisplayHotkeyConflicts(inputCode)) {
+                Toast.makeText(this, R.string.hide_display_hotkey_conflict, Toast.LENGTH_SHORT).show();
+            } else {
+                OverlayState.setHideDisplayHotkeyInputCode(this, inputCode);
+                hideDisplayHotkeyCaptureArmed = false;
+                hideDisplayHotkeyPreviousInputCode = -1;
+                updateHideDisplayHotkeyButtonUi();
+            }
+            return;
+        }
+
         if (keyboardCatExpressionHotkeyCaptureArmed) {
             if ((OverlayState.isForceHoldEnabled(this)
                     && inputCode == OverlayState.getForceHoldTriggerKeyCode(this))
+                    || inputCode == OverlayState.getHideDisplayHotkeyInputCode(this)
+                    || gamepadMappingUsesSource(inputCode)
                     || FloatingMediaStore.hotkeyConflicts(this, null, inputCode)) {
                 Toast.makeText(this, R.string.floating_video_hotkey_conflict,
                         Toast.LENGTH_SHORT).show();
@@ -1535,7 +1772,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         if (forceHoldCaptureStep != 0) {
             if (forceHoldCaptureStep == 1) {
-                if (evdevCode <= 0) {
+                if (gamepadMappingUsesSource(inputCode)) {
+                    Toast.makeText(this, R.string.gamepad_mapping_source_conflict, Toast.LENGTH_SHORT).show();
+                } else if (evdevCode <= 0) {
                     Toast.makeText(this, R.string.force_hold_scan_unsupported, Toast.LENGTH_SHORT).show();
                 } else {
                     forceHoldTargetKeyPending = inputCode;
@@ -1546,6 +1785,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             } else if (inputCode == forceHoldTargetKeyPending) {
                 Toast.makeText(this, R.string.force_hold_same_key, Toast.LENGTH_SHORT).show();
             } else if (inputCode == OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this)
+                    || inputCode == OverlayState.getHideDisplayHotkeyInputCode(this)
+                    || gamepadMappingUsesSource(inputCode)
                     || FloatingMediaStore.hotkeyConflicts(this, null, inputCode)) {
                 Toast.makeText(this, R.string.floating_video_hotkey_conflict, Toast.LENGTH_SHORT).show();
             } else {
@@ -1622,7 +1863,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private boolean needsAccessibility() {
         return OverlayState.isAnyDisplayEnabled(this)
                 || SensitivitySettingsStore.isEnabled(this)
-                || OverlayState.isForceHoldEnabled(this);
+                || OverlayState.isForceHoldEnabled(this)
+                || !GamepadMappingStore.load(this).isEmpty();
     }
 
     @Override
@@ -1648,24 +1890,41 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     @Override
     protected void onStop() {
         ShizukuBridge.removeListener(this);
+        // onPause normally hands Live2D to the accessibility overlay.  Repeat at onStop because
+        // some ROMs dispatch accessibility work after the Activity transition has already moved.
+        AxonInputAccessibilityService.refreshLive2DOwnership();
         super.onStop();
     }
 
     @Override
     protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
+        removeInAppLive2D();
         // Activity 销毁不清理运行配置，任务移除时由服务统一处理。
         super.onDestroy();
     }
 
     @Override
     protected void onPause() {
+        activityResumed = false;
         if (activeBindingActivity == this) activeBindingActivity = null;
+        removeInAppLive2D();
         AxonInputAccessibilityService.refreshActiveService();
+        // Live2D ownership is latency-sensitive and must not be swallowed by a coalesced full-state
+        // refresh.  Hand off immediately, then once more after the window transition settles.
+        AxonInputAccessibilityService.refreshLive2DOwnership();
+        mainHandler.postDelayed(AxonInputAccessibilityService::refreshLive2DOwnership, 120L);
         mainHandler.removeCallbacks(sensitivityStatusTicker);
         mainHandler.removeCallbacks(touchDisplayStatusTicker);
         mainHandler.removeCallbacks(cpsBindingPoll);
         cancelKeyboardCatExpressionHotkeyCapture(true);
+        cancelHideDisplayHotkeyCapture(true);
+        gamepadMappingCaptureArmed = false;
+        pendingGamepadMappingSource = -1;
+        if (gamepadMappingKeyboardDialog != null) {
+            try { gamepadMappingKeyboardDialog.dismiss(); } catch (Throwable ignored) {}
+            gamepadMappingKeyboardDialog = null;
+        }
         keyboardCatExpressionHotkeyCapturedKeyCode = -1;
 
         // Binding prompts are foreground-only.  Without this reset, leaving the app halfway through
@@ -1681,8 +1940,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     @Override
     protected void onResume() {
         super.onResume();
+        activityResumed = true;
         activeBindingActivity = this;
         AxonInputAccessibilityService.refreshActiveService();
+        // Remove the external owner as soon as the Activity becomes visible; syncInAppLive2D below
+        // will create the in-process renderer after UI state has been restored.
+        AxonInputAccessibilityService.refreshLive2DOwnership();
         AxonApplication.syncTaskVisibility(this, false);
 
         internalChange = true;
@@ -1702,8 +1965,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         mouseTrajectorySwitch.setChecked(OverlayState.isMouseTrajectoryEnabled(this));
         mouseTrajectoryLeftColorSwitch.setChecked(OverlayState.isMouseTrajectoryLeftColorEnabled(this));
         mouseTrajectoryRightColorSwitch.setChecked(OverlayState.isMouseTrajectoryRightColorEnabled(this));
-        updateColorDot(mouseTrajectoryLeftColorDot, OverlayState.getMouseTrajectoryLeftColor(this));
-        updateColorDot(mouseTrajectoryRightColorDot, OverlayState.getMouseTrajectoryRightColor(this));
+        updateColorDotSequence(mouseTrajectoryLeftColorDot, OverlayState.getMouseTrajectoryLeftColors(this));
+        updateColorDotSequence(mouseTrajectoryRightColorDot, OverlayState.getMouseTrajectoryRightColors(this));
         customDisplaySwitch.setChecked(OverlayState.isCustomEnabled(this));
         superCustomDisplaySwitch.setChecked(OverlayState.isSuperCustomEnabled(this));
         gamepadLeftStickSwitch.setChecked(OverlayState.isGamepadLeftStickEnabled(this));
@@ -1714,6 +1977,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         gamepadRightShoulderSwitch.setChecked(OverlayState.isGamepadRightShoulderEnabled(this));
         gamepadBackSwitch.setChecked(OverlayState.isGamepadBackEnabled(this));
         gamepadFaceReverseSwitch.setChecked(OverlayState.isGamepadFaceReversed(this));
+        gamepadFaceSymbolSwitch.setChecked(OverlayState.isGamepadFaceSymbolIcons(this));
         gamepadFaceYDpsSwitch.setChecked(GamepadSettingsStore.isFaceYDpsEnabled(this));
         gamepadFaceXDpsSwitch.setChecked(GamepadSettingsStore.isFaceXDpsEnabled(this));
         gamepadFaceBDpsSwitch.setChecked(GamepadSettingsStore.isFaceBDpsEnabled(this));
@@ -1734,7 +1998,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         captureSwitch.setChecked(OverlayState.isCustomCaptureEnabled(this));
         dpsSwitch.setChecked(OverlayState.isDpsEnabled(this));
         forceHoldSwitch.setChecked(forceHoldCaptureStep != 0 || OverlayState.isForceHoldEnabled(this));
+        hideDisplayHotkeySwitch.setChecked(OverlayState.isHideDisplayHotkeyEnabled(this));
         updateForceHoldUi();
+        updateGamepadMappingUi();
         dpsCaptureArmed = OverlayState.isDpsEnabled(this)
                 && OverlayState.getDpsTargetKeyCode(this) == OverlayState.DPS_TARGET_NONE;
         updateDpsTargetUi();
@@ -1744,12 +2010,28 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         touchDisplaySwitch.setChecked(TouchDisplayStore.isEnabled(this));
         updateTouchDisplayStatusUi();
         globalHtmlSwitch.setChecked(GlobalHtmlStore.isEnabled(this));
+        boolean live2dAvailable = Live2DModelStore.exists(this);
+        if (!live2dAvailable && OverlayState.isLive2DEnabled(this)) {
+            OverlayState.setLive2DEnabled(this, false);
+        }
+        live2dSwitch.setChecked(live2dAvailable && OverlayState.isLive2DEnabled(this));
+        boolean motionTrackingEnabled = OverlayState.isLive2DMotionTrackingEnabled(this);
+        if (motionTrackingEnabled && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            OverlayState.setLive2DMotionTrackingEnabled(this, false);
+            motionTrackingEnabled = false;
+        }
+        live2dMotionTrackingSwitch.setChecked(motionTrackingEnabled);
+        live2dMouseCaptureSwitch.setChecked(live2dAvailable && OverlayState.isLive2DMouseCaptureEnabled(this));
+        live2dHideWatermarkSwitch.setChecked(OverlayState.isLive2DHideWatermarkEnabled(this));
+        syncLive2DTrackingService();
+        syncGlobalHtmlChoices();
         globalHtmlFontSpinner.setSelection(GlobalHtmlStore.getFontMode(this), false);
         fontSwitch.setChecked(FontManager.isEnabled(this));
-        fontChoiceSpinner.setSelection(FontManager.getChoice(this), false);
+        syncFontChoices();
         syncGlobalHtmlUi();
         syncFontUi();
         syncSuperCustomConfigRows();
+        refreshHideDisplayHotkeyUi();
         syncSeekBarUiFromState();
         internalChange = false;
         mainHandler.removeCallbacks(sensitivityStatusTicker);
@@ -1764,7 +2046,22 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         // This is also the recovery entry for ROMs that persisted the secure setting but failed to
         // bind the AccessibilityService on the first attempt.
         if (needsAccessibility()) mainHandler.post(this::ensureAccessibility);
+        syncInAppLive2D();
 
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != LIVE2D_MOTION_CAMERA_PERMISSION_REQUEST) return;
+        boolean granted = grantResults != null && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        OverlayState.setLive2DMotionTrackingEnabled(this, granted);
+        internalChange = true;
+        live2dMotionTrackingSwitch.setChecked(granted);
+        internalChange = false;
+        if (!granted) Toast.makeText(this, R.string.live2d_motion_permission_required, Toast.LENGTH_SHORT).show();
+        syncLive2DTrackingService();
     }
 
     @Override
@@ -1802,17 +2099,52 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             }
             return;
         }
+        if (requestCode == LIVE2D_MODEL_IMPORT_REQUEST) {
+            final Uri modelUri = uri;
+            final String modelName = queryDisplayName(uri, "Live2D-model.zip");
+            Toast.makeText(this, R.string.live2d_importing, Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                try {
+                    Live2DModelStore.ImportResult imported = Live2DModelStore.importZip(
+                            getApplicationContext(), modelUri, modelName);
+                    mainHandler.post(() -> {
+                        if (isFinishing()) return;
+                        OverlayState.setLive2DEnabled(MainActivity.this, true);
+                        internalChange = true;
+                        live2dSwitch.setChecked(true);
+                        internalChange = false;
+                        syncInAppLive2D();
+                        syncLive2DTrackingService();
+                        ensureAccessibility();
+                        AxonInputAccessibilityService.refreshActiveService();
+                        int message = imported.adaptedTextures > 0
+                                ? R.string.live2d_import_success_adapted
+                                : R.string.live2d_import_success;
+                        Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show();
+                    });
+                } catch (Throwable error) {
+                    mainHandler.post(() -> {
+                        if (isFinishing()) return;
+                        String detail = error.getMessage() == null ? "" : error.getMessage();
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.live2d_import_failed, detail), Toast.LENGTH_LONG).show();
+                    });
+                }
+            }, "AxonLive2DImport").start();
+            return;
+        }
+
         if (requestCode == FONT_IMPORT_REQUEST) {
             try {
                 FontManager.importFont(this, uri, queryDisplayName(uri, "font.ttf"));
-                FontManager.setChoice(this, FontManager.CHOICE_IMPORTED);
                 internalChange = true;
-                fontChoiceSpinner.setSelection(FontManager.CHOICE_IMPORTED, false);
+                syncFontChoices();
                 internalChange = false;
                 syncFontUi();
                 if (FontManager.isEnabled(this)) AxonInputAccessibilityService.refreshTheme();
                 Toast.makeText(this, R.string.font_import_success, Toast.LENGTH_SHORT).show();
             } catch (Throwable error) {
+                internalChange = false;
                 Toast.makeText(this, R.string.font_import_failed, Toast.LENGTH_SHORT).show();
             }
             return;
@@ -1825,6 +2157,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 GlobalHtmlStore.save(this, name, html);
                 internalChange = true;
                 globalHtmlSwitch.setChecked(true);
+                syncGlobalHtmlChoices();
                 syncGlobalHtmlUi();
                 internalChange = false;
                 Toast.makeText(this, R.string.global_html_import_success, Toast.LENGTH_SHORT).show();
@@ -1923,6 +2256,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         boolean keyboardCatMouseCapture = OverlayState.isKeyboardCatEnabled(this) && !sensitivity;
         boolean superCustomMouseCapture = OverlayState.isSuperCustomEnabled(this)
                 && SuperCustomConfigStore.activeContainsMouse(this) && !sensitivity;
+        boolean gamepadMappingNeedsPrivileged = !GamepadMappingStore.load(this).isEmpty();
         // Root 是全局激活方式：只要已获得 uid 0，显示类无障碍自动启用也直接走 Root。
         boolean rootMode = RootBridge.isRootActive()
                 || SensitivitySettingsStore.getMode(this) == SensitivitySettingsStore.MODE_ROOT;
@@ -1931,7 +2265,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             accessibilityVerificationGeneration++;
             accessibilityVerificationInFlight = false;
             AxonInputAccessibilityService.refreshActiveService();
-            if ((sensitivity || keyboardCatMouseCapture || superCustomMouseCapture) && !rootMode) {
+            if ((sensitivity || keyboardCatMouseCapture || superCustomMouseCapture
+                    || gamepadMappingNeedsPrivileged) && !rootMode) {
                 ensureShizukuForSensitivity();
             }
             return;
@@ -2164,6 +2499,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             // Once the overlay is alive, independently bring up the global mouse input channel.
             boolean needsInput = SensitivitySettingsStore.isEnabled(this)
                     || OverlayState.isKeyboardCatEnabled(this)
+                    || !GamepadMappingStore.load(this).isEmpty()
                     || (OverlayState.isSuperCustomEnabled(this)
                     && SuperCustomConfigStore.activeContainsMouse(this));
             if (needsInput && !rootMode) ensureShizukuForSensitivity();
@@ -2722,6 +3058,262 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         updateKeyboardCatExpressionHotkeyUi();
     }
 
+    private void toggleHideDisplayHotkeyCapture() {
+        if (hideDisplayHotkeyCaptureArmed) {
+            cancelHideDisplayHotkeyCapture(true);
+            return;
+        }
+        if (forceHoldCaptureStep != 0 || gamepadCustomSwapCaptureStep != 0 || gamepadMappingCaptureArmed) {
+            Toast.makeText(this, R.string.hide_display_hotkey_capture_busy, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        cancelKeyboardCatExpressionHotkeyCapture(true);
+        hideDisplayHotkeyPreviousInputCode = OverlayState.getHideDisplayHotkeyInputCode(this);
+        if (hideDisplayHotkeyPreviousInputCode >= 0) {
+            // Rebinding must not trigger the old shortcut while the next physical key is recorded.
+            OverlayState.setHideDisplayHotkeyInputCode(this, -1);
+        }
+        hideDisplayHotkeyCaptureArmed = true;
+        updateHideDisplayHotkeyButtonUi();
+    }
+
+    private void cancelHideDisplayHotkeyCapture(boolean restorePrevious) {
+        if (!hideDisplayHotkeyCaptureArmed) return;
+        hideDisplayHotkeyCaptureArmed = false;
+        if (restorePrevious && hideDisplayHotkeyPreviousInputCode >= 0) {
+            OverlayState.setHideDisplayHotkeyInputCode(this, hideDisplayHotkeyPreviousInputCode);
+        }
+        hideDisplayHotkeyPreviousInputCode = -1;
+        updateHideDisplayHotkeyButtonUi();
+    }
+
+    private boolean gamepadMappingUsesSource(int inputCode) {
+        if (!InputBinding.isGamepad(inputCode)) return false;
+        for (GamepadMappingStore.Mapping mapping : GamepadMappingStore.load(this)) {
+            if (mapping.sourceInputCode == inputCode) return true;
+        }
+        return false;
+    }
+
+    private boolean hideDisplayHotkeyConflicts(int inputCode) {
+        if (inputCode < 0) return true;
+        if (OverlayState.isForceHoldEnabled(this)
+                && inputCode == OverlayState.getForceHoldTriggerKeyCode(this)) return true;
+        if (inputCode == OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this)) return true;
+        if (gamepadMappingUsesSource(inputCode)) return true;
+        return FloatingMediaStore.hotkeyConflicts(this, null, inputCode);
+    }
+
+    private void refreshHideDisplayHotkeyUi() {
+        if (hideDisplayHotkeyButton == null || hideDisplayTargetSelectionButton == null
+                || hideDisplayHotkeySwitch == null) return;
+        OverlayState.sanitizeHiddenDisplayHotkeyTargets(this);
+        boolean previousInternal = internalChange;
+        internalChange = true;
+        try {
+            hideDisplayHotkeySwitch.setChecked(OverlayState.isHideDisplayHotkeyEnabled(this));
+        } finally {
+            internalChange = previousInternal;
+        }
+        List<Integer> enabledTargets = OverlayState.getEnabledHideDisplayTargets(this);
+        Set<Integer> selected = OverlayState.getHideDisplayHotkeyTargets(this);
+        int selectedCount = 0;
+        for (int target : enabledTargets) if (selected.contains(target)) selectedCount++;
+        if (enabledTargets.isEmpty()) {
+            hideDisplayTargetSelectionButton.setText(R.string.hide_display_target_none);
+            setControlEnabled(hideDisplayTargetSelectionButton, false);
+        } else {
+            hideDisplayTargetSelectionButton.setText(getString(
+                    R.string.hide_display_target_selected_count, selectedCount, enabledTargets.size()));
+            setControlEnabled(hideDisplayTargetSelectionButton, true);
+        }
+        setControlEnabled(hideDisplayHotkeyButton, OverlayState.isHideDisplayHotkeyEnabled(this));
+        updateHideDisplayHotkeyButtonUi();
+    }
+
+    private void showHideDisplayTargetSelectionDialog() {
+        List<Integer> enabledTargets = OverlayState.getEnabledHideDisplayTargets(this);
+        if (enabledTargets.isEmpty()) {
+            Toast.makeText(this, R.string.hide_display_target_none, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Set<Integer> selected = OverlayState.getHideDisplayHotkeyTargets(this);
+        String[] labels = new String[enabledTargets.size()];
+        boolean[] checked = new boolean[enabledTargets.size()];
+        for (int i = 0; i < enabledTargets.size(); i++) {
+            int target = enabledTargets.get(i);
+            labels[i] = hideDisplayTargetLabel(target);
+            checked[i] = selected.contains(target);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.hide_display_target_dialog_title)
+                .setMultiChoiceItems(labels, checked,
+                        (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                    LinkedHashSet<Integer> next = new LinkedHashSet<>();
+                    for (int i = 0; i < checked.length; i++) {
+                        if (checked[i]) next.add(enabledTargets.get(i));
+                    }
+                    OverlayState.setHideDisplayHotkeyTargets(MainActivity.this, next);
+                    refreshHideDisplayHotkeyUi();
+                })
+                .show();
+    }
+
+    private void updateHideDisplayHotkeyButtonUi() {
+        if (hideDisplayHotkeyButton == null) return;
+        if (hideDisplayHotkeyCaptureArmed) {
+            hideDisplayHotkeyButton.setText(R.string.hide_display_hotkey_recording);
+            return;
+        }
+        int inputCode = OverlayState.getHideDisplayHotkeyInputCode(this);
+        hideDisplayHotkeyButton.setText(inputCode >= 0
+                ? getString(R.string.hide_display_hotkey_bound, InputBinding.label(inputCode))
+                : getString(R.string.hide_display_hotkey_unbound));
+    }
+
+    private void startGamepadMappingCapture() {
+        if (gamepadMappingCaptureArmed) {
+            gamepadMappingCaptureArmed = false;
+            pendingGamepadMappingSource = -1;
+            updateGamepadMappingUi();
+            return;
+        }
+        if (forceHoldCaptureStep != 0 || gamepadCustomSwapCaptureStep != 0
+                || hideDisplayHotkeyCaptureArmed || keyboardCatExpressionHotkeyCaptureArmed) {
+            Toast.makeText(this, R.string.gamepad_mapping_capture_busy, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        gamepadMappingCaptureArmed = true;
+        pendingGamepadMappingSource = -1;
+        updateGamepadMappingUi();
+        ensureAccessibility();
+        Toast.makeText(this, R.string.gamepad_mapping_wait_gamepad, Toast.LENGTH_SHORT).show();
+    }
+
+    private void onGamepadMappingSourceCaptured(int sourceInputCode) {
+        if (!gamepadMappingCaptureArmed || !InputBinding.isGamepad(sourceInputCode)) return;
+        gamepadMappingCaptureArmed = false;
+        pendingGamepadMappingSource = sourceInputCode;
+        updateGamepadMappingUi();
+        showGamepadMappingKeyboardPicker(sourceInputCode);
+    }
+
+    private void showGamepadMappingKeyboardPicker(int sourceInputCode) {
+        if (gamepadMappingKeyboardDialog != null) {
+            try { gamepadMappingKeyboardDialog.dismiss(); } catch (Throwable ignored) {}
+            gamepadMappingKeyboardDialog = null;
+        }
+        FullKeyboardOverlayView keyboard = new FullKeyboardOverlayView(this);
+        keyboard.setPickerMode(keyCode -> {
+            if (!GamepadMappingStore.isSupportedKeyboardTarget(keyCode)) return;
+            GamepadMappingStore.put(MainActivity.this, sourceInputCode, keyCode);
+            pendingGamepadMappingSource = -1;
+            if (gamepadMappingKeyboardDialog != null) {
+                gamepadMappingKeyboardDialog.dismiss();
+                gamepadMappingKeyboardDialog = null;
+            }
+            updateGamepadMappingUi();
+            ensureAccessibility();
+            ensurePrivilegedInputForGamepadMapping();
+        });
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int width = Math.max(dp(320), Math.min(screenWidth - dp(24), dp(760)));
+        int height = Math.max(dp(210), Math.min(dp(330), Math.round(width * 0.48f)));
+        FrameLayout wrapper = new FrameLayout(this);
+        wrapper.setPadding(dp(8), dp(8), dp(8), dp(8));
+        wrapper.addView(keyboard, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, height));
+        gamepadMappingKeyboardDialog = new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.gamepad_mapping_choose_keyboard,
+                        InputBinding.label(sourceInputCode)))
+                .setView(wrapper)
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        gamepadMappingKeyboardDialog.setOnDismissListener(dialog -> {
+            pendingGamepadMappingSource = -1;
+            gamepadMappingKeyboardDialog = null;
+            updateGamepadMappingUi();
+        });
+        gamepadMappingKeyboardDialog.show();
+    }
+
+    private void ensurePrivilegedInputForGamepadMapping() {
+        RootBridge.ensureActivated(this, rootActive -> {
+            if (!rootActive && (!ShizukuBridge.isReady() || !ShizukuBridge.hasPermission())) {
+                ensureShizukuForSensitivity();
+            }
+            AxonInputAccessibilityService.refreshActiveService();
+        });
+    }
+
+    private void updateGamepadMappingUi() {
+        if (gamepadMappingAddButton == null || gamepadMappingList == null || gamepadMappingStatusText == null) return;
+        if (gamepadMappingCaptureArmed) {
+            gamepadMappingAddButton.setText(R.string.gamepad_mapping_cancel_capture);
+            gamepadMappingStatusText.setText(R.string.gamepad_mapping_wait_gamepad);
+        } else if (pendingGamepadMappingSource >= 0) {
+            gamepadMappingAddButton.setText(R.string.gamepad_mapping_add);
+            gamepadMappingStatusText.setText(getString(R.string.gamepad_mapping_wait_keyboard,
+                    InputBinding.label(pendingGamepadMappingSource)));
+        } else {
+            gamepadMappingAddButton.setText(R.string.gamepad_mapping_add);
+            List<GamepadMappingStore.Mapping> mappings = GamepadMappingStore.load(this);
+            gamepadMappingStatusText.setText(mappings.isEmpty()
+                    ? getString(R.string.gamepad_mapping_empty)
+                    : getString(R.string.gamepad_mapping_count, mappings.size()));
+        }
+
+        gamepadMappingList.removeAllViews();
+        List<GamepadMappingStore.Mapping> mappings = GamepadMappingStore.load(this);
+        for (GamepadMappingStore.Mapping mapping : mappings) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView label = createSupportingText();
+            label.setText(getString(R.string.gamepad_mapping_row,
+                    InputBinding.label(mapping.sourceInputCode), KeyLabel.fromKeyCode(mapping.targetKeyCode)));
+            row.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            Button remove = new Button(this);
+            remove.setText(R.string.gamepad_mapping_remove);
+            remove.setAllCaps(false);
+            remove.setTextSize(12f);
+            remove.setMinHeight(dp(36));
+            remove.setMinimumHeight(dp(36));
+            styleActionButton(remove);
+            remove.setOnClickListener(v -> {
+                GamepadMappingStore.remove(MainActivity.this, mapping.sourceInputCode);
+                updateGamepadMappingUi();
+            });
+            row.addView(remove, new LinearLayout.LayoutParams(dp(78), ViewGroup.LayoutParams.WRAP_CONTENT));
+            gamepadMappingList.addView(row, supportingParams(dp(4)));
+        }
+    }
+
+    private String hideDisplayTargetLabel(int target) {
+        switch (target) {
+            case OverlayState.HIDE_DISPLAY_KEYBOARD: return getString(R.string.hide_display_target_keyboard);
+            case OverlayState.HIDE_DISPLAY_FULL_KEYBOARD: return getString(R.string.hide_display_target_full_keyboard);
+            case OverlayState.HIDE_DISPLAY_MOUSE: return getString(R.string.hide_display_target_mouse);
+            case OverlayState.HIDE_DISPLAY_KEYBOARD_CAT: return getString(R.string.hide_display_target_keyboard_cat);
+            case OverlayState.HIDE_DISPLAY_KEY_PROMPT: return getString(R.string.hide_display_target_key_prompt);
+            case OverlayState.HIDE_DISPLAY_MOUSE_TRAJECTORY: return getString(R.string.hide_display_target_mouse_trajectory);
+            case OverlayState.HIDE_DISPLAY_CUSTOM: return getString(R.string.hide_display_target_custom);
+            case OverlayState.HIDE_DISPLAY_SUPER_CUSTOM: return getString(R.string.hide_display_target_super_custom);
+            case OverlayState.HIDE_DISPLAY_TOUCH: return getString(R.string.hide_display_target_touch);
+            case OverlayState.HIDE_DISPLAY_DPS: return getString(R.string.hide_display_target_dps);
+            case OverlayState.HIDE_DISPLAY_GAMEPAD_LEFT_STICK: return getString(R.string.hide_display_target_gamepad_left_stick);
+            case OverlayState.HIDE_DISPLAY_GAMEPAD_RIGHT_STICK: return getString(R.string.hide_display_target_gamepad_right_stick);
+            case OverlayState.HIDE_DISPLAY_GAMEPAD_FACE: return getString(R.string.hide_display_target_gamepad_face);
+            case OverlayState.HIDE_DISPLAY_GAMEPAD_DPAD: return getString(R.string.hide_display_target_gamepad_dpad);
+            case OverlayState.HIDE_DISPLAY_GAMEPAD_LEFT_SHOULDER: return getString(R.string.hide_display_target_gamepad_left_shoulder);
+            case OverlayState.HIDE_DISPLAY_GAMEPAD_RIGHT_SHOULDER: return getString(R.string.hide_display_target_gamepad_right_shoulder);
+            case OverlayState.HIDE_DISPLAY_GAMEPAD_BACK: return getString(R.string.hide_display_target_gamepad_back);
+            default: return getString(R.string.hide_display_target_none);
+        }
+    }
+
     private void toggleKeyboardCatExpressionHotkeyCapture() {
         if (keyboardCatExpressions.isEmpty()) {
             Toast.makeText(this, R.string.keyboard_cat_expression_hotkey_no_expressions, Toast.LENGTH_SHORT).show();
@@ -2731,6 +3323,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             cancelKeyboardCatExpressionHotkeyCapture(true);
             return;
         }
+        cancelHideDisplayHotkeyCapture(true);
         keyboardCatExpressionHotkeyPreviousKeyCode =
                 OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this);
         if (keyboardCatExpressionHotkeyPreviousKeyCode >= 0) {
@@ -2848,6 +3441,86 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         startActivityForResult(intent, FONT_IMPORT_REQUEST);
     }
 
+    private void syncFontChoices() {
+        if (fontChoiceSpinner == null) return;
+        boolean previousInternalChange = internalChange;
+        internalChange = true;
+        importedFontChoices.clear();
+        importedFontChoices.addAll(FontManager.listImportedFonts(this));
+
+        ArrayList<String> labels = new ArrayList<>();
+        if (importedFontChoices.isEmpty()) {
+            labels.add(getString(R.string.font_import_none));
+        } else {
+            for (FontManager.FontInfo info : importedFontChoices) labels.add(info.name);
+        }
+        setChoiceSpinnerValues(fontChoiceSpinner, labels);
+        fontChoiceSpinner.setEnabled(!importedFontChoices.isEmpty());
+        fontChoiceSpinner.setAlpha(importedFontChoices.isEmpty() ? 0.55f : 1f);
+
+        if (!importedFontChoices.isEmpty()) {
+            String selectedId = FontManager.getSelectedImportedId(this);
+            int selection = 0;
+            for (int i = 0; i < importedFontChoices.size(); i++) {
+                if (selectedId.equals(importedFontChoices.get(i).id)) {
+                    selection = i;
+                    break;
+                }
+            }
+            fontChoiceSpinner.setSelection(selection, false);
+            // “修改字体”的选择器只负责导入字体；开启功能后统一使用当前选中的导入字体。
+            if (FontManager.isEnabled(this)) FontManager.setChoice(this, FontManager.CHOICE_IMPORTED);
+        }
+        internalChange = previousInternalChange;
+    }
+
+    private void syncGlobalHtmlChoices() {
+        if (globalHtmlChoiceSpinner == null) return;
+        boolean previousInternalChange = internalChange;
+        internalChange = true;
+        globalHtmlChoices.clear();
+        globalHtmlChoices.addAll(GlobalHtmlStore.listDocuments(this));
+
+        ArrayList<String> labels = new ArrayList<>();
+        if (globalHtmlChoices.isEmpty()) {
+            labels.add(getString(R.string.global_html_not_imported));
+        } else {
+            for (GlobalHtmlStore.HtmlInfo info : globalHtmlChoices) labels.add(info.name);
+        }
+        setChoiceSpinnerValues(globalHtmlChoiceSpinner, labels);
+        globalHtmlChoiceSpinner.setEnabled(!globalHtmlChoices.isEmpty());
+        globalHtmlChoiceSpinner.setAlpha(globalHtmlChoices.isEmpty() ? 0.55f : 1f);
+
+        if (!globalHtmlChoices.isEmpty()) {
+            String selectedId = GlobalHtmlStore.getSelectedId(this);
+            int selection = 0;
+            for (int i = 0; i < globalHtmlChoices.size(); i++) {
+                if (selectedId.equals(globalHtmlChoices.get(i).id)) {
+                    selection = i;
+                    break;
+                }
+            }
+            globalHtmlChoiceSpinner.setSelection(selection, false);
+        }
+        internalChange = previousInternalChange;
+    }
+
+    private void setChoiceSpinnerValues(Spinner spinner, List<String> values) {
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(
+                this, android.R.layout.simple_spinner_item, values) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                return createSpinnerText(getItem(position), false);
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                return createSpinnerText(getItem(position), true);
+            }
+        };
+        spinner.setAdapter(adapter);
+    }
+
     private void syncFontUi() {
         if (fontStatusText == null) return;
         boolean imported = FontManager.hasImportedFont(this);
@@ -2859,6 +3532,11 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 if (name == null || name.isEmpty()) name = getString(R.string.font_custom_name);
                 fontStatusText.setText(getString(R.string.font_imported_disabled_format, name));
             }
+            return;
+        }
+
+        if (!imported) {
+            fontStatusText.setText(R.string.font_import_none);
             return;
         }
 
@@ -2879,6 +3557,84 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         else if (choice == FontManager.CHOICE_SERIF) labelRes = R.string.font_choice_serif;
         else if (choice == FontManager.CHOICE_MONOSPACE) labelRes = R.string.font_choice_monospace;
         fontStatusText.setText(getString(R.string.font_current_format, getString(labelRes)));
+    }
+
+    private void syncLive2DTrackingService() {
+        boolean shouldRun = OverlayState.isLive2DMotionTrackingEnabled(this)
+                && OverlayState.isLive2DEnabled(this)
+                && Live2DModelStore.exists(this)
+                && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        if (shouldRun) Live2DMotionTrackingService.start(this);
+        else Live2DMotionTrackingService.stop(this);
+    }
+
+    private void syncInAppLive2D() {
+        boolean shouldShow = activityResumed
+                && OverlayState.isLive2DEnabled(this)
+                && Live2DModelStore.exists(this)
+                && activityRoot != null;
+        if (!shouldShow) {
+            removeInAppLive2D();
+            return;
+        }
+
+        // Once AccessibilityService is live, its TYPE_ACCESSIBILITY_OVERLAY renderer is deliberately
+        // also used above Axon's own Activity. That same WebView then remains attached when the user
+        // switches to a game, so there is no app-background handoff and no model reload.
+        if (AxonInputAccessibilityService.isServiceConnected()) {
+            removeInAppLive2D();
+            AxonInputAccessibilityService.refreshLive2DOwnership();
+            return;
+        }
+
+        String version = Live2DModelStore.getVersion(this);
+        if (inAppLive2dView != null && version.equals(inAppLive2dVersion)) {
+            inAppLive2dView.setDisplayScalePercent(OverlayState.getLive2DSize(this));
+            inAppLive2dView.setDisplayOffsetNormalized(
+                    OverlayState.getLive2DOffsetX(this), OverlayState.getLive2DOffsetY(this));
+            inAppLive2dView.setDragEnabled(false);
+            inAppLive2dView.setHideWatermark(OverlayState.isLive2DHideWatermarkEnabled(this));
+            inAppLive2dView.bringToFront();
+            return;
+        }
+
+        removeInAppLive2D();
+        try {
+            Live2DOverlayView view = new Live2DOverlayView(this);
+            view.setDisplayScalePercent(OverlayState.getLive2DSize(this));
+            view.setDisplayOffsetNormalized(
+                    OverlayState.getLive2DOffsetX(this), OverlayState.getLive2DOffsetY(this));
+            view.setDragEnabled(false);
+            view.setHideWatermark(OverlayState.isLive2DHideWatermarkEnabled(this));
+            activityRoot.addView(view, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            view.bringToFront();
+            inAppLive2dView = view;
+            inAppLive2dVersion = version;
+            view.loadCurrentModel();
+        } catch (Throwable error) {
+            removeInAppLive2D();
+        }
+    }
+
+    private void removeInAppLive2D() {
+        Live2DOverlayView view = inAppLive2dView;
+        inAppLive2dView = null;
+        inAppLive2dVersion = "";
+        if (view == null) return;
+        try { view.release(); } catch (Throwable ignored) {}
+        if (activityRoot != null) {
+            try { activityRoot.removeView(view); } catch (Throwable ignored) {}
+        }
+    }
+
+    private void openLive2DModelPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/zip");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                "application/zip", "application/x-zip-compressed", "application/octet-stream"});
+        startActivityForResult(intent, LIVE2D_MODEL_IMPORT_REQUEST);
     }
 
     private void openGlobalHtmlPicker() {
@@ -2973,70 +3729,17 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private void showTrajectoryColorDialog(boolean left, View sourceDot) {
-        int current = left
-                ? OverlayState.getMouseTrajectoryLeftColor(this)
-                : OverlayState.getMouseTrajectoryRightColor(this);
-        final int[] rgb = new int[]{Color.red(current), Color.green(current), Color.blue(current)};
-
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(20), dp(8), dp(20), dp(4));
-
-        LinearLayout previewRow = new LinearLayout(this);
-        previewRow.setGravity(Gravity.CENTER_VERTICAL);
-        View preview = createColorDot(current);
-        previewRow.addView(preview, new LinearLayout.LayoutParams(dp(34), dp(34)));
-        TextView hex = createLabel();
-        hex.setTextSize(14f);
-        hex.setPadding(dp(12), 0, 0, 0);
-        hex.setText(String.format(java.util.Locale.US, "#%06X", current & 0x00ffffff));
-        previewRow.addView(hex, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        content.addView(previewRow, supportingParams(dp(10)));
-
-        String[] names = new String[]{"R", "G", "B"};
-        for (int i = 0; i < 3; i++) {
-            final int channel = i;
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            TextView label = createLabel();
-            label.setText(names[i] + " " + rgb[i]);
-            row.addView(label, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT));
-            SeekBar bar = new SeekBar(this);
-            styleSeekBar(bar);
-            bar.setMax(255);
-            bar.setProgress(rgb[i]);
-            row.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                    rgb[channel] = progress;
-                    label.setText(names[channel] + " " + progress);
-                    int color = Color.rgb(rgb[0], rgb[1], rgb[2]);
-                    updateColorDot(preview, color);
-                    hex.setText(String.format(java.util.Locale.US, "#%06X", color & 0x00ffffff));
-                }
-                @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-                @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-            });
-            content.addView(row, supportingParams(dp(3)));
-        }
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(left ? R.string.mouse_trajectory_left_color_title
-                        : R.string.mouse_trajectory_right_color_title)
-                .setView(content)
-                .setPositiveButton(android.R.string.ok, null)
-                .setNegativeButton(android.R.string.cancel, null)
-                .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            int color = Color.rgb(rgb[0], rgb[1], rgb[2]);
-            if (left) OverlayState.setMouseTrajectoryLeftColor(this, color);
-            else OverlayState.setMouseTrajectoryRightColor(this, color);
-            updateColorDot(sourceDot, color);
-            dialog.dismiss();
-        }));
-        dialog.show();
+        int[] current = left
+                ? OverlayState.getMouseTrajectoryLeftColors(this)
+                : OverlayState.getMouseTrajectoryRightColors(this);
+        MultiColorPickerDialog.show(this,
+                getString(left ? R.string.mouse_trajectory_left_color_title
+                        : R.string.mouse_trajectory_right_color_title),
+                current, colors -> {
+                    if (left) OverlayState.setMouseTrajectoryLeftColors(this, colors);
+                    else OverlayState.setMouseTrajectoryRightColors(this, colors);
+                    updateColorDotSequence(sourceDot, colors);
+                });
     }
 
     private static final class CornerStrengthControl {
@@ -3058,7 +3761,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         parent.addView(createInlineChoiceRow(R.string.key_style_label, styleSpinner), supportingParams(dp(4)));
 
         TextView cornerLabel = createLabel();
-        SeekBar cornerSeekBar = new SeekBar(this);
+        SeekBar cornerSeekBar = new LagSeekBar(this);
         cornerSeekBar.setMax(100);
         cornerSeekBar.setPadding(0, 0, 0, 0);
         styleSeekBar(cornerSeekBar);
@@ -3099,6 +3802,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         View baseDot = createColorDot(OverlayState.getKeyBaseColor(this, displayType));
         keyBaseColorDots.put(displayType, baseDot);
+        updateColorDotSequence(baseDot, OverlayState.getKeyBaseColors(this, displayType));
         LinearLayout.LayoutParams baseDotParams = new LinearLayout.LayoutParams(dp(22), dp(22));
         baseDotParams.leftMargin = dp(12);
         baseColorRow.addView(baseDot, baseDotParams);
@@ -3119,6 +3823,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         View borderDot = createColorDot(OverlayState.getKeyBorderColor(this, displayType));
         keyBorderColorDots.put(displayType, borderDot);
+        updateColorDotSequence(borderDot, OverlayState.getKeyBorderColors(this, displayType));
         LinearLayout.LayoutParams borderDotParams = new LinearLayout.LayoutParams(dp(22), dp(22));
         borderDotParams.leftMargin = dp(12);
         borderColorRow.addView(borderDot, borderDotParams);
@@ -3139,6 +3844,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         View dot = createColorDot(OverlayState.getKeyPressColor(this, displayType));
         keyPressColorDots.put(displayType, dot);
+        updateColorDotSequence(dot, OverlayState.getKeyPressColors(this, displayType));
         LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(22), dp(22));
         dotParams.leftMargin = dp(12);
         colorRow.addView(dot, dotParams);
@@ -3170,6 +3876,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         keyboardTextColorDot = createColorDot(OverlayState.getKeyboardTextColor(this));
+        updateColorDotSequence(keyboardTextColorDot, OverlayState.getKeyboardTextColors(this));
         LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(22), dp(22));
         dotParams.leftMargin = dp(12);
         colorRow.addView(keyboardTextColorDot, dotParams);
@@ -3186,100 +3893,58 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private void showKeyboardTextColorDialog(View sourceDot) {
         showRgbColorDialog(
                 R.string.key_text_color_title,
-                OverlayState.getKeyboardTextColor(this),
+                OverlayState.getKeyboardTextColors(this),
                 sourceDot,
-                color -> OverlayState.setKeyboardTextColor(MainActivity.this, color));
+                colors -> OverlayState.setKeyboardTextColors(MainActivity.this, colors));
     }
 
 
     private interface ColorCommit {
-        void apply(int color);
+        void apply(int[] colors);
     }
 
     private void showKeyBaseColorDialog(int displayType, View sourceDot) {
         showRgbColorDialog(
                 R.string.key_base_color_title,
-                OverlayState.getKeyBaseColor(this, displayType),
+                OverlayState.getKeyBaseColors(this, displayType),
                 sourceDot,
-                color -> OverlayState.setKeyBaseColor(MainActivity.this, displayType, color));
+                colors -> OverlayState.setKeyBaseColors(MainActivity.this, displayType, colors));
     }
 
     private void showKeyBorderColorDialog(int displayType, View sourceDot) {
         showRgbColorDialog(
                 R.string.key_border_color_title,
-                OverlayState.getKeyBorderColor(this, displayType),
+                OverlayState.getKeyBorderColors(this, displayType),
                 sourceDot,
-                color -> OverlayState.setKeyBorderColor(MainActivity.this, displayType, color));
+                colors -> OverlayState.setKeyBorderColors(MainActivity.this, displayType, colors));
     }
 
     private void showKeyPressColorDialog(int displayType, View sourceDot) {
         showRgbColorDialog(
                 R.string.key_press_color_title,
-                OverlayState.getKeyPressColor(this, displayType),
+                OverlayState.getKeyPressColors(this, displayType),
                 sourceDot,
-                color -> OverlayState.setKeyPressColor(MainActivity.this, displayType, color));
+                colors -> OverlayState.setKeyPressColors(MainActivity.this, displayType, colors));
     }
 
-    private void showRgbColorDialog(int titleRes, int current, View sourceDot, ColorCommit commit) {
-        final int[] rgb = new int[]{Color.red(current), Color.green(current), Color.blue(current)};
+    private void showRgbColorDialog(int titleRes, int[] current, View sourceDot, ColorCommit commit) {
+        MultiColorPickerDialog.show(this, getString(titleRes), current, colors -> {
+            commit.apply(colors);
+            updateColorDotSequence(sourceDot, colors);
+        });
+    }
 
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(20), dp(8), dp(20), dp(4));
-
-        LinearLayout previewRow = new LinearLayout(this);
-        previewRow.setGravity(Gravity.CENTER_VERTICAL);
-        View preview = createColorDot(current);
-        previewRow.addView(preview, new LinearLayout.LayoutParams(dp(34), dp(34)));
-        TextView hex = createLabel();
-        hex.setTextSize(14f);
-        hex.setPadding(dp(12), 0, 0, 0);
-        hex.setText(String.format(java.util.Locale.US, "#%06X", current & 0x00ffffff));
-        previewRow.addView(hex, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        content.addView(previewRow, supportingParams(dp(10)));
-
-        String[] names = new String[]{"R", "G", "B"};
-        for (int i = 0; i < 3; i++) {
-            final int channel = i;
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            TextView label = createLabel();
-            label.setText(names[i] + " " + rgb[i]);
-            row.addView(label, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT));
-            SeekBar bar = new SeekBar(this);
-            styleSeekBar(bar);
-            bar.setMax(255);
-            bar.setProgress(rgb[i]);
-            row.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                    rgb[channel] = progress;
-                    label.setText(names[channel] + " " + progress);
-                    int color = Color.rgb(rgb[0], rgb[1], rgb[2]);
-                    updateColorDot(preview, color);
-                    hex.setText(String.format(java.util.Locale.US, "#%06X", color & 0x00ffffff));
-                }
-                @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-                @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-            });
-            content.addView(row, supportingParams(dp(3)));
+    private void updateColorDotSequence(View dot, int[] colors) {
+        int[] normalized = ColorSequence.normalize(colors, Color.WHITE);
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setShape(GradientDrawable.OVAL);
+        if (normalized.length == 1) {
+            drawable.setColor(normalized[0]);
+        } else {
+            drawable.setOrientation(GradientDrawable.Orientation.LEFT_RIGHT);
+            drawable.setColors(normalized);
         }
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(titleRes)
-                .setView(content)
-                .setPositiveButton(android.R.string.ok, null)
-                .setNegativeButton(android.R.string.cancel, null)
-                .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            int color = Color.rgb(rgb[0], rgb[1], rgb[2]);
-            commit.apply(color);
-            updateColorDot(sourceDot, color);
-            dialog.dismiss();
-        }));
-        dialog.show();
+        dot.setBackground(drawable);
     }
 
     private static final class OpacityControl {
@@ -3294,7 +3959,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
     private void addOpacityControl(LinearLayout parent, int displayType) {
         TextView label = createLabel();
-        SeekBar seekBar = new SeekBar(this);
+        SeekBar seekBar = new LagSeekBar(this);
         seekBar.setMax(OPACITY_MAX);
         seekBar.setPadding(0, 0, 0, 0);
         styleSeekBar(seekBar);
@@ -3371,7 +4036,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private SeekBar createOpacitySeekBar() {
-        SeekBar seekBar = new SeekBar(this);
+        SeekBar seekBar = new LagSeekBar(this);
         seekBar.setMax(OPACITY_MAX);
         seekBar.setPadding(0, 0, 0, 0);
         styleSeekBar(seekBar);
@@ -3419,7 +4084,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     private TextView createTitle() {
         TextView title = new TextView(this);
         title.setTextColor(UiPalette.textPrimary(this));
-        title.setTextSize(24f);
+        title.setTextSize(21f);
         title.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         title.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         title.setMinHeight(dp(44));
@@ -3443,7 +4108,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private Switch createSwitch(int labelRes) {
-        Switch view = new Switch(this);
+        Switch view = new MotionSwitch(this);
         view.setText(labelRes);
         view.setTextColor(UiPalette.textPrimary(this));
         view.setTextSize(14.5f);
@@ -3549,7 +4214,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private Spinner createChoiceSpinner(String[] values) {
-        Spinner spinner = new Spinner(this);
+        Spinner spinner = new AnimatedChoiceSpinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
                 this, android.R.layout.simple_spinner_item, values) {
             @Override
@@ -3567,7 +4232,12 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         spinner.setPadding(0, 0, 0, 0);
         spinner.setBackground(UiChrome.controlRipple(this));
         spinner.setPopupBackgroundDrawable(UiChrome.popupSurface(this));
-        spinner.setDropDownVerticalOffset(dp(4));
+        spinner.setDropDownHorizontalOffset(0);
+        spinner.setDropDownVerticalOffset(0);
+        spinner.post(() -> {
+            if (spinner.getWidth() > 0) spinner.setDropDownWidth(spinner.getWidth());
+        });
+        UiMotion.bindPressFeedback(spinner);
         return spinner;
     }
 
@@ -3616,7 +4286,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         UiChrome.styleSecondaryButton(this, button);
     }
 
-    private RippleDrawable createRippleBackground(int fillColor, float radiusDp) {
+    private Drawable createRippleBackground(int fillColor, float radiusDp) {
         return UiChrome.ripple(this, fillColor, radiusDp);
     }
 
@@ -3624,45 +4294,214 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         UiChrome.styleSeekBar(this, seekBar);
     }
 
-    private HorizontalScrollView createSectionNavigation(int[] labelResIds, int pageCount) {
-        HorizontalScrollView nav = new HorizontalScrollView(this);
-        nav.setHorizontalScrollBarEnabled(false);
-        nav.setFillViewport(false);
-        nav.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        nav.setBackgroundColor(UiPalette.background(this));
-
-        LinearLayout rail = new LinearLayout(this);
-        rail.setOrientation(LinearLayout.HORIZONTAL);
-        rail.setGravity(Gravity.CENTER_VERTICAL);
-        rail.setPadding(dp(14), 0, dp(14), dp(4));
+    private SectionNavigationBar createSectionNavigation(int[] labelResIds, int pageCount) {
+        SectionNavigationBar nav = new SectionNavigationBar();
 
         int count = Math.min(labelResIds.length, pageCount);
-        TextView[] items = new TextView[count];
+        SectionNavigationItem[] items = new SectionNavigationItem[count];
         for (int i = 0; i < count; i++) {
-            TextView item = new TextView(this);
-            items[i] = item;
-            item.setText(labelResIds[i]);
-            item.setTextSize(12f);
-            item.setGravity(Gravity.CENTER);
-            item.setSingleLine(true);
-            item.setMinHeight(dp(44));
-            item.setPadding(dp(12), 0, dp(12), 0);
             final int pageIndex = i;
+            SectionNavigationItem item = new SectionNavigationItem(labelResIds[i], i);
+            items[i] = item;
             item.setFocusable(true);
-            item.setDefaultFocusHighlightEnabled(true);
+            item.setDefaultFocusHighlightEnabled(false);
             item.setOnClickListener(v -> selectSectionPage(pageIndex, true));
             UiMotion.bindPressFeedback(item);
 
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
+                    0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
             if (i > 0) params.leftMargin = dp(2);
-            rail.addView(item, params);
+            nav.addNavigationItem(item, params);
         }
         sectionNavigationItems = items;
-        updateSectionNavigationSelection(items, 0);
-        nav.addView(rail, new HorizontalScrollView.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        for (int i = 0; i < items.length; i++) {
+            items[i].setSelected(i == 0);
+            items[i].setActive(i == 0, false);
+        }
+        nav.moveSelectionTo(0, false);
         return nav;
+    }
+
+    /**
+     * One shared selection surface lives behind all destinations. It is translated instead
+     * of recreating a selected background on every item, so the active surface visibly
+     * travels from the previous destination to the next and remains interruptible.
+     */
+    private final class SectionNavigationBar extends FrameLayout {
+        private final View selectionIndicator;
+        private final LinearLayout itemRow;
+        private int pendingSelectedIndex;
+
+        SectionNavigationBar() {
+            super(MainActivity.this);
+            setClipChildren(false);
+            setClipToPadding(false);
+            setBackgroundColor(UiPalette.surfaceRaised(MainActivity.this));
+
+            selectionIndicator = new View(MainActivity.this);
+            selectionIndicator.setClickable(false);
+            selectionIndicator.setFocusable(false);
+            selectionIndicator.setBackground(UiPalette.rounded(
+                    MainActivity.this, UiPalette.controlSurface(MainActivity.this), 10f));
+            selectionIndicator.setAlpha(1f);
+            addView(selectionIndicator, new FrameLayout.LayoutParams(1, 1));
+
+            itemRow = new LinearLayout(MainActivity.this);
+            itemRow.setOrientation(LinearLayout.HORIZONTAL);
+            itemRow.setGravity(Gravity.CENTER_VERTICAL);
+            itemRow.setPadding(dp(8), dp(5), dp(8), dp(5));
+            addView(itemRow, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+
+        void addNavigationItem(SectionNavigationItem item, LinearLayout.LayoutParams params) {
+            itemRow.addView(item, params);
+        }
+
+        void moveSelectionTo(int requestedIndex, boolean animated) {
+            if (itemRow.getChildCount() == 0) return;
+            pendingSelectedIndex = Math.max(0, Math.min(requestedIndex, itemRow.getChildCount() - 1));
+            if (!isLaidOut() || itemRow.getWidth() == 0) {
+                post(() -> moveSelectionTo(pendingSelectedIndex, false));
+                return;
+            }
+
+            View target = itemRow.getChildAt(pendingSelectedIndex);
+            if (target == null || target.getWidth() <= 0 || target.getHeight() <= 0) {
+                post(() -> moveSelectionTo(pendingSelectedIndex, false));
+                return;
+            }
+
+            final int inset = dp(1);
+            int width = Math.max(1, target.getWidth() - inset * 2);
+            int height = Math.max(1, target.getHeight() - inset * 2);
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) selectionIndicator.getLayoutParams();
+            if (lp.width != width || lp.height != height) {
+                lp.width = width;
+                lp.height = height;
+                selectionIndicator.setLayoutParams(lp);
+            }
+
+            float targetX = itemRow.getX() + target.getX() + inset;
+            float targetY = itemRow.getY() + target.getY() + inset;
+            if (!animated) {
+                selectionIndicator.animate().cancel();
+                selectionIndicator.setTranslationX(targetX);
+                selectionIndicator.setTranslationY(targetY);
+                return;
+            }
+
+            // The shared surface is the reference motion for the whole app: each tap redirects
+            // the currently visible surface instead of recreating selection at the destination.
+            UiMotion.moveSelectionSurface(selectionIndicator, targetX, targetY);
+        }
+    }
+
+    /**
+     * Bottom navigation destination. Icons are persistent; labels only become visible for
+     * the active destination so seven sections remain calm and readable on phone widths.
+     */
+    private final class SectionNavigationItem extends LinearLayout {
+        private final int iconIndex;
+        private final ImageView iconView;
+        private final TextView labelView;
+        private boolean active;
+
+        SectionNavigationItem(int labelResId, int iconIndex) {
+            super(MainActivity.this);
+            this.iconIndex = iconIndex;
+            setContentDescription(getString(labelResId));
+            setOrientation(VERTICAL);
+            setGravity(Gravity.CENTER);
+            setPadding(dp(3), dp(4), dp(3), dp(3));
+            setMinimumHeight(dp(54));
+
+            iconView = new ImageView(MainActivity.this);
+            iconView.setScaleType(ImageView.ScaleType.CENTER);
+            addView(iconView, new LinearLayout.LayoutParams(dp(22), dp(22)));
+
+            labelView = new TextView(MainActivity.this);
+            labelView.setText(labelResId);
+            labelView.setTextSize(9.5f);
+            labelView.setTypeface(android.graphics.Typeface.create(
+                    "sans-serif-medium", android.graphics.Typeface.NORMAL));
+            labelView.setSingleLine(true);
+            labelView.setEllipsize(TextUtils.TruncateAt.END);
+            labelView.setGravity(Gravity.CENTER);
+            labelView.setAlpha(0f);
+            labelView.setVisibility(View.INVISIBLE);
+            LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(16));
+            labelParams.topMargin = dp(1);
+            addView(labelView, labelParams);
+        }
+
+        void setActive(boolean nextActive, boolean animated) {
+            if (active == nextActive && iconView.getDrawable() != null) return;
+            active = nextActive;
+            iconView.animate().cancel();
+            labelView.animate().cancel();
+
+            iconView.setImageDrawable(UiChrome.sectionIcon(
+                    MainActivity.this, iconIndex, nextActive));
+            labelView.setTextColor(nextActive
+                    ? UiPalette.textPrimary(MainActivity.this)
+                    : UiPalette.textTertiary(MainActivity.this));
+            // Selection fill is owned by SectionNavigationBar's single moving indicator.
+            // Items keep only local press feedback so no second background flashes in place.
+            setBackground(UiChrome.ripple(
+                    MainActivity.this,
+                    Color.TRANSPARENT,
+                    10f));
+
+            float lift = nextActive ? -dp(1) : 0f;
+            if (!animated) {
+                iconView.setTranslationY(lift);
+                iconView.setScaleX(1f);
+                iconView.setScaleY(1f);
+                labelView.setTranslationY(0f);
+                labelView.setAlpha(nextActive ? 1f : 0f);
+                labelView.setVisibility(nextActive ? View.VISIBLE : View.INVISIBLE);
+                return;
+            }
+
+            iconView.animate()
+                    .translationY(lift)
+                    .setDuration(UiMotion.stateMs())
+                    .setInterpolator(UiMotion.easeMove())
+                    .start();
+
+            if (nextActive) {
+                // If a previous fade-out was interrupted, keep its current alpha/position and
+                // simply redirect to the selected state. Only a truly hidden label gets an enter
+                // offset, so rapid tab taps never flash from alpha=0 again.
+                if (labelView.getVisibility() != View.VISIBLE) {
+                    labelView.setVisibility(View.VISIBLE);
+                    labelView.setAlpha(0f);
+                    labelView.setTranslationY(dp(3));
+                }
+                labelView.animate()
+                        .alpha(1f)
+                        .translationY(0f)
+                        .setDuration(UiMotion.enterMs())
+                        .setInterpolator(UiMotion.easeOut())
+                        .start();
+            } else {
+                labelView.animate()
+                        .alpha(0f)
+                        .translationY(dp(2))
+                        .setDuration(UiMotion.exitMs())
+                        .setInterpolator(UiMotion.easeOut())
+                        .withEndAction(() -> {
+                            if (!active) {
+                                labelView.setVisibility(View.INVISIBLE);
+                                labelView.setTranslationY(0f);
+                            }
+                        })
+                        .start();
+            }
+        }
     }
 
     private void selectSectionPage(int requestedIndex, boolean centerNavigation) {
@@ -3672,20 +4511,9 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         selectedSectionPage = target;
 
         if (sectionNavigationItems != null) {
-            updateSectionNavigationSelection(sectionNavigationItems, target);
+            updateSectionNavigationSelection(sectionNavigationItems, target, centerNavigation);
         }
 
-        if (centerNavigation && sectionNavigationView != null
-                && sectionNavigationItems != null && target < sectionNavigationItems.length) {
-            TextView item = sectionNavigationItems[target];
-            sectionNavigationView.post(() -> {
-                int targetX = Math.max(0, item.getLeft()
-                        - (sectionNavigationView.getWidth() - item.getWidth()) / 2);
-                // Do not run a second long scroller beside the page transition. A direct
-                // nav correction keeps the content animation on the critical frame path.
-                sectionNavigationView.scrollTo(targetX, 0);
-            });
-        }
 
         // Initial setup is immediate. All pages already exist; only one is visible.
         if (!centerNavigation) {
@@ -3697,24 +4525,28 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
 
         if (target == displayedSectionPage) return;
 
-        // Interruptions settle instantly onto the latest destination before starting the
-        // next transition. This prevents half-translated/half-transparent page states.
+        // Interruptions preserve the current transforms. The next page request therefore starts
+        // from exactly what is on screen, matching the moving bottom-selection surface instead of
+        // snapping the previous transition to an endpoint first.
         int from = displayedSectionPage;
         int direction = target > from ? 1 : -1;
         int transitionToken = ++sectionPageTransitionToken;
-        UiMotion.cancelPageTransition(sectionPageViews);
-        normalizeSectionPages(from);
+        UiMotion.interruptPageTransition(sectionPageViews);
+        prepareSectionPagesForTransition(from, target);
 
         ScrollView outgoing = sectionPageViews[from];
         ScrollView incoming = sectionPageViews[target];
-        incoming.stopNestedScroll();
-        incoming.scrollTo(0, 0);
-        incoming.post(() -> incoming.scrollTo(0, 0));
+        boolean incomingWasVisible = incoming.getVisibility() == View.VISIBLE;
+        if (!incomingWasVisible) {
+            incoming.stopNestedScroll();
+            incoming.scrollTo(0, 0);
+            incoming.post(() -> incoming.scrollTo(0, 0));
+        }
         incoming.setVisibility(View.VISIBLE);
         incoming.bringToFront();
 
-        // Treat the destination as current as soon as motion starts. If another page is
-        // requested mid-flight, the new gesture continues from this destination cleanly.
+        // Treat the destination as current as soon as motion starts. A further tap can redirect
+        // this same motion without waiting for the current page animation to finish.
         displayedSectionPage = target;
         UiMotion.animatePageTransition(outgoing, incoming, direction, () -> {
             if (transitionToken != sectionPageTransitionToken) return;
@@ -3735,7 +4567,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
             LinearLayout content = new LinearLayout(this);
             content.setOrientation(LinearLayout.VERTICAL);
             content.setGravity(Gravity.TOP);
-            content.setPadding(dp(20), dp(8), dp(20), dp(36));
+            content.setPadding(dp(18), dp(8), dp(18), dp(28));
             content.setBackgroundColor(UiPalette.background(this));
 
             int start = source.indexOfChild(sectionStarts[pageIndex]);
@@ -3781,30 +4613,38 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         return host;
     }
 
+    private void prepareSectionPagesForTransition(int fromIndex, int targetIndex) {
+        if (sectionPageViews == null) return;
+        for (int i = 0; i < sectionPageViews.length; i++) {
+            if (i == fromIndex || i == targetIndex) continue;
+            ScrollView page = sectionPageViews[i];
+            UiMotion.resetPageMotion(page);
+            page.setVisibility(View.INVISIBLE);
+        }
+        if (fromIndex >= 0 && fromIndex < sectionPageViews.length) {
+            sectionPageViews[fromIndex].setVisibility(View.VISIBLE);
+        }
+    }
+
     private void normalizeSectionPages(int visibleIndex) {
         if (sectionPageViews == null) return;
         int safe = Math.max(0, Math.min(visibleIndex, sectionPageViews.length - 1));
         for (int i = 0; i < sectionPageViews.length; i++) {
             ScrollView page = sectionPageViews[i];
-            page.animate().cancel();
-            page.setTranslationX(0f);
-            page.setAlpha(1f);
-            page.setLayerType(View.LAYER_TYPE_NONE, null);
+            UiMotion.resetPageMotion(page);
             page.setVisibility(i == safe ? View.VISIBLE : View.INVISIBLE);
         }
         sectionPageViews[safe].bringToFront();
     }
 
-    private void updateSectionNavigationSelection(TextView[] items, int selectedIndex) {
+    private void updateSectionNavigationSelection(
+            SectionNavigationItem[] items, int selectedIndex, boolean animated) {
+        if (sectionNavigationView != null) {
+            sectionNavigationView.moveSelectionTo(selectedIndex, animated);
+        }
         for (int i = 0; i < items.length; i++) {
-            TextView item = items[i];
-            boolean selected = i == selectedIndex;
-            item.setSelected(selected);
-            item.setTextColor(selected
-                    ? UiPalette.textPrimary(this)
-                    : UiPalette.textSecondary(this));
-            item.setBackground(createRippleBackground(
-                    selected ? UiPalette.surface(this) : UiPalette.background(this), 9f));
+            items[i].setSelected(i == selectedIndex);
+            items[i].setActive(i == selectedIndex, animated);
         }
     }
 
@@ -3916,6 +4756,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         toggle.setOnCheckedChangeListener((button, enabled) -> {
             if (internalChange) return;
             setter.set(enabled);
+            refreshHideDisplayHotkeyUi();
             handleDisplayModeChanged();
         });
     }
@@ -3952,7 +4793,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private SeekBar createSizeSeekBar() {
-        SeekBar seekBar = new SeekBar(this);
+        SeekBar seekBar = new LagSeekBar(this);
         seekBar.setMax(SIZE_MAX - SIZE_MIN);
         seekBar.setPadding(0, 0, 0, 0);
         styleSeekBar(seekBar);
@@ -3960,7 +4801,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private SeekBar createKeySpacingSeekBar() {
-        SeekBar seekBar = new SeekBar(this);
+        SeekBar seekBar = new LagSeekBar(this);
         seekBar.setMax(KEY_SPACING_MAX);
         seekBar.setPadding(0, 0, 0, 0);
         styleSeekBar(seekBar);
@@ -3968,7 +4809,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
     }
 
     private SeekBar createSensitivitySeekBar() {
-        SeekBar seekBar = new SeekBar(this);
+        SeekBar seekBar = new LagSeekBar(this);
         seekBar.setMax(SENSITIVITY_SEEKBAR_MAX);
         seekBar.setPadding(0, 0, 0, 0);
         styleSeekBar(seekBar);
@@ -4024,6 +4865,8 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 R.string.custom_size_format, OverlayState.getCustomSize(this), SIZE_MIN);
         syncBoundedSeekBar(customSpacingSeekBar, customSpacingLabel,
                 R.string.custom_spacing_format, OverlayState.getCustomSpacing(this), 0);
+        syncBoundedSeekBar(live2dSizeSeekBar, live2dSizeLabel,
+                R.string.live2d_size_format, OverlayState.getLive2DSize(this), LIVE2D_SIZE_MIN);
 
         syncBoundedSeekBar(gamepadLeftStickSizeSeekBar, gamepadLeftStickSizeLabel,
                 R.string.gamepad_left_stick_size_format,

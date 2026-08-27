@@ -69,8 +69,8 @@ public final class KeyOverlayView extends FrameLayout {
         nativeView.setDragEnabled(false);
         addView(nativeView, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
-        setScaleX(0.92f);
-        setScaleY(0.92f);
+        setScaleX(0.96f);
+        setScaleY(0.96f);
         postFrame();
     }
 
@@ -147,7 +147,7 @@ public final class KeyOverlayView extends FrameLayout {
     }
 
     public void setDisplaySize(int percent) {
-        displaySizePercent = Math.max(50, Math.min(150, percent));
+        displaySizePercent = Math.max(25, Math.min(300, percent));
         nativeView.setDisplaySize(displaySizePercent);
         if (htmlView != null) htmlView.setDisplaySize(displaySizePercent);
     }
@@ -319,15 +319,17 @@ public final class KeyOverlayView extends FrameLayout {
         float dt = Math.min(0.024f, Math.max(0.001f, (now - lastFrameMs) / 1000f));
         lastFrameMs = now;
 
-        stepSpring(windowProgress, windowVelocity, windowTarget, dt, 330f, 29f);
+        // Critically damped, deliberately slower host motion. New targets reuse the current
+        // value/velocity, so show/hide reversals remain continuous.
+        stepSpring(windowProgress, windowVelocity, windowTarget, dt, 110f, 21f);
         windowProgress = springValue;
         windowVelocity = springVelocity;
-        stepSpring(dragProgress, dragVelocity, dragging ? 1f : 0f, dt, 430f, 35f);
+        stepSpring(dragProgress, dragVelocity, dragging ? 1f : 0f, dt, 145f, 24f);
         dragProgress = springValue;
         dragVelocity = springVelocity;
 
-        float baseScale = 0.92f + 0.08f * clamp(windowProgress, 0f, 1.06f);
-        float pressScale = 1f - 0.016f * clamp(dragProgress, 0f, 1.06f);
+        float baseScale = 0.96f + 0.04f * clamp(windowProgress, 0f, 1f);
+        float pressScale = 1f - 0.010f * clamp(dragProgress, 0f, 1f);
         float scale = baseScale * pressScale;
         setPivotX(getWidth() * 0.5f);
         setPivotY(getHeight() * 0.5f);
