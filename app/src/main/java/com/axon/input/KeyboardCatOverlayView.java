@@ -27,6 +27,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 
 /**
@@ -40,7 +41,7 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     private static final String TAG = "AxonBongoCat";
     // Large imported Live2D models can legitimately need several seconds on slower WebView/GPU
     // implementations. The old ~2.9 s timeout marked a healthy runtime dead too early.
-    private static final int RUNTIME_PROBE_MAX_ATTEMPTS = 160;
+    private static final int RUNTIME_PROBE_MAX_ATTEMPTS = 400;
     private static final long RUNTIME_PROBE_DELAY_MS = 50L;
 
     public interface DragListener {
@@ -55,7 +56,10 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     private final WebView webView;
     private final SparseBooleanArray pressedKeyCodes = new SparseBooleanArray();
     private final LinkedHashSet<String> pressedKeyOrder = new LinkedHashSet<>();
+    private final HashMap<String, Integer> pressedSemanticCounts = new HashMap<>();
     private final Object inputBridgeLock = new Object();
+    /** Cached pull-bridge payload; rebuilt only when held-key state actually changes. */
+    private volatile String nativeKeySnapshot = "{\"keys\":[]}";
 
     private DragListener dragListener;
     private boolean dragEnabled;
@@ -65,12 +69,16 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     private int runtimeRecoveryStage;
     private BongoCatStyleManager.StyleInfo loadedStyle;
     private boolean released;
+    /** Detached/hidden overlays keep native input state but stop JS/WebGL work until visible again. */
+    private boolean lifecycleSuspended;
     private boolean mouseMode;
     private boolean globalReverse;
+    private int renderQuality;
     private String styleId;
     private String styleMode = BongoCatStyleManager.MODE_KEYBOARD;
     private String debugExpressionKind = "auto";
     private int debugExpressionIndex = -1;
+    private float debugExpressionWeight = 1f;
     private int gamepadButtons;
     private int gamepadLx;
     private int gamepadLy;
@@ -87,11 +95,30 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     private int pendingMouseDy;
     private int pendingMousePressPulses;
     private boolean mouseFrameScheduled;
+    private boolean gamepadFrameScheduled;
     private float dragStartRawX;
     private float dragStartRawY;
     private Runnable exitCallback;
 
+    /** Latest explicit UI test request. Unlike gameplay hotkeys, a test may wait briefly for a
+     * large imported model to finish becoming ready instead of being silently dropped. */
+    private PendingModelFunctionTest pendingModelFunctionTest;
+
+    private static final class PendingModelFunctionTest {
+        final String token;
+        final String mode;
+        final boolean pressed;
+        final long expiresAtMs;
+        final android.webkit.ValueCallback<Boolean> callback;
+        PendingModelFunctionTest(String token, String mode, boolean pressed, long expiresAtMs,
+                                 android.webkit.ValueCallback<Boolean> callback) {
+            this.token = token; this.mode = mode; this.pressed = pressed;
+            this.expiresAtMs = expiresAtMs; this.callback = callback;
+        }
+    }
+
     private final Runnable mouseFrameDrain = this::drainMouseFrame;
+    private final Runnable gamepadFrameDrain = this::drainGamepadFrame;
 
     /**
      * Pull-based fallback for Mver. Some Android WebView/ROM combinations can drop an
@@ -101,13 +128,9 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     private final class NativeInputBridge {
         @JavascriptInterface
         public String snapshotKeys() {
-            JSONObject result = new JSONObject();
-            JSONArray keys = new JSONArray();
-            synchronized (inputBridgeLock) {
-                for (String key : pressedKeyOrder) keys.put(key);
-            }
-            try { result.put("keys", keys); } catch (Exception ignored) {}
-            return result.toString();
+            // JavascriptInterface may run on a WebView bridge thread. Returning an immutable cached
+            // String avoids allocating JSONObject/JSONArray objects on every safety poll.
+            return nativeKeySnapshot;
         }
     }
 
@@ -186,6 +209,7 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         addView(webView, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
         mouseMode = OverlayState.isKeyboardCatMouseMode(context);
         globalReverse = OverlayState.isKeyboardCatGlobalReverse(context);
+        renderQuality = OverlayState.getKeyboardCatRenderQuality(context);
         styleId = OverlayState.getKeyboardCatStyleId(context);
         loadCurrentMode();
     }
@@ -201,8 +225,163 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         loadCurrentMode();
     }
 
+    public void setRenderQuality(int quality) {
+        int next = RenderQuality.normalize(quality);
+        if (renderQuality == next) return;
+        renderQuality = next;
+        if (pageReady) dispatchRenderQuality();
+    }
+
+    private void dispatchRenderQuality() {
+        dispatchRaw("window.AxonBongoCat&&AxonBongoCat.setRenderQuality&&AxonBongoCat.setRenderQuality("
+                + JSONObject.quote(RenderQuality.jsName(renderQuality)) + ")");
+    }
+
+    /** Updates Cubism Physics strength/group controls without reloading the model or input bridge. */
+    public void setPhysicsControls(JSONObject controls) {
+        if (controls == null) controls = new JSONObject();
+        dispatchRaw("window.AxonBongoCat&&AxonBongoCat.setPhysicsControls&&AxonBongoCat.setPhysicsControls("
+                + controls.toString() + ")");
+    }
+
+    public void triggerPhysicsGroupAction(String groupKey) {
+        if (groupKey == null || groupKey.isEmpty() || released || !pageReady || lifecycleSuspended) return;
+        dispatchRaw("window.AxonBongoCat&&AxonBongoCat.triggerPhysicsGroupAction&&"
+                + "AxonBongoCat.triggerPhysicsGroupAction(" + JSONObject.quote(groupKey) + ")");
+    }
+
+    public void refreshPhysicsControls() {
+        BongoCatStyleManager.StyleInfo style = loadedStyle;
+        if (style == null || style.builtin) return;
+        setPhysicsControls(Live2DPhysicsSettingsStore.runtimeJson(
+                getContext(), Live2DPhysicsSettingsStore.keyboardCatTarget(style.id)));
+    }
+
+    /** Live preview/persistent model parameter control. normalized is Cubism min..max mapped to 0..1. */
+    public void setModelParameter(String parameterId, float normalized) {
+        if (parameterId == null || parameterId.isEmpty()) return;
+        float value = Math.max(0f, Math.min(1f, normalized));
+        dispatch("window.AxonBongoCat&&AxonBongoCat.setModelParameter("
+                + JSONObject.quote(parameterId) + "," + value + ")");
+    }
+
+    public void resetModelParameter(String parameterId) {
+        if (parameterId == null || parameterId.isEmpty()) return;
+        dispatch("window.AxonBongoCat&&AxonBongoCat.resetModelParameter("
+                + JSONObject.quote(parameterId) + ")");
+    }
+
+    public void setParameterLock(String parameterId, float normalized) {
+        if (parameterId == null || parameterId.isEmpty()) return;
+        float value = Math.max(0f, Math.min(1f, normalized));
+        dispatch("window.AxonBongoCat&&AxonBongoCat.setParameterLock("
+                + JSONObject.quote(parameterId) + "," + value + ")");
+    }
+
+    public void clearParameterLock(String parameterId) {
+        if (parameterId == null || parameterId.isEmpty()) return;
+        dispatch("window.AxonBongoCat&&AxonBongoCat.clearParameterLock("
+                + JSONObject.quote(parameterId) + ")");
+    }
+
+    public void requestParameterDebug(String parameterId, android.webkit.ValueCallback<JSONObject> callback) {
+        if (callback == null) return;
+        if (!pageReady || parameterId == null || parameterId.isEmpty()) { callback.onReceiveValue(null); return; }
+        try {
+            webView.evaluateJavascript("JSON.stringify(window.AxonBongoCat&&AxonBongoCat.parameterDebug?AxonBongoCat.parameterDebug("
+                    + JSONObject.quote(parameterId) + "):null)", raw -> callback.onReceiveValue(parseJavascriptJson(raw)));
+        } catch (Throwable ignored) { callback.onReceiveValue(null); }
+    }
+
+    private static JSONObject parseJavascriptJson(String raw) {
+        if (raw == null || raw.equals("null") || raw.equals("undefined")) return null;
+        try {
+            String decoded = new JSONArray("[" + raw + "]").optString(0, "");
+            return decoded.isEmpty() || "null".equals(decoded) ? null : new JSONObject(decoded);
+        } catch (Throwable ignored) { return null; }
+    }
+
+    public void triggerModelFunction(String token, String mode, boolean pressed) {
+        if (token == null || token.isEmpty() || released || !pageReady || lifecycleSuspended) return;
+        String trigger = mode == null || mode.isEmpty() ? KeyboardCatFunctionBindingStore.MODE_TOGGLE : mode;
+        dispatchRaw("window.AxonBongoCat&&AxonBongoCat.triggerModelFunction("
+                + JSONObject.quote(token) + "," + JSONObject.quote(trigger) + "," + pressed + ")");
+    }
+
+    /**
+     * Test-only action path. Returns the JS runtime's real boolean result and tolerates the short
+     * loading window of large community models. Gameplay hotkeys intentionally remain non-queued
+     * so an input pressed while the overlay is hidden never fires unexpectedly later.
+     */
+    public void testModelFunction(String token, String mode, boolean pressed,
+                                  android.webkit.ValueCallback<Boolean> callback) {
+        if (callback == null) return;
+        if (token == null || token.isEmpty() || released || lifecycleSuspended) {
+            callback.onReceiveValue(false);
+            return;
+        }
+        String trigger = mode == null || mode.isEmpty() ? KeyboardCatFunctionBindingStore.MODE_TOGGLE : mode;
+        if (!pageReady) {
+            PendingModelFunctionTest previous = pendingModelFunctionTest;
+            pendingModelFunctionTest = new PendingModelFunctionTest(
+                    token, trigger, pressed, android.os.SystemClock.uptimeMillis() + 25000L, callback);
+            if (previous != null && previous.callback != callback) previous.callback.onReceiveValue(false);
+            return;
+        }
+        evaluateModelFunction(token, trigger, pressed, callback);
+    }
+
+    private void evaluateModelFunction(String token, String mode, boolean pressed,
+                                       android.webkit.ValueCallback<Boolean> callback) {
+        if (released || !pageReady || lifecycleSuspended) {
+            callback.onReceiveValue(false);
+            return;
+        }
+        try {
+            String script;
+            if (pressed) {
+                // Test has preview semantics: parameter actions pulse and self-restore instead of
+                // accidentally leaving a toggle/hold latched. Older runtimes retain a safe fallback.
+                script = "Boolean(window.AxonBongoCat&&("
+                        + "(AxonBongoCat.testModelFunction&&AxonBongoCat.testModelFunction("
+                        + JSONObject.quote(token) + "," + JSONObject.quote(mode) + "))||"
+                        + "(!AxonBongoCat.testModelFunction&&AxonBongoCat.triggerModelFunction&&"
+                        + "AxonBongoCat.triggerModelFunction(" + JSONObject.quote(token) + ","
+                        + JSONObject.quote(mode) + ",true))))";
+            } else {
+                script = "Boolean(window.AxonBongoCat&&AxonBongoCat.triggerModelFunction&&"
+                        + "AxonBongoCat.triggerModelFunction(" + JSONObject.quote(token) + ","
+                        + JSONObject.quote(mode) + ",false))";
+            }
+            webView.evaluateJavascript(script,
+                    raw -> callback.onReceiveValue("true".equalsIgnoreCase(raw)));
+        } catch (Throwable error) {
+            Log.e(TAG, "Model action test dispatch failed", error);
+            callback.onReceiveValue(false);
+        }
+    }
+
+    private void flushPendingModelFunctionTest() {
+        PendingModelFunctionTest pending = pendingModelFunctionTest;
+        if (pending == null || !pageReady || lifecycleSuspended || released) return;
+        pendingModelFunctionTest = null;
+        if (android.os.SystemClock.uptimeMillis() > pending.expiresAtMs) {
+            pending.callback.onReceiveValue(false);
+            return;
+        }
+        evaluateModelFunction(pending.token, pending.mode, pending.pressed, pending.callback);
+    }
+
+    public boolean isLoadedStyle(String expectedStyleId) {
+        if (expectedStyleId == null || expectedStyleId.isEmpty()) return false;
+        BongoCatStyleManager.StyleInfo style = loadedStyle;
+        return style != null && expectedStyleId.equals(style.id);
+    }
+
     /** Applies a debug expression from the imported style without changing its authored bindings. */
-    public void setDebugExpression(String token) {
+    public void setDebugExpression(String token) { setDebugExpression(token, 1f); }
+
+    public void setDebugExpression(String token, float weight) {
         String raw = token == null ? "auto" : token.trim();
         String kind = "auto";
         int index = -1;
@@ -216,16 +395,20 @@ public final class KeyboardCatOverlayView extends FrameLayout {
                 } catch (NumberFormatException ignored) {}
             }
         }
-        if (kind.equals(debugExpressionKind) && index == debugExpressionIndex) return;
+        float nextWeight = Math.max(0f, Math.min(1f, weight));
+        if (kind.equals(debugExpressionKind) && index == debugExpressionIndex
+                && Math.abs(nextWeight - debugExpressionWeight) < 0.0001f) return;
         debugExpressionKind = kind;
         debugExpressionIndex = index;
+        debugExpressionWeight = nextWeight;
         if (pageReady) dispatchDebugExpression();
     }
 
     private void dispatchDebugExpression() {
         if (!pageReady) return;
         dispatchRaw("window.AxonBongoCat&&AxonBongoCat.setDebugExpression("
-                + JSONObject.quote(debugExpressionKind) + "," + debugExpressionIndex + ")");
+                + JSONObject.quote(debugExpressionKind) + "," + debugExpressionIndex + ","
+                + String.format(java.util.Locale.US, "%.4f", debugExpressionWeight) + ")");
     }
 
     public boolean isGamepadStyle() {
@@ -249,6 +432,10 @@ public final class KeyboardCatOverlayView extends FrameLayout {
 
     private void loadCurrentModeInternal(boolean forceSpriteFallback, boolean forceBuiltin) {
         if (released) return;
+        // Explicitly release the old WebGL textures/programs before navigating to another style.
+        // Relying on WebView GC lets two large models overlap in GPU memory during a switch.
+        try { dispatchRaw("window.AxonBongoCat&&AxonBongoCat.dispose&&AxonBongoCat.dispose()"); }
+        catch (Throwable ignored) {}
         runtimeGeneration++;
         pageReady = false;
         removeCallbacks(mouseFrameDrain);
@@ -270,9 +457,17 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         loadedStyle = style;
         if (!forceBuiltin) styleId = style.id;
         if (!style.builtin) {
-            styleMode = style.mode;
+            // Re-detect controller-capable community packs imported by older Axon versions.
+            styleMode = BongoCatStyleManager.effectiveMode(style);
             try {
                 JSONObject config = BongoCatStyleManager.runtimeConfig(style, forceSpriteFallback);
+                RenderQuality.applyRuntimeConfig(config, renderQuality);
+                config.put("physicsControls", Live2DPhysicsSettingsStore.runtimeJson(
+                        getContext(), Live2DPhysicsSettingsStore.keyboardCatTarget(style.id)));
+                config.put("savedParameterValues",
+                        KeyboardCatFunctionBindingStore.parameterValuesJson(getContext(), style.id));
+                config.put("parameterLocks", Live2DDebugSettingsStore.parameterLocksJson(
+                        getContext(), Live2DPhysicsSettingsStore.keyboardCatTarget(style.id)));
                 String template = readAssetText("bongocat/custom/index.html");
                 String bootstrap = "window.__AXON_STYLE_CONFIG__=" + config.toString() + ";";
                 String core = escapeInlineScript(readAssetText("bongocat/live2dcubismcore.min.js"));
@@ -317,7 +512,10 @@ public final class KeyboardCatOverlayView extends FrameLayout {
                             pageReady = true;
                             Log.i(TAG, "Runtime fully ready, generation=" + generation
                                     + ", recoveryStage=" + runtimeRecoveryStage);
+                            dispatchRenderQuality();
                             flushInputState();
+                            syncRuntimeLifecycle();
+                            flushPendingModelFunctionTest();
                             logRuntimeState(generation);
                             return;
                         }
@@ -408,25 +606,55 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         String key = sourceKeyName(keyCode);
         if (key == null) return;
 
+        boolean dispatchTransition = false;
         synchronized (inputBridgeLock) {
+            boolean wasPressed = pressedKeyCodes.get(keyCode);
+            // Android key-repeat and overlapping input sources can report the same state many times.
+            // The model only needs transitions; dropping duplicates removes avoidable JS bridge work.
+            if (wasPressed == pressed) return;
+
+            int semanticCount = pressedSemanticCounts.getOrDefault(key, 0);
             if (pressed) {
-                if (!pressedKeyCodes.get(keyCode)) {
-                    pressedKeyCodes.put(keyCode, true);
-                    // LinkedHashSet 用于页面重新加载时按真实按下顺序恢复源行为。
+                pressedKeyCodes.put(keyCode, true);
+                int nextCount = semanticCount + 1;
+                pressedSemanticCounts.put(key, nextCount);
+                if (semanticCount == 0) {
                     pressedKeyOrder.remove(key);
                     pressedKeyOrder.add(key);
+                    dispatchTransition = true;
                 }
             } else {
                 pressedKeyCodes.delete(keyCode);
-                pressedKeyOrder.remove(key);
+                int nextCount = Math.max(0, semanticCount - 1);
+                if (nextCount == 0) {
+                    pressedSemanticCounts.remove(key);
+                    pressedKeyOrder.remove(key);
+                    dispatchTransition = semanticCount > 0;
+                } else {
+                    pressedSemanticCounts.put(key, nextCount);
+                }
             }
+            if (dispatchTransition) rebuildNativeKeySnapshotLocked();
         }
 
-        dispatch("window.AxonBongoCat&&AxonBongoCat.key(" + JSONObject.quote(key) + "," + pressed + ")");
+        // Multiple physical key codes can intentionally share one model semantic (for example
+        // Enter/NumpadEnter). Only release the semantic after its last physical source is released.
+        if (dispatchTransition) {
+            dispatch("window.AxonBongoCat&&AxonBongoCat.key(" + JSONObject.quote(key) + "," + pressed + ")");
+        }
+    }
+
+    private void rebuildNativeKeySnapshotLocked() {
+        JSONArray keys = new JSONArray();
+        for (String held : pressedKeyOrder) keys.put(held);
+        JSONObject result = new JSONObject();
+        try { result.put("keys", keys); } catch (Exception ignored) {}
+        nativeKeySnapshot = result.toString();
     }
 
     public void setMouseButtons(int buttons) {
         int nextButtons = buttons & 0x3;
+        if (nextButtons == mouseButtons) return;
         pendingMousePressPulses |= nextButtons & ~mouseButtons;
         mouseButtons = nextButtons;
         scheduleMouseFrame();
@@ -442,6 +670,8 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         };
         if (semantic == null) return;
         int bit = 1 << button;
+        boolean wasPressed = (mouseAuxButtons & bit) != 0;
+        if (wasPressed == pressed) return;
         if (pressed) mouseAuxButtons |= bit;
         else mouseAuxButtons &= ~bit;
         dispatch("window.AxonBongoCat&&AxonBongoCat.key(" + JSONObject.quote(semantic) + "," + pressed + ")");
@@ -453,6 +683,8 @@ public final class KeyboardCatOverlayView extends FrameLayout {
      */
     public void addMouseMotion(int dx, int dy) {
         if (dx == 0 && dy == 0) return;
+        // Do not replay seconds of hidden relative motion as one giant jump when the overlay resumes.
+        if (lifecycleSuspended) return;
         pendingMouseDx = saturatingAdd(pendingMouseDx, dx);
         pendingMouseDy = saturatingAdd(pendingMouseDy, dy);
         scheduleMouseFrame();
@@ -460,6 +692,9 @@ public final class KeyboardCatOverlayView extends FrameLayout {
 
     public void setGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons) {
         if (!isGamepadStyle()) return;
+        int previousButtons = gamepadButtons;
+        boolean axesChanged = lx != gamepadLx || ly != gamepadLy || rx != gamepadRx || ry != gamepadRy
+                || ((previousButtons ^ buttons) & (GamepadOverlayView.BTN_L3 | GamepadOverlayView.BTN_R3)) != 0;
         gamepadLx = lx;
         gamepadLy = ly;
         gamepadRx = rx;
@@ -467,30 +702,48 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         gamepadLt = lt;
         gamepadRt = rt;
         int next = buttons;
-        dispatchGamepadTransition(GamepadOverlayView.BTN_SOUTH, "South", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_EAST, "East", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_NORTH, "North", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_WEST, "West", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_C, "C", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_Z, "Z", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_L1, "LeftTrigger", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_R1, "RightTrigger", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_SELECT, "Select", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_START, "Start", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_MODE, "Mode", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_UP, "DPadUp", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_DOWN, "DPadDown", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_LEFT, "DPadLeft", gamepadButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_RIGHT, "DPadRight", gamepadButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_SOUTH, "South", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_EAST, "East", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_NORTH, "North", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_WEST, "West", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_C, "C", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_Z, "Z", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_L1, "LeftTrigger", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_R1, "RightTrigger", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_SELECT, "Select", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_START, "Start", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_MODE, "Mode", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_L3, "L3", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_R3, "R3", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_BACK_1, "M1", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_BACK_2, "M2", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_BACK_3, "M3", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_BACK_4, "M4", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_UP, "DPadUp", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_DOWN, "DPadDown", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_LEFT, "DPadLeft", previousButtons, next);
+        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_RIGHT, "DPadRight", previousButtons, next);
 
-        boolean nextLt = (next & GamepadOverlayView.BTN_L2) != 0 || lt >= 80;
-        boolean nextRt = (next & GamepadOverlayView.BTN_R2) != 0 || rt >= 80;
+        boolean nextLt = (next & GamepadOverlayView.BTN_L2) != 0 || lt >= 500;
+        boolean nextRt = (next & GamepadOverlayView.BTN_R2) != 0 || rt >= 500;
         if (nextLt != gamepadLtPressed) dispatchGamepadButton("LeftTrigger2", nextLt);
         if (nextRt != gamepadRtPressed) dispatchGamepadButton("RightTrigger2", nextRt);
         gamepadLtPressed = nextLt;
         gamepadRtPressed = nextRt;
         gamepadButtons = next;
 
+        if (axesChanged) scheduleGamepadFrame();
+    }
+
+    private void scheduleGamepadFrame() {
+        if (!pageReady || lifecycleSuspended || gamepadFrameScheduled) return;
+        gamepadFrameScheduled = true;
+        postOnAnimation(gamepadFrameDrain);
+    }
+
+    private void drainGamepadFrame() {
+        gamepadFrameScheduled = false;
+        if (!pageReady || lifecycleSuspended || !isGamepadStyle()) return;
         dispatchGamepadAxes();
     }
 
@@ -515,6 +768,8 @@ public final class KeyboardCatOverlayView extends FrameLayout {
             default -> 0;
         };
         if (bit == 0) return;
+        boolean wasPressed = (gamepadDirectionalMask & bit) != 0;
+        if (wasPressed == pressed) return;
         if (pressed) gamepadDirectionalMask |= bit;
         else gamepadDirectionalMask &= ~bit;
         dispatchGamepadButton(dpadName(bit), pressed);
@@ -544,6 +799,8 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         synchronized (inputBridgeLock) {
             pressedKeyCodes.clear();
             pressedKeyOrder.clear();
+            pressedSemanticCounts.clear();
+            nativeKeySnapshot = "{\"keys\":[]}";
         }
         mouseButtons = 0;
         mouseAuxButtons = 0;
@@ -558,6 +815,8 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         gamepadRtPressed = false;
         removeCallbacks(mouseFrameDrain);
         mouseFrameScheduled = false;
+        removeCallbacks(gamepadFrameDrain);
+        gamepadFrameScheduled = false;
         dispatch("window.AxonBongoCat&&AxonBongoCat.clear()");
     }
 
@@ -613,6 +872,8 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         if (!pageReady) return;
         removeCallbacks(mouseFrameDrain);
         mouseFrameScheduled = false;
+        removeCallbacks(gamepadFrameDrain);
+        gamepadFrameScheduled = false;
         pendingMouseDx = 0;
         pendingMouseDy = 0;
         pendingMousePressPulses = 0;
@@ -652,19 +913,23 @@ public final class KeyboardCatOverlayView extends FrameLayout {
                 GamepadOverlayView.BTN_L1, GamepadOverlayView.BTN_R1,
                 GamepadOverlayView.BTN_SELECT, GamepadOverlayView.BTN_START,
                 GamepadOverlayView.BTN_MODE,
+                GamepadOverlayView.BTN_L3, GamepadOverlayView.BTN_R3,
+                GamepadOverlayView.BTN_BACK_1, GamepadOverlayView.BTN_BACK_2,
+                GamepadOverlayView.BTN_BACK_3, GamepadOverlayView.BTN_BACK_4,
                 GamepadOverlayView.BTN_DPAD_UP, GamepadOverlayView.BTN_DPAD_DOWN,
                 GamepadOverlayView.BTN_DPAD_LEFT, GamepadOverlayView.BTN_DPAD_RIGHT
         };
         String[] names = {
                 "South", "East", "C", "North", "West", "Z",
                 "LeftTrigger", "RightTrigger", "Select", "Start", "Mode",
+                "L3", "R3", "M1", "M2", "M3", "M4",
                 "DPadUp", "DPadDown", "DPadLeft", "DPadRight"
         };
         for (int i = 0; i < bits.length; i++) {
             if ((gamepadButtons & bits[i]) != 0) dispatchGamepadButton(names[i], true);
         }
-        boolean ltPressed = (gamepadButtons & GamepadOverlayView.BTN_L2) != 0 || gamepadLt >= 80;
-        boolean rtPressed = (gamepadButtons & GamepadOverlayView.BTN_R2) != 0 || gamepadRt >= 80;
+        boolean ltPressed = (gamepadButtons & GamepadOverlayView.BTN_L2) != 0 || gamepadLt >= 500;
+        boolean rtPressed = (gamepadButtons & GamepadOverlayView.BTN_R2) != 0 || gamepadRt >= 500;
         if (ltPressed) dispatchGamepadButton("LeftTrigger2", true);
         if (rtPressed) dispatchGamepadButton("RightTrigger2", true);
         for (int bit = 1; bit <= 8; bit <<= 1) {
@@ -674,14 +939,14 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     }
 
     private void scheduleMouseFrame() {
-        if (!pageReady || mouseFrameScheduled) return;
+        if (!pageReady || lifecycleSuspended || mouseFrameScheduled) return;
         mouseFrameScheduled = true;
         postOnAnimation(mouseFrameDrain);
     }
 
     private void drainMouseFrame() {
         mouseFrameScheduled = false;
-        if (!pageReady) return;
+        if (!pageReady || lifecycleSuspended) return;
 
         int dx = pendingMouseDx;
         int dy = pendingMouseDy;
@@ -712,7 +977,7 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     }
 
     private void dispatch(String javascript) {
-        if (!pageReady) return;
+        if (!pageReady || lifecycleSuspended) return;
         dispatchRaw(javascript);
     }
 
@@ -796,15 +1061,63 @@ public final class KeyboardCatOverlayView extends FrameLayout {
             default -> null;
         };
     }
+    private void setLifecycleSuspended(boolean suspended) {
+        if (released || lifecycleSuspended == suspended) return;
+        lifecycleSuspended = suspended;
+        if (suspended) {
+            removeCallbacks(mouseFrameDrain);
+            mouseFrameScheduled = false;
+            removeCallbacks(gamepadFrameDrain);
+            gamepadFrameScheduled = false;
+            pendingMouseDx = 0;
+            pendingMouseDy = 0;
+            try { dispatchRaw("window.AxonBongoCat&&AxonBongoCat.pause&&AxonBongoCat.pause()"); }
+            catch (Throwable ignored) {}
+            try { webView.onPause(); } catch (Throwable ignored) {}
+            return;
+        }
+        try { webView.onResume(); } catch (Throwable ignored) {}
+        syncRuntimeLifecycle();
+        if (pageReady) flushInputState();
+    }
+
+    private void syncRuntimeLifecycle() {
+        if (!pageReady || released) return;
+        dispatchRaw(lifecycleSuspended
+                ? "window.AxonBongoCat&&AxonBongoCat.pause&&AxonBongoCat.pause()"
+                : "window.AxonBongoCat&&AxonBongoCat.resume&&AxonBongoCat.resume()");
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        setLifecycleSuspended(getWindowVisibility() != VISIBLE);
+    }
+
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        if (!released) setLifecycleSuspended(visibility != VISIBLE);
+    }
+
     /** Explicit final cleanup. A WindowManager detach can be transient on some ROMs/rotations, so
      * destroying WebView from onDetachedFromWindow() leaves a permanently blank overlay. */
     public void release() {
         if (released) return;
         released = true;
         runtimeGeneration++;
+        if (pageReady) {
+            try { dispatchRaw("window.AxonBongoCat&&AxonBongoCat.dispose&&AxonBongoCat.dispose()"); }
+            catch (Throwable ignored) {}
+        }
         pageReady = false;
+        PendingModelFunctionTest pendingTest = pendingModelFunctionTest;
+        pendingModelFunctionTest = null;
+        if (pendingTest != null) pendingTest.callback.onReceiveValue(false);
         removeCallbacks(mouseFrameDrain);
         mouseFrameScheduled = false;
+        removeCallbacks(gamepadFrameDrain);
+        gamepadFrameScheduled = false;
         pendingMouseDx = 0;
         pendingMouseDy = 0;
         try { webView.removeJavascriptInterface("AxonNativeInput"); } catch (Throwable ignored) {}
@@ -816,8 +1129,11 @@ public final class KeyboardCatOverlayView extends FrameLayout {
 
     @Override
     protected void onDetachedFromWindow() {
+        setLifecycleSuspended(true);
         removeCallbacks(mouseFrameDrain);
         mouseFrameScheduled = false;
+        removeCallbacks(gamepadFrameDrain);
+        gamepadFrameScheduled = false;
         super.onDetachedFromWindow();
     }
 

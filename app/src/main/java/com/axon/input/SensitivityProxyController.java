@@ -254,13 +254,11 @@ public final class SensitivityProxyController {
         } else if (status.startsWith("mouse-disconnected")) {
             int previous = lastButtons;
             lastButtons = 0;
-            if (previous != 0) mainHandler.post(() -> listener.onSensitivityMouseButtons(0));
+            if (previous != 0) listener.onSensitivityMouseButtons(0);
             postStatus(prefix + context.getString(R.string.sensitivity_status_device_lost));
         } else if (status.startsWith("gamepad-disconnected")) {
-            mainHandler.post(() -> {
-                listener.onSensitivityGamepadProfile(false);
-                listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0);
-            });
+            mainHandler.post(() -> listener.onSensitivityGamepadProfile(false));
+            listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0);
             postStatus(prefix + context.getString(R.string.sensitivity_status_device_lost));
         } else if (status.startsWith("starting")) {
             postStatus(prefix + context.getString(R.string.sensitivity_status_starting));
@@ -271,7 +269,9 @@ public final class SensitivityProxyController {
         if (!LineInts.parse(line, 7, parsedMotion)) return;
         int dx = parsedMotion[0];
         int dy = parsedMotion[1];
-        mainHandler.post(() -> listener.onSensitivityMouseMotion(dx, dy));
+        // High-frequency data is already marshalled by the service. Calling the listener
+        // directly here avoids proxy -> main -> service -> main double queuing on busy devices.
+        listener.onSensitivityMouseMotion(dx, dy);
     }
 
     private void parseButtons(String line) {
@@ -279,7 +279,7 @@ public final class SensitivityProxyController {
         int mask = parsedButtons[0];
         if (mask == lastButtons) return;
         lastButtons = mask;
-        mainHandler.post(() -> listener.onSensitivityMouseButtons(mask));
+        listener.onSensitivityMouseButtons(mask);
     }
 
     private void parseGamepad(String line) {
@@ -291,7 +291,7 @@ public final class SensitivityProxyController {
         int lt = parsedGamepad[4];
         int rt = parsedGamepad[5];
         int buttons = parsedGamepad[6];
-        mainHandler.post(() -> listener.onSensitivityGamepadState(lx, ly, rx, ry, lt, rt, buttons));
+        listener.onSensitivityGamepadState(lx, ly, rx, ry, lt, rt, buttons);
     }
 
     private void writeGains(int mode, int mouse, int gamepad) {
@@ -313,10 +313,10 @@ public final class SensitivityProxyController {
         stopProcessOnly();
         int previousButtons = lastButtons;
         lastButtons = 0;
-        if (previousButtons != 0) mainHandler.post(() -> listener.onSensitivityMouseButtons(0));
+        if (previousButtons != 0) listener.onSensitivityMouseButtons(0);
         // The proxy may disappear while a trigger/stick is still active. Clear the logical
         // gamepad state immediately instead of waiting for a replacement monitor sample.
-        mainHandler.post(() -> listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0));
+        listener.onSensitivityGamepadState(0, 0, 0, 0, 0, 0, 0);
         postStatus(status);
         if (modeA == SensitivitySettingsStore.MODE_SHIZUKU
                 || modeA == SensitivitySettingsStore.MODE_ROOT) {

@@ -71,6 +71,13 @@ public final class GamepadKeyMapper {
         }
     }
 
+    public int targetKeyCode(int sourceInputCode) {
+        synchronized (lock) {
+            Integer value = targetKeyBySource.get(sourceInputCode);
+            return value == null ? -1 : value;
+        }
+    }
+
     /**
      * Returns true when the original gamepad event must be consumed. A complete physical press is
      * kept on one path (mapped or pass-through) so apps never receive DOWN without UP or vice versa.

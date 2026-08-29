@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ColorSpace;
 import android.net.Uri;
 
 import org.json.JSONArray;
@@ -18,13 +19,16 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 
 /**
@@ -44,14 +48,19 @@ public final class Live2DModelStore {
     private static final String CURRENT_DIR = "current";
     private static final String STAGING_PREFIX = "staging_";
 
-    /** User package limit. The supplied yumi package is ~22 MiB. */
-    private static final long MAX_ZIP_BYTES = 256L * 1024L * 1024L;
-    /** Separate extracted-size limit protects against ZIP bombs while allowing large textures. */
-    private static final long MAX_EXTRACTED_BYTES = 768L * 1024L * 1024L;
-    private static final long MAX_SINGLE_FILE_BYTES = 256L * 1024L * 1024L;
-    private static final int MAX_ENTRIES = 1800;
-    /** Mobile WebGL compatibility target. The uploaded yumi texture is 8192x8192. */
+    /** Large community Live2D archives often bundle multiple 4K/8K atlases, motions and audio. */
+    private static final long MAX_ZIP_BYTES = 512L * 1024L * 1024L;
+    /** Expanded data stays bounded independently to protect against ZIP bombs. */
+    private static final long MAX_EXTRACTED_BYTES = 1536L * 1024L * 1024L;
+    private static final long MAX_SINGLE_FILE_BYTES = 512L * 1024L * 1024L;
+    /** model3/physics/expression metadata is parsed into Java heap; keep text JSON heap-safe. */
+    private static final long MAX_JSON_BYTES = 32L * 1024L * 1024L;
+    private static final int MAX_ENTRIES = 5000;
+    private static final long IMPORT_STORAGE_RESERVE_BYTES = 128L * 1024L * 1024L;
+    /** Per-atlas mobile WebGL compatibility ceiling; aggregate texture memory is budgeted separately. */
     private static final int MAX_TEXTURE_EDGE = 4096;
+    /** Keep the aggregate decoded RGBA atlas budget sane on Android WebView/GPU. */
+    private static final long MAX_TOTAL_TEXTURE_PIXELS = 48L * 1024L * 1024L;
 
     private Live2DModelStore() {}
 
@@ -100,6 +109,70 @@ public final class Live2DModelStore {
         return new BongoCatStyleManager.StyleInfo(
                 "live2d-current", name, BongoCatStyleManager.MODE_STANDARD,
                 root, relative, false, "modern", "live2d", 1080, 1920);
+    }
+
+
+    static List<BongoCatStyleManager.PhysicsGroupOption> physicsGroups(Context context) {
+        try { return BongoCatStyleManager.physicsGroups(runtimeStyle(context)); }
+        catch (Throwable ignored) { return new ArrayList<>(); }
+    }
+
+    /** Debug-visible Cubism parameters for the standalone Live2D model. */
+    static List<BongoCatStyleManager.ParameterOption> parameterOptions(Context context) {
+        ArrayList<BongoCatStyleManager.ParameterOption> result = new ArrayList<>();
+        try {
+            JSONObject config = BongoCatStyleManager.runtimeConfigLive2DDisplay(runtimeStyle(context));
+            JSONArray definitions = config.optJSONArray("parameterDefinitions");
+            if (definitions == null) return result;
+            for (int i = 0; i < definitions.length(); i++) {
+                JSONObject item = definitions.optJSONObject(i);
+                if (item == null) continue;
+                String id = item.optString("id", "").trim();
+                if (id.isEmpty()) continue;
+                result.add(new BongoCatStyleManager.ParameterOption(
+                        id, item.optString("name", id), item.optString("group", ""),
+                        item.optString("groupId", ""), item.optString("category", "advanced"),
+                        item.optString("defaultTrigger", "toggle"), item.optString("keySemantic", "")));
+            }
+        } catch (Throwable ignored) {}
+        return result;
+    }
+
+    /** Expressions keep the exact model3 FileReferences index used by the JS runtime. */
+    static List<BongoCatStyleManager.ExpressionOption> expressionOptions(Context context) {
+        ArrayList<BongoCatStyleManager.ExpressionOption> result = new ArrayList<>();
+        try {
+            File root = currentDir(context);
+            String relative = prefs(context).getString(KEY_MODEL_RELATIVE, "");
+            if (relative == null || relative.isEmpty()) return result;
+            File modelFile = safeResolve(root, relative);
+            JSONObject model = readJson(modelFile);
+            JSONObject refs = model.optJSONObject("FileReferences");
+            JSONArray expressions = refs == null ? null : refs.optJSONArray("Expressions");
+            if (expressions == null) return result;
+            File modelRoot = modelFile.getParentFile();
+            if (modelRoot == null) return result;
+            for (int i = 0; i < expressions.length(); i++) {
+                Object raw = expressions.opt(i);
+                String expressionRelative = "";
+                String name = "";
+                if (raw instanceof JSONObject) {
+                    JSONObject ref = (JSONObject) raw;
+                    expressionRelative = ref.optString("File", "").trim();
+                    name = ref.optString("Name", "").trim();
+                } else if (raw instanceof String) {
+                    expressionRelative = String.valueOf(raw).trim();
+                }
+                if (expressionRelative.isEmpty()) continue;
+                File expressionFile = safeResolve(modelRoot, expressionRelative);
+                requireInside(root, expressionFile);
+                if (!expressionFile.isFile()) continue;
+                if (name.isEmpty()) name = expressionFile.getName().replaceFirst("(?i)\\.exp3\\.json$", "");
+                result.add(new BongoCatStyleManager.ExpressionOption(
+                        "live2d:" + i, name, "live2d", i));
+            }
+        } catch (Throwable ignored) {}
+        return result;
     }
 
 
@@ -186,6 +259,10 @@ public final class Live2DModelStore {
         try {
             copyUriBounded(context, uri, zipCopy, MAX_ZIP_BYTES);
             extractZip(zipCopy, staging);
+            // Free the archive before texture adaptation and the atomic model swap. Large packs
+            // otherwise keep hundreds of megabytes duplicated on the same internal volume.
+            //noinspection ResultOfMethodCallIgnored
+            zipCopy.delete();
             File modelFile = chooseModel3(staging);
             if (modelFile == null) throw new IOException("ZIP 中未找到 *.model3.json");
 
@@ -193,7 +270,8 @@ public final class Live2DModelStore {
             validateModel3(staging, modelFile, model);
             injectVTubeStudioIdleIfPresent(staging, modelFile, model);
             writeJson(modelFile, model);
-            int adapted = adaptLargeTextures(staging, modelFile, model);
+            boolean clearQuality = OverlayState.getLive2DRenderQuality(context) == OverlayState.RENDER_QUALITY_CLEAR;
+            int adapted = adaptLargeTextures(staging, modelFile, model, clearQuality);
             // Texture adaptation does not change paths, but re-validate after all mutations.
             validateModel3(staging, modelFile, readJson(modelFile));
 
@@ -221,6 +299,12 @@ public final class Live2DModelStore {
                     .putString(KEY_MODEL_RELATIVE, modelRelative)
                     .putString(KEY_NAME, safeName)
                     .apply();
+            // PhysicsSetting identities belong to the imported model. Preserve the user's global
+            // strength, but discard old per-group overrides so a new model never inherits an
+            // unrelated PhysicsSetting1/2 toggle from the previous package.
+            Live2DPhysicsSettingsStore.clearGroups(context, Live2DPhysicsSettingsStore.TARGET_LIVE2D);
+            Live2DDebugSettingsStore.clearTarget(context, Live2DPhysicsSettingsStore.TARGET_LIVE2D);
+            Live2DPhysicsHotkeyStore.clearTarget(context, Live2DPhysicsSettingsStore.TARGET_LIVE2D);
             deleteTree(oldBackup);
             return new ImportResult(safeName, modelRelative, adapted);
         } catch (Throwable error) {
@@ -250,7 +334,7 @@ public final class Live2DModelStore {
 
         String mocRelative = refs.optString("Moc", "").trim();
         if (mocRelative.isEmpty()) throw new IOException("model3 缺少 Moc");
-        File moc = safeResolve(modelRoot, mocRelative);
+        File moc = resolveModelReference(modelRoot, mocRelative);
         requireInside(packageRoot, moc);
         if (!moc.isFile()) throw new IOException("Moc 文件不存在: " + mocRelative);
 
@@ -259,7 +343,7 @@ public final class Live2DModelStore {
         for (int i = 0; i < textures.length(); i++) {
             String relative = textures.optString(i, "").trim();
             if (relative.isEmpty()) throw new IOException("存在空纹理路径");
-            File texture = safeResolve(modelRoot, relative);
+            File texture = resolveModelReference(modelRoot, relative);
             requireInside(packageRoot, texture);
             if (!texture.isFile()) throw new IOException("纹理不存在: " + relative);
         }
@@ -273,7 +357,7 @@ public final class Live2DModelStore {
                                                   JSONObject refs, String key) throws Exception {
         String relative = refs.optString(key, "").trim();
         if (relative.isEmpty()) return;
-        File file = safeResolve(modelRoot, relative);
+        File file = resolveModelReference(modelRoot, relative);
         requireInside(packageRoot, file);
         if (!file.isFile()) throw new IOException(key + " 文件不存在: " + relative);
     }
@@ -302,12 +386,12 @@ public final class Live2DModelStore {
             if (vtubeRefs == null) continue;
             String declaredModel = vtubeRefs.optString("Model", "").trim();
             if (!declaredModel.isEmpty()) {
-                File declared = safeResolve(vtubeFile.getParentFile(), declaredModel);
+                File declared = resolveModelReference(vtubeFile.getParentFile(), declaredModel);
                 if (!declared.getCanonicalFile().equals(modelFile.getCanonicalFile())) continue;
             }
             String idle = vtubeRefs.optString("IdleAnimation", "").trim();
             if (idle.isEmpty()) continue;
-            File idleFile = safeResolve(vtubeFile.getParentFile(), idle);
+            File idleFile = resolveModelReference(vtubeFile.getParentFile(), idle);
             requireInside(packageRoot, idleFile);
             if (!idleFile.isFile()) continue;
 
@@ -326,47 +410,82 @@ public final class Live2DModelStore {
         }
     }
 
-    private static int adaptLargeTextures(File packageRoot, File modelFile, JSONObject model) throws Exception {
+    private static int adaptLargeTextures(File packageRoot, File modelFile, JSONObject model, boolean clearQuality) throws Exception {
         JSONObject refs = model.optJSONObject("FileReferences");
         JSONArray textures = refs == null ? null : refs.optJSONArray("Textures");
         File modelRoot = modelFile.getParentFile();
         if (textures == null || modelRoot == null) return 0;
-        int adapted = 0;
+
+        final class TextureInfo {
+            final String relative;
+            final File file;
+            final int width;
+            final int height;
+            TextureInfo(String relative, File file, int width, int height) {
+                this.relative = relative;
+                this.file = file;
+                this.width = width;
+                this.height = height;
+            }
+        }
+
+        List<TextureInfo> infos = new ArrayList<>();
+        long totalPixels = 0L;
         for (int i = 0; i < textures.length(); i++) {
             String relative = textures.optString(i, "").trim();
             if (relative.isEmpty()) continue;
-            File texture = safeResolve(modelRoot, relative);
+            File texture = resolveModelReference(modelRoot, relative);
             requireInside(packageRoot, texture);
+            if (!texture.isFile()) continue;
+
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
             BitmapFactory.decodeFile(texture.getAbsolutePath(), bounds);
-            int width = bounds.outWidth;
-            int height = bounds.outHeight;
-            if (width <= 0 || height <= 0 || (width <= MAX_TEXTURE_EDGE && height <= MAX_TEXTURE_EDGE)) continue;
+            int width = Math.max(0, bounds.outWidth);
+            int height = Math.max(0, bounds.outHeight);
+            if (width <= 0 || height <= 0) continue;
+            infos.add(new TextureInfo(relative, texture, width, height));
+            totalPixels += (long) width * (long) height;
+        }
 
-            int sample = 1;
-            while ((width / (sample * 2)) >= MAX_TEXTURE_EDGE
-                    || (height / (sample * 2)) >= MAX_TEXTURE_EDGE) {
-                sample *= 2;
-            }
-            if (Math.max(width / sample, height / sample) > MAX_TEXTURE_EDGE) sample *= 2;
+        // A model with eleven 4096² atlases occupies about 704 MiB after RGBA decode.
+        // Downsample the whole atlas set uniformly by powers of two so UV coordinates remain valid,
+        // while keeping normal one/two-atlas models at authored resolution.
+        long texturePixelBudget = clearQuality ? 80L * 1024L * 1024L : MAX_TOTAL_TEXTURE_PIXELS;
+        int budgetSample = 1;
+        while (totalPixels / ((long) budgetSample * budgetSample) > texturePixelBudget) {
+            budgetSample *= 2;
+        }
+
+        int adapted = 0;
+        for (TextureInfo info : infos) {
+            int edgeSample = 1;
+            while (Math.max(info.width, info.height) / edgeSample > MAX_TEXTURE_EDGE) edgeSample *= 2;
+            int sample = Math.max(edgeSample, budgetSample);
+            if (sample <= 1) continue;
 
             BitmapFactory.Options decode = new BitmapFactory.Options();
-            decode.inSampleSize = Math.max(2, sample);
+            decode.inSampleSize = sample;
+            decode.inScaled = false;
             decode.inPreferredConfig = Bitmap.Config.ARGB_8888;
-            Bitmap bitmap = BitmapFactory.decodeFile(texture.getAbsolutePath(), decode);
-            if (bitmap == null) throw new IOException("无法适配大纹理: " + relative);
+            // Live2D WebGL performs premultiplication once at texture upload. Keeping imported
+            // atlas pixels straight-alpha here prevents Android's decoder + PNG/WebP re-encode
+            // path from baking a first alpha multiplication into resized community textures.
+            decode.inPremultiplied = false;
+            decode.inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB);
+            Bitmap bitmap = BitmapFactory.decodeFile(info.file.getAbsolutePath(), decode);
+            if (bitmap == null) throw new IOException("无法适配大纹理: " + info.relative);
 
-            File temp = new File(texture.getParentFile(), texture.getName() + ".axon_tmp");
-            Bitmap.CompressFormat format = compressFormat(texture.getName());
+            File temp = new File(info.file.getParentFile(), info.file.getName() + ".axon_tmp");
+            Bitmap.CompressFormat format = compressFormat(info.file.getName());
             try (OutputStream out = new BufferedOutputStream(new FileOutputStream(temp))) {
                 int quality = format == Bitmap.CompressFormat.JPEG ? 95 : 100;
-                if (!bitmap.compress(format, quality, out)) throw new IOException("纹理压缩失败: " + relative);
+                if (!bitmap.compress(format, quality, out)) throw new IOException("纹理压缩失败: " + info.relative);
             } finally {
                 bitmap.recycle();
             }
-            if (!texture.delete() || !temp.renameTo(texture)) {
-                copyFile(temp, texture);
+            if (!info.file.delete() || !temp.renameTo(info.file)) {
+                copyFile(temp, info.file);
                 //noinspection ResultOfMethodCallIgnored
                 temp.delete();
             }
@@ -437,17 +556,47 @@ public final class Live2DModelStore {
             int read;
             while ((read = in.read(buffer)) != -1) {
                 total += read;
-                if (total > maxBytes) throw new IOException("Live2D ZIP 超过 256MB");
+                if (total > maxBytes) throw new IOException("Live2D ZIP 超过 512MB");
                 out.write(buffer, 0, read);
             }
             if (total <= 0) throw new IOException("模型 ZIP 为空");
         }
     }
 
+    private static final class ZipNameEncodingException extends IOException {
+        ZipNameEncodingException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
     private static void extractZip(File zipFile, File target) throws IOException {
+        ZipNameEncodingException utf8Failure;
+        try {
+            extractZip(zipFile, target, StandardCharsets.UTF_8);
+            return;
+        } catch (ZipNameEncodingException error) {
+            utf8Failure = error;
+            deleteTree(target);
+            if (!target.mkdirs() && !target.isDirectory()) throw error;
+        }
+
+        // Older Windows/Chinese Live2D packs sometimes omit the UTF-8 filename flag and store
+        // entry names in GBK/GB18030. Only retry when opening/decoding ZIP entry names failed;
+        // policy errors (ZIP bomb, traversal, oversized files) must never be retried under a
+        // different charset because that could partially extract the same untrusted archive twice.
+        try {
+            extractZip(zipFile, target, Charset.forName("GB18030"));
+        } catch (IOException fallback) {
+            fallback.addSuppressed(utf8Failure);
+            throw fallback;
+        }
+    }
+
+    private static void extractZip(File zipFile, File target, Charset charset) throws IOException {
         long total = 0;
         int entries = 0;
-        try (ZipFile zip = new ZipFile(zipFile)) {
+        try (ZipFile zip = new ZipFile(zipFile, charset)) {
+            preflightZipExtraction(zip, target);
             java.util.Enumeration<? extends ZipEntry> enumeration = zip.entries();
             while (enumeration.hasMoreElements()) {
                 ZipEntry entry = enumeration.nextElement();
@@ -475,12 +624,47 @@ public final class Live2DModelStore {
                     while ((read = in.read(buffer)) != -1) {
                         entryTotal += read;
                         total += read;
-                        if (entryTotal > MAX_SINGLE_FILE_BYTES) throw new IOException("单个模型资源超过 256MB");
-                        if (total > MAX_EXTRACTED_BYTES) throw new IOException("模型解压后超过 768MB");
+                        if (entryTotal > MAX_SINGLE_FILE_BYTES) throw new IOException("单个模型资源超过 512MB");
+                        if (total > MAX_EXTRACTED_BYTES) throw new IOException("模型解压后超过 1.5GB");
                         out.write(buffer, 0, read);
                     }
                 }
             }
+        } catch (IllegalArgumentException | ZipException error) {
+            throw new ZipNameEncodingException("模型 ZIP 文件名编码不兼容", error);
+        }
+    }
+
+    private static void preflightZipExtraction(ZipFile zip, File target) throws IOException {
+        long declaredTotal = 0L;
+        int declaredEntries = 0;
+        java.util.Enumeration<? extends ZipEntry> scan = zip.entries();
+        while (scan.hasMoreElements()) {
+            ZipEntry entry = scan.nextElement();
+            if (++declaredEntries > MAX_ENTRIES) throw new IOException("模型文件数量过多");
+            if (entry.isDirectory()) continue;
+            long size = entry.getSize();
+            if (size > MAX_SINGLE_FILE_BYTES) throw new IOException("单个模型资源超过 512MB");
+            if (size > 0L) {
+                declaredTotal += size;
+                if (declaredTotal > MAX_EXTRACTED_BYTES) throw new IOException("模型解压后超过 1.5GB");
+            }
+        }
+        if (declaredTotal > 0L) ensureUsableStorage(target, declaredTotal);
+    }
+
+    private static void ensureUsableStorage(File target, long expectedBytes) throws IOException {
+        File probe = target == null ? null : target.getParentFile();
+        if (probe == null) return;
+        long usable = probe.getUsableSpace();
+        if (usable <= 0L) return;
+        long required;
+        try { required = Math.addExact(expectedBytes, IMPORT_STORAGE_RESERVE_BYTES); }
+        catch (ArithmeticException ignored) { required = Long.MAX_VALUE; }
+        if (usable < required) {
+            long needMb = (required + 1024L * 1024L - 1L) / (1024L * 1024L);
+            long freeMb = usable / (1024L * 1024L);
+            throw new IOException("存储空间不足：大型 Live2D 预计至少需要 " + needMb + " MB，可用约 " + freeMb + " MB");
         }
     }
 
@@ -489,12 +673,21 @@ public final class Live2DModelStore {
     }
 
     private static String readText(File file) throws IOException {
+        if (file == null || !file.isFile()) throw new IOException("模型 JSON 不存在");
+        if (file.length() > MAX_JSON_BYTES) throw new IOException("模型 JSON/配置文件超过 32MB");
+        int initial = (int) Math.min(Math.max(0L, file.length()), 256L * 1024L);
         try (InputStream in = new BufferedInputStream(new FileInputStream(file));
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+             ByteArrayOutputStream out = new ByteArrayOutputStream(initial)) {
             byte[] buffer = new byte[16 * 1024];
+            long total = 0L;
             int read;
-            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
-            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+            while ((read = in.read(buffer)) != -1) {
+                total += read;
+                if (total > MAX_JSON_BYTES) throw new IOException("模型 JSON/配置文件超过 32MB");
+                out.write(buffer, 0, read);
+            }
+            String text = new String(out.toByteArray(), StandardCharsets.UTF_8);
+            return text.startsWith("\uFEFF") ? text.substring(1) : text;
         }
     }
 
@@ -526,6 +719,38 @@ public final class Live2DModelStore {
             int read;
             while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
         }
+    }
+
+    /** Resolve model3 references across Windows case rules, URL-escaped paths and Unicode NFC/NFD. */
+    private static File resolveModelReference(File root, String relative) throws IOException {
+        if (root == null || relative == null) throw new IOException("空路径");
+        String clean = Uri.decode(relative).replace('\\', '/').trim();
+        if (clean.isEmpty() || clean.startsWith("/") || clean.contains("../") || clean.equals("..")) {
+            throw new IOException("非法模型资源路径: " + relative);
+        }
+        File current = root;
+        for (String part : clean.split("/")) {
+            if (part.isEmpty() || ".".equals(part)) continue;
+            if ("..".equals(part)) throw new IOException("非法模型资源路径: " + relative);
+            File exact = new File(current, part);
+            if (exact.exists()) {
+                current = exact;
+                continue;
+            }
+            File[] children = current.listFiles();
+            File matched = null;
+            String expected = Normalizer.normalize(part, Normalizer.Form.NFC);
+            if (children != null) {
+                for (File child : children) {
+                    String candidate = Normalizer.normalize(child.getName(), Normalizer.Form.NFC);
+                    if (candidate.equalsIgnoreCase(expected)) { matched = child; break; }
+                }
+            }
+            if (matched == null) return exact;
+            current = matched;
+        }
+        requireInside(root, current);
+        return current;
     }
 
     private static File safeResolve(File root, String relative) throws IOException {

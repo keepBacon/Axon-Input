@@ -72,6 +72,7 @@ public final class GlobalHtmlWebView extends WebView {
     private int pressedMask;
     private boolean keyboardShowSpace = true;
     private boolean keyboardShowSpaceDps;
+    private boolean keyboardShowSpaceDash;
     private int keyboardSpaceDps;
     private long mouseStats;
     private int[] customKeyCodes = new int[0];
@@ -98,7 +99,6 @@ public final class GlobalHtmlWebView extends WebView {
     private int gamepadLt;
     private int gamepadRt;
     private int gamepadButtons;
-    private int stickShape = GamepadOverlayView.SHAPE_CIRCLE;
     private boolean faceReversed;
     private boolean faceSymbolIcons;
     private boolean faceYDpsEnabled;
@@ -265,13 +265,23 @@ public final class GlobalHtmlWebView extends WebView {
         scheduleFullState();
     }
 
+    public void setKeyboardSpaceDashEnabled(boolean enabled) {
+        if (keyboardShowSpaceDash == enabled) return;
+        keyboardShowSpaceDash = enabled;
+        scheduleFullState();
+    }
+
+    private String keyboardLabel(int index) {
+        return index == 4 && keyboardShowSpaceDash ? "—" : KEYBOARD_LABELS[index];
+    }
+
     public void setKeyboardDps(int dps) {
         int next = Math.max(0, Math.min(999, dps));
         if (keyboardSpaceDps == next) return;
         keyboardSpaceDps = next;
         if (keyboardShowSpace && keyboardShowSpaceDps) {
             dispatch("keydisplay:key", keyObject(
-                    KEYBOARD_IDS[4], KEYBOARD_LABELS[4], KEYBOARD_CODES[4], 4,
+                    KEYBOARD_IDS[4], keyboardLabel(4), KEYBOARD_CODES[4], 4,
                     (pressedMask & KEYBOARD_BITS[4]) != 0, keyboardSpaceDps));
         }
     }
@@ -451,14 +461,6 @@ public final class GlobalHtmlWebView extends WebView {
         scheduleRealtimeFrame();
     }
 
-    public void setStickShape(int shape) {
-        int next = shape == GamepadOverlayView.SHAPE_SQUARE
-                ? GamepadOverlayView.SHAPE_SQUARE : GamepadOverlayView.SHAPE_CIRCLE;
-        if (stickShape == next) return;
-        stickShape = next;
-        scheduleFullState();
-    }
-
     public void setFaceReversed(boolean reversed) {
         if (faceReversed == reversed) return;
         faceReversed = reversed;
@@ -513,7 +515,7 @@ public final class GlobalHtmlWebView extends WebView {
             if (before != after) {
                 int cps = (i == 4 && keyboardShowSpaceDps) ? keyboardSpaceDps : 0;
                 changes.put(keyObject(
-                        KEYBOARD_IDS[i], KEYBOARD_LABELS[i], KEYBOARD_CODES[i], i, after, cps));
+                        KEYBOARD_IDS[i], keyboardLabel(i), KEYBOARD_CODES[i], i, after, cps));
             }
         }
         dispatchKeys(changes);
@@ -555,7 +557,7 @@ public final class GlobalHtmlWebView extends WebView {
                 for (int i = 0; i < KEYBOARD_BITS.length; i++) {
                     if (i == 4 && !keyboardShowSpace) continue;
                     int cps = i == 4 && keyboardShowSpaceDps ? keyboardSpaceDps : 0;
-                    keys.put(keyObject(KEYBOARD_IDS[i], KEYBOARD_LABELS[i], KEYBOARD_CODES[i], i,
+                    keys.put(keyObject(KEYBOARD_IDS[i], keyboardLabel(i), KEYBOARD_CODES[i], i,
                             (pressedMask & KEYBOARD_BITS[i]) != 0, cps));
                 }
             } else if (TYPE_MOUSE.equals(type)) {
@@ -581,13 +583,17 @@ public final class GlobalHtmlWebView extends WebView {
         if (type.startsWith("gamepad-")) state.put("gamepad", gamepadObject());
 
         JSONObject config = new JSONObject();
-        config.put("stickShape", stickShape == GamepadOverlayView.SHAPE_SQUARE ? "square" : "circle");
+        config.put("stickShape", "rounded");
+        if (TYPE_GAMEPAD_LEFT_STICK.equals(type) || TYPE_GAMEPAD_RIGHT_STICK.equals(type)) {
+            config.put("stickCornerStrength", OverlayState.getKeyCornerStrength(getContext(), displayTypeForState()));
+        }
         config.put("faceReversed", faceReversed);
         config.put("faceSymbolIcons", faceSymbolIcons);
         config.put("dotSizePercent", dotSizePercent);
         config.put("showSpace", keyboardShowSpace);
         config.put("showSpaceCps", keyboardShowSpaceDps);
         config.put("showSpaceDps", keyboardShowSpaceDps); // v9 兼容
+        config.put("spaceDash", keyboardShowSpaceDash);
         config.put("showFaceYCps", faceYDpsEnabled);
         config.put("showFaceXCps", faceXDpsEnabled);
         config.put("showFaceBCps", faceBDpsEnabled);
@@ -751,6 +757,11 @@ public final class GlobalHtmlWebView extends WebView {
             out.put("baseColor", colorHex(OverlayState.getKeyBaseColor(c, display)));
             out.put("borderColor", colorHex(OverlayState.getKeyBorderColor(c, display)));
             out.put("pressColor", colorHex(OverlayState.getKeyPressColor(c, display)));
+            out.put("textColor", colorHex(OverlayState.getKeyTextColor(c, display)));
+            out.put("backgroundOpacity", OverlayState.getKeyBackgroundOpacity(c, display));
+            out.put("strokeOpacity", OverlayState.getKeyStrokeOpacity(c, display));
+            out.put("textOpacity", OverlayState.getKeyTextOpacity(c, display));
+            out.put("diffusionOpacity", OverlayState.getKeyDiffusionOpacity(c, display));
         }
         int spacing = currentSpacingDp(c);
         if (spacing >= 0) out.put("spacingDp", spacing);
@@ -764,6 +775,11 @@ public final class GlobalHtmlWebView extends WebView {
             out.put("baseColor", colorHex(OverlayState.getKeyBaseColor(c, display)));
             out.put("borderColor", colorHex(OverlayState.getKeyBorderColor(c, display)));
             out.put("pressColor", colorHex(OverlayState.getKeyPressColor(c, display)));
+            out.put("textColor", colorHex(OverlayState.getKeyTextColor(c, display)));
+            out.put("backgroundOpacity", OverlayState.getKeyBackgroundOpacity(c, display));
+            out.put("strokeOpacity", OverlayState.getKeyStrokeOpacity(c, display));
+            out.put("textOpacity", OverlayState.getKeyTextOpacity(c, display));
+            out.put("diffusionOpacity", OverlayState.getKeyDiffusionOpacity(c, display));
         }
     }
 
@@ -776,7 +792,10 @@ public final class GlobalHtmlWebView extends WebView {
                 || display == KeyOverlayView.DISPLAY_MOUSE
                 || display == KeyOverlayView.DISPLAY_CUSTOM
                 || display == KeyPromptOverlayView.DISPLAY_KEY_PROMPT
+                || display == GamepadOverlayView.DISPLAY_LEFT_STICK
+                || display == GamepadOverlayView.DISPLAY_RIGHT_STICK
                 || display == GamepadOverlayView.DISPLAY_FACE
+                || display == GamepadOverlayView.DISPLAY_DPAD
                 || display == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
                 || display == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
                 || display == GamepadOverlayView.DISPLAY_BACK;
@@ -870,6 +889,7 @@ public final class GlobalHtmlWebView extends WebView {
         JSONObject prompt = new JSONObject();
         prompt.put("enabled", OverlayState.isKeyPromptEnabled(c));
         prompt.put("sizePercent", OverlayState.getKeyPromptSize(c));
+        prompt.put("motionMode", motionModeName(OverlayState.getMotionMode(c, KeyPromptOverlayView.DISPLAY_KEY_PROMPT)));
         appendAppearance(prompt, c, KeyPromptOverlayView.DISPLAY_KEY_PROMPT);
         root.put("keyPrompt", prompt);
 
@@ -899,7 +919,10 @@ public final class GlobalHtmlWebView extends WebView {
         leftStick.put("enabled", OverlayState.isGamepadLeftStickEnabled(c));
         leftStick.put("sizePercent", OverlayState.getGamepadDisplaySize(c, GamepadOverlayView.DISPLAY_LEFT_STICK));
         leftStick.put("dotSizePercent", OverlayState.getGamepadStickDotSize(c, GamepadOverlayView.DISPLAY_LEFT_STICK));
-        leftStick.put("shape", OverlayState.getGamepadLeftStickShape(c) == GamepadOverlayView.SHAPE_SQUARE ? "square" : "circle");
+        leftStick.put("centerCornerStrength", OverlayState.getGamepadStickCenterCornerStrength(c, GamepadOverlayView.DISPLAY_LEFT_STICK));
+        leftStick.put("centerColor", colorHex(OverlayState.getGamepadStickCenterColor(c, GamepadOverlayView.DISPLAY_LEFT_STICK)));
+        leftStick.put("motionMode", motionModeName(OverlayState.getMotionMode(c, GamepadOverlayView.DISPLAY_LEFT_STICK)));
+        leftStick.put("shape", "rounded");
         appendAppearance(leftStick, c, GamepadOverlayView.DISPLAY_LEFT_STICK);
         gamepad.put("leftStick", leftStick);
 
@@ -907,7 +930,10 @@ public final class GlobalHtmlWebView extends WebView {
         rightStick.put("enabled", OverlayState.isGamepadRightStickEnabled(c));
         rightStick.put("sizePercent", OverlayState.getGamepadDisplaySize(c, GamepadOverlayView.DISPLAY_RIGHT_STICK));
         rightStick.put("dotSizePercent", OverlayState.getGamepadStickDotSize(c, GamepadOverlayView.DISPLAY_RIGHT_STICK));
-        rightStick.put("shape", OverlayState.getGamepadRightStickShape(c) == GamepadOverlayView.SHAPE_SQUARE ? "square" : "circle");
+        rightStick.put("centerCornerStrength", OverlayState.getGamepadStickCenterCornerStrength(c, GamepadOverlayView.DISPLAY_RIGHT_STICK));
+        rightStick.put("centerColor", colorHex(OverlayState.getGamepadStickCenterColor(c, GamepadOverlayView.DISPLAY_RIGHT_STICK)));
+        rightStick.put("motionMode", motionModeName(OverlayState.getMotionMode(c, GamepadOverlayView.DISPLAY_RIGHT_STICK)));
+        rightStick.put("shape", "rounded");
         appendAppearance(rightStick, c, GamepadOverlayView.DISPLAY_RIGHT_STICK);
         gamepad.put("rightStick", rightStick);
 
@@ -924,6 +950,7 @@ public final class GlobalHtmlWebView extends WebView {
         face.put("bCps", GamepadSettingsStore.isFaceBDpsEnabled(c));
         face.put("aDps", GamepadSettingsStore.isFaceADpsEnabled(c)); // v9 兼容
         face.put("spacingDp", OverlayState.getGamepadFaceSpacing(c));
+        face.put("motionMode", motionModeName(OverlayState.getMotionMode(c, GamepadOverlayView.DISPLAY_FACE)));
         appendAppearance(face, c, GamepadOverlayView.DISPLAY_FACE);
         gamepad.put("face", face);
 
@@ -933,6 +960,7 @@ public final class GlobalHtmlWebView extends WebView {
         leftShoulder.put("triggerProgress", GamepadSettingsStore.isL2ProgressEnabled(c));
         leftShoulder.put("cps", GamepadSettingsStore.isL1DpsEnabled(c));
         leftShoulder.put("dps", GamepadSettingsStore.isL1DpsEnabled(c)); // v9 兼容
+        leftShoulder.put("motionMode", motionModeName(OverlayState.getMotionMode(c, GamepadOverlayView.DISPLAY_LEFT_SHOULDER)));
         appendAppearance(leftShoulder, c, GamepadOverlayView.DISPLAY_LEFT_SHOULDER);
         gamepad.put("leftShoulder", leftShoulder);
 
@@ -942,14 +970,23 @@ public final class GlobalHtmlWebView extends WebView {
         rightShoulder.put("triggerProgress", GamepadSettingsStore.isR2ProgressEnabled(c));
         rightShoulder.put("cps", GamepadSettingsStore.isR1DpsEnabled(c));
         rightShoulder.put("dps", GamepadSettingsStore.isR1DpsEnabled(c)); // v9 兼容
+        rightShoulder.put("motionMode", motionModeName(OverlayState.getMotionMode(c, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER)));
         appendAppearance(rightShoulder, c, GamepadOverlayView.DISPLAY_RIGHT_SHOULDER);
         gamepad.put("rightShoulder", rightShoulder);
 
         JSONObject back = new JSONObject();
         back.put("enabled", OverlayState.isGamepadBackEnabled(c));
         back.put("sizePercent", OverlayState.getGamepadDisplaySize(c, GamepadOverlayView.DISPLAY_BACK));
+        back.put("motionMode", motionModeName(OverlayState.getMotionMode(c, GamepadOverlayView.DISPLAY_BACK)));
         appendAppearance(back, c, GamepadOverlayView.DISPLAY_BACK);
         gamepad.put("back", back);
+
+        JSONObject dpad = new JSONObject();
+        dpad.put("enabled", OverlayState.isGamepadDpadEnabled(c));
+        dpad.put("sizePercent", OverlayState.getGamepadDisplaySize(c, GamepadOverlayView.DISPLAY_DPAD));
+        dpad.put("motionMode", motionModeName(OverlayState.getMotionMode(c, GamepadOverlayView.DISPLAY_DPAD)));
+        appendAppearance(dpad, c, GamepadOverlayView.DISPLAY_DPAD);
+        gamepad.put("dpad", dpad);
 
         JSONObject compatibility = new JSONObject();
         compatibility.put("mode", gamepadCompatibilityName(GamepadSettingsStore.getCompatibilityMode(c)));
@@ -1006,7 +1043,15 @@ public final class GlobalHtmlWebView extends WebView {
         int display = displayTypeForState();
         if (display == KeyOverlayView.DISPLAY_KEYBOARD
                 || display == KeyOverlayView.DISPLAY_MOUSE
-                || display == KeyOverlayView.DISPLAY_CUSTOM) {
+                || display == KeyOverlayView.DISPLAY_CUSTOM
+                || display == KeyPromptOverlayView.DISPLAY_KEY_PROMPT
+                || display == GamepadOverlayView.DISPLAY_LEFT_STICK
+                || display == GamepadOverlayView.DISPLAY_RIGHT_STICK
+                || display == GamepadOverlayView.DISPLAY_FACE
+                || display == GamepadOverlayView.DISPLAY_DPAD
+                || display == GamepadOverlayView.DISPLAY_LEFT_SHOULDER
+                || display == GamepadOverlayView.DISPLAY_RIGHT_SHOULDER
+                || display == GamepadOverlayView.DISPLAY_BACK) {
             return motionModeName(OverlayState.getMotionMode(getContext(), display));
         }
         return "native";

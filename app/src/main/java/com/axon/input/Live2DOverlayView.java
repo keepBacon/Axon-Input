@@ -19,6 +19,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -40,6 +41,7 @@ public final class Live2DOverlayView extends FrameLayout {
     private boolean released;
     private int loadGeneration;
     private int displayScalePercent = 100;
+    private int renderQuality;
     private float displayOffsetX;
     private float displayOffsetY;
     private boolean dragEnabled;
@@ -90,6 +92,7 @@ public final class Live2DOverlayView extends FrameLayout {
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         displayOffsetX = OverlayState.getLive2DOffsetX(context);
         displayOffsetY = OverlayState.getLive2DOffsetY(context);
+        renderQuality = OverlayState.getLive2DRenderQuality(context);
 
         webView = new WebView(context);
         webView.setBackgroundColor(Color.TRANSPARENT);
@@ -131,14 +134,24 @@ public final class Live2DOverlayView extends FrameLayout {
             }
 
             @Override public void onPageFinished(WebView view, String url) {
+                Log.i(TAG, "Live2D page finished: " + url);
                 appliedMotionGeneration = Long.MIN_VALUE;
                 appliedMouseGeneration = Long.MIN_VALUE;
                 mouseBaselineReady = false;
                 mouseCaptureApplied = false;
+                applyRenderQualityToRuntime();
                 applyDisplayScaleToRuntime();
                 applyDisplayOffsetToRuntime();
                 applyWatermarkToRuntime();
                 applyTrackingToRuntime();
+                mainHandler.postDelayed(() -> {
+                    if (released) return;
+                    try {
+                        webView.evaluateJavascript(
+                                "JSON.stringify(window.AxonBongoCat&&window.AxonBongoCat.debugState?window.AxonBongoCat.debugState():{ready:false,missingRuntime:true})",
+                                value -> Log.i(TAG, "Live2D runtime state: " + value));
+                    } catch (Throwable ignored) {}
+                }, 500L);
             }
 
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
@@ -223,6 +236,97 @@ public final class Live2DOverlayView extends FrameLayout {
         applyDisplayScaleToRuntime();
         requestLayout();
         invalidate();
+    }
+
+    public void setRenderQuality(int quality) {
+        int next = RenderQuality.normalize(quality);
+        if (renderQuality == next) return;
+        renderQuality = next;
+        applyRenderQualityToRuntime();
+    }
+
+    private void applyRenderQualityToRuntime() {
+        if (released) return;
+        try {
+            webView.evaluateJavascript(
+                    "window.AxonBongoCat&&window.AxonBongoCat.setRenderQuality&&window.AxonBongoCat.setRenderQuality("
+                            + JSONObject.quote(RenderQuality.jsName(renderQuality)) + ");", null);
+        } catch (Throwable ignored) {}
+    }
+
+    /** Live-update Cubism Physics controls; no WebView/model rebuild is required. */
+    public void setPhysicsControls(JSONObject controls) {
+        if (released) return;
+        if (controls == null) controls = new JSONObject();
+        try {
+            webView.evaluateJavascript(
+                    "window.AxonBongoCat&&window.AxonBongoCat.setPhysicsControls&&window.AxonBongoCat.setPhysicsControls("
+                            + controls.toString() + ");", null);
+        } catch (Throwable ignored) {}
+    }
+
+    public void triggerPhysicsGroupAction(String groupKey) {
+        if (released || groupKey == null || groupKey.isEmpty()) return;
+        try {
+            webView.evaluateJavascript(
+                    "window.AxonBongoCat&&window.AxonBongoCat.triggerPhysicsGroupAction&&"
+                            + "window.AxonBongoCat.triggerPhysicsGroupAction(" + JSONObject.quote(groupKey) + ");",
+                    null);
+        } catch (Throwable ignored) {}
+    }
+
+    public void refreshPhysicsControls() {
+        setPhysicsControls(Live2DPhysicsSettingsStore.runtimeJson(
+                getContext(), Live2DPhysicsSettingsStore.TARGET_LIVE2D));
+    }
+
+    public void setDebugExpression(String token, float weight) {
+        String raw = token == null ? "auto" : token.trim();
+        String kind = "auto";
+        int index = -1;
+        int colon = raw.indexOf(':');
+        if (colon > 0 && "live2d".equalsIgnoreCase(raw.substring(0, colon))) {
+            try { index = Math.max(-1, Integer.parseInt(raw.substring(colon + 1))); }
+            catch (Throwable ignored) { index = -1; }
+            if (index >= 0) kind = "live2d";
+        }
+        float safeWeight = Math.max(0f, Math.min(1f, weight));
+        try {
+            webView.evaluateJavascript("window.AxonBongoCat&&AxonBongoCat.setDebugExpression&&AxonBongoCat.setDebugExpression("
+                    + JSONObject.quote(kind) + "," + index + "," + safeWeight + ")", null);
+        } catch (Throwable ignored) {}
+    }
+
+    public void setParameterLock(String parameterId, float normalized) {
+        if (released || parameterId == null || parameterId.isEmpty()) return;
+        float safe = Math.max(0f, Math.min(1f, normalized));
+        try { webView.evaluateJavascript("window.AxonBongoCat&&AxonBongoCat.setParameterLock&&AxonBongoCat.setParameterLock("
+                + JSONObject.quote(parameterId) + "," + safe + ")", null); }
+        catch (Throwable ignored) {}
+    }
+
+    public void clearParameterLock(String parameterId) {
+        if (released || parameterId == null || parameterId.isEmpty()) return;
+        try { webView.evaluateJavascript("window.AxonBongoCat&&AxonBongoCat.clearParameterLock&&AxonBongoCat.clearParameterLock("
+                + JSONObject.quote(parameterId) + ")", null); }
+        catch (Throwable ignored) {}
+    }
+
+    public void requestParameterDebug(String parameterId, android.webkit.ValueCallback<JSONObject> callback) {
+        if (callback == null) return;
+        if (released || parameterId == null || parameterId.isEmpty()) { callback.onReceiveValue(null); return; }
+        try {
+            webView.evaluateJavascript("JSON.stringify(window.AxonBongoCat&&AxonBongoCat.parameterDebug?AxonBongoCat.parameterDebug("
+                    + JSONObject.quote(parameterId) + "):null)", raw -> callback.onReceiveValue(parseJavascriptJson(raw)));
+        } catch (Throwable ignored) { callback.onReceiveValue(null); }
+    }
+
+    private static JSONObject parseJavascriptJson(String raw) {
+        if (raw == null || raw.equals("null") || raw.equals("undefined")) return null;
+        try {
+            String decoded = new JSONArray("[" + raw + "]").optString(0, "");
+            return decoded.isEmpty() || "null".equals(decoded) ? null : new JSONObject(decoded);
+        } catch (Throwable ignored) { return null; }
     }
 
     private void applyDisplayScaleToRuntime() {
@@ -360,8 +464,14 @@ public final class Live2DOverlayView extends FrameLayout {
     }
 
     private PreparedPage prepareCurrentPage() throws Exception {
+        long startedAt = SystemClock.elapsedRealtime();
         BongoCatStyleManager.StyleInfo style = Live2DModelStore.runtimeStyle(getContext());
-        JSONObject config = BongoCatStyleManager.runtimeConfig(style);
+        JSONObject config = BongoCatStyleManager.runtimeConfigLive2DDisplay(style);
+        RenderQuality.applyRuntimeConfig(config, renderQuality);
+        config.put("physicsControls", Live2DPhysicsSettingsStore.runtimeJson(
+                getContext(), Live2DPhysicsSettingsStore.TARGET_LIVE2D));
+        config.put("parameterLocks", Live2DDebugSettingsStore.parameterLocksJson(
+                getContext(), Live2DPhysicsSettingsStore.TARGET_LIVE2D));
 
         // Reuse Axon's proven Cubism renderer in a minimal Mver-compatible mode. This enables
         // physics, eye blink, breathing and an authored Idle motion while keeping all input,
@@ -386,7 +496,8 @@ public final class Live2DOverlayView extends FrameLayout {
         String template = readAssetText("bongocat/custom/index.html");
         String core = escapeInlineScript(readAssetText("bongocat/live2dcubismcore.min.js"));
         String runtime = escapeInlineScript(readAssetText("bongocat/custom/runtime.js"));
-        String bootstrap = escapeInlineScript("window.__AXON_STYLE_CONFIG__=" + config.toString() + ";");
+        String configJson = config.toString();
+        String bootstrap = escapeInlineScript("window.__AXON_STYLE_CONFIG__=" + configJson + ";");
         String html = template
                 .replace("__AXON_STYLE_BOOTSTRAP__", bootstrap)
                 .replace("__AXON_CUBISM_CORE__", core)
@@ -394,6 +505,9 @@ public final class Live2DOverlayView extends FrameLayout {
 
         String baseUrl = Uri.fromFile(style.root).toString();
         if (!baseUrl.endsWith("/")) baseUrl += "/";
+        Log.i(TAG, "Live2D page prepared in "
+                + (SystemClock.elapsedRealtime() - startedAt) + "ms, config="
+                + (configJson.length() / 1024) + "KiB");
         return new PreparedPage(html, baseUrl, Live2DModelStore.getVersion(getContext()));
     }
 

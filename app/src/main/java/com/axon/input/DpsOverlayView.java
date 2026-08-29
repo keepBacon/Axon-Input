@@ -50,6 +50,15 @@ public final class DpsOverlayView extends TextView {
         else setText(getContext().getString(R.string.dps_overlay_value, value));
     }
 
+    public void setDisplaySize(int percent) {
+        int resolved = Math.max(25, Math.min(300, percent));
+        setTextSize(16f * resolved / 100f);
+    }
+
+    public void setDisplayTextColor(int color) {
+        setTextColor(0xff000000 | (color & 0x00ffffff));
+    }
+
     public void setUserOpacity(int percent) {
         setAlpha(Math.max(0f, Math.min(1f, percent / 100f)));
     }

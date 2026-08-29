@@ -10,8 +10,8 @@ import android.content.Context;
 final class InputRuntimeConfig {
     static final InputRuntimeConfig EMPTY = new InputRuntimeConfig(
             false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, SensitivitySettingsStore.MODE_SHIZUKU,
-            -1, -1, false, -1, -1, -1, OverlayState.DPS_TARGET_NONE,
+            false, false, false, false, false, SensitivitySettingsStore.MODE_SHIZUKU,
+            -1, -1, false, false, -1, -1, -1, OverlayState.DPS_TARGET_NONE,
             false, false);
 
     final boolean keyboardEnabled;
@@ -25,6 +25,7 @@ final class InputRuntimeConfig {
     final boolean keyPromptEnabled;
     final boolean dpsEnabled;
     final boolean keyboardSpaceDpsEnabled;
+    final boolean keyboardMouseCpsEnabled;
     final boolean forceHoldEnabled;
     final boolean dragEnabled;
     final boolean sensitivityEnabled;
@@ -32,6 +33,7 @@ final class InputRuntimeConfig {
     final int expressionHotkey;
     final int hideDisplayHotkey;
     final boolean floatingMediaUsesKeyboard;
+    final boolean actionHotkeyUsesKeyboard;
     final int forceHoldTriggerKey;
     final int forceHoldTargetKey;
     final int forceHoldTargetScanCode;
@@ -43,10 +45,10 @@ final class InputRuntimeConfig {
             boolean keyboardEnabled, boolean fullKeyboardEnabled, boolean mouseEnabled,
             boolean mouseTrajectoryEnabled, boolean customEnabled, boolean superCustomEnabled,
             boolean keyboardCatEnabled, boolean customCaptureEnabled, boolean keyPromptEnabled,
-            boolean dpsEnabled, boolean keyboardSpaceDpsEnabled, boolean forceHoldEnabled,
-            boolean dragEnabled, boolean sensitivityEnabled, int sensitivityMode,
+            boolean dpsEnabled, boolean keyboardSpaceDpsEnabled, boolean keyboardMouseCpsEnabled,
+            boolean forceHoldEnabled, boolean dragEnabled, boolean sensitivityEnabled, int sensitivityMode,
             int expressionHotkey, int hideDisplayHotkey, boolean floatingMediaUsesKeyboard,
-            int forceHoldTriggerKey, int forceHoldTargetKey,
+            boolean actionHotkeyUsesKeyboard, int forceHoldTriggerKey, int forceHoldTargetKey,
             int forceHoldTargetScanCode, int dpsTargetKey,
             boolean mouseMonitorRequiredByConfig, boolean gamepadMonitorRequiredByConfig) {
         this.keyboardEnabled = keyboardEnabled;
@@ -60,6 +62,7 @@ final class InputRuntimeConfig {
         this.keyPromptEnabled = keyPromptEnabled;
         this.dpsEnabled = dpsEnabled;
         this.keyboardSpaceDpsEnabled = keyboardSpaceDpsEnabled;
+        this.keyboardMouseCpsEnabled = keyboardMouseCpsEnabled;
         this.forceHoldEnabled = forceHoldEnabled;
         this.dragEnabled = dragEnabled;
         this.sensitivityEnabled = sensitivityEnabled;
@@ -67,6 +70,7 @@ final class InputRuntimeConfig {
         this.expressionHotkey = expressionHotkey;
         this.hideDisplayHotkey = hideDisplayHotkey;
         this.floatingMediaUsesKeyboard = floatingMediaUsesKeyboard;
+        this.actionHotkeyUsesKeyboard = actionHotkeyUsesKeyboard;
         this.forceHoldTriggerKey = forceHoldTriggerKey;
         this.forceHoldTargetKey = forceHoldTargetKey;
         this.forceHoldTargetScanCode = forceHoldTargetScanCode;
@@ -117,8 +121,10 @@ final class InputRuntimeConfig {
             }
         }
 
-        boolean keyboardCatUsesGamepad = keyboardCat && BongoCatStyleManager.isSelectedGamepad(context);
-        boolean keyboardCatUsesMouse = keyboardCat && !keyboardCatUsesGamepad;
+        // Visual layout and input capability are separate for hybrid keyboard-cat models. A style
+        // may remain a keyboard while still exposing a model-function controller mode.
+        boolean keyboardCatUsesGamepad = keyboardCat && BongoCatStyleManager.selectedSupportsGamepad(context);
+        boolean keyboardCatUsesMouse = keyboardCat && !BongoCatStyleManager.isSelectedGamepad(context);
         boolean superCustomUsesMouse = superCustom && SuperCustomConfigStore.activeContainsMouse(context);
         boolean superCustomUsesGamepad = superCustom && SuperCustomConfigStore.activeContainsGamepad(context);
         int mediaHotkeyMask = superCustom ? FloatingMediaStore.hotkeyInputMask(context) : 0;
@@ -126,16 +132,81 @@ final class InputRuntimeConfig {
         boolean mediaUsesMouse = (mediaHotkeyMask & FloatingMediaStore.HOTKEY_INPUT_MOUSE) != 0;
         boolean mediaUsesGamepad = (mediaHotkeyMask & FloatingMediaStore.HOTKEY_INPUT_GAMEPAD) != 0;
 
+        // Action bindings are runtime input consumers too. Include them in this immutable
+        // snapshot so a mouse/gamepad-only shortcut works even when its normal overlay is off.
+        boolean actionUsesKeyboard = false;
+        boolean actionUsesMouse = false;
+        boolean actionUsesGamepad = false;
+        if (CustomMappingStore.isEnabled(context)) {
+            for (CustomMappingStore.Rule rule : CustomMappingStore.load(context)) {
+                // Custom-mapping gamepad triggers are intentionally limited to Android KeyEvent
+                // buttons so they can be consumed. They do not need the passive raw monitor at
+                // runtime; keyboard triggers only need FLAG_REQUEST_FILTER_KEY_EVENTS.
+                if (InputBinding.isKeyboard(rule.triggerInputCode)) actionUsesKeyboard = true;
+            }
+        }
+        if (SimultaneousClickStore.isEnabled(context)) {
+            for (SimultaneousClickStore.Binding binding : SimultaneousClickStore.load(context)) {
+                int source = binding.sourceInputCode;
+                if (InputBinding.isMouse(source)) actionUsesMouse = true;
+                else if (InputBinding.isGamepad(source)) actionUsesGamepad = true;
+                else if (InputBinding.isKeyboard(source)) actionUsesKeyboard = true;
+            }
+        }
+        if (MainActivity.isCustomMappingCaptureActive()) {
+            // During the five-second target window any keyboard, mouse or gamepad button may be
+            // recorded, even if its normal display is disabled.
+            actionUsesKeyboard = true;
+            actionUsesMouse = true;
+            actionUsesGamepad = true;
+        }
+        if (MainActivity.isSimultaneousClickCaptureActive()) {
+            // Recording is foreground-only and temporary.  Enabling all passive channels here makes
+            // middle/side mouse buttons and evdev-only gamepad buttons recordable on OEM builds that
+            // never dispatch those edges to Activity callbacks.
+            actionUsesKeyboard = true;
+            actionUsesMouse = true;
+            actionUsesGamepad = true;
+        }
+        if (OverlayState.isLive2DEnabled(context)) {
+            for (Live2DPhysicsHotkeyStore.Binding binding : Live2DPhysicsHotkeyStore.load(
+                    context, Live2DPhysicsSettingsStore.TARGET_LIVE2D)) {
+                if (!binding.enabled) continue;
+                if (InputBinding.isMouse(binding.inputCode)) actionUsesMouse = true;
+                else if (InputBinding.isGamepad(binding.inputCode)) actionUsesGamepad = true;
+                else if (InputBinding.isKeyboard(binding.inputCode)) actionUsesKeyboard = true;
+            }
+        }
+        if (keyboardCat) {
+            String styleId = OverlayState.getKeyboardCatStyleId(context);
+            String physicsTarget = Live2DPhysicsSettingsStore.keyboardCatTarget(styleId);
+            for (Live2DPhysicsHotkeyStore.Binding binding : Live2DPhysicsHotkeyStore.load(context, physicsTarget)) {
+                if (!binding.enabled) continue;
+                if (InputBinding.isMouse(binding.inputCode)) actionUsesMouse = true;
+                else if (InputBinding.isGamepad(binding.inputCode)) actionUsesGamepad = true;
+                else if (InputBinding.isKeyboard(binding.inputCode)) actionUsesKeyboard = true;
+            }
+            for (KeyboardCatFunctionBindingStore.Binding binding :
+                    KeyboardCatFunctionBindingStore.loadBindings(context, styleId)) {
+                if (InputBinding.isMouse(binding.inputCode)) actionUsesMouse = true;
+                else if (InputBinding.isGamepad(binding.inputCode)) actionUsesGamepad = true;
+                else if (InputBinding.isKeyboard(binding.inputCode)) actionUsesKeyboard = true;
+            }
+        }
+
         boolean dpsNeedsMouse = dps
                 && (dpsTarget == OverlayState.DPS_TARGET_NONE || OverlayState.isMouseDpsTarget(dpsTarget));
         boolean dpsNeedsGamepad = dps
                 && (dpsTarget == OverlayState.DPS_TARGET_NONE || OverlayState.isGamepadDpsTarget(dpsTarget));
         boolean boundMouse = InputBinding.isMouse(expressionHotkey) || InputBinding.isMouse(hideDisplayHotkey)
-                || InputBinding.isMouse(forceTrigger) || customUsesMouse || superCustomUsesMouse || mediaUsesMouse;
+                || InputBinding.isMouse(forceTrigger) || customUsesMouse || superCustomUsesMouse || mediaUsesMouse
+                || actionUsesMouse;
         boolean boundGamepad = InputBinding.isGamepad(expressionHotkey) || InputBinding.isGamepad(hideDisplayHotkey)
-                || InputBinding.isGamepad(forceTrigger) || customUsesGamepad || superCustomUsesGamepad || mediaUsesGamepad;
+                || InputBinding.isGamepad(forceTrigger) || customUsesGamepad || superCustomUsesGamepad || mediaUsesGamepad
+                || actionUsesGamepad;
 
         boolean keyboardMouseButtons = keyboard && OverlayState.isKeyboardMouseButtonsEnabled(context);
+        boolean keyboardMouseCps = keyboardMouseButtons && OverlayState.isKeyboardMouseCpsEnabled(context);
         boolean mouseMonitor = !sensitivity && (mouse || trajectory || keyPrompt || keyboardCatUsesMouse
                 || keyboardMouseButtons || dpsNeedsMouse || boundMouse);
         boolean gamepadMonitor = !sensitivity && (OverlayState.isAnyGamepadDisplayEnabled(context)
@@ -153,6 +224,7 @@ final class InputRuntimeConfig {
                 keyPrompt,
                 dps,
                 OverlayState.isKeyboardSpaceEnabled(context) && OverlayState.isKeyboardSpaceDpsEnabled(context),
+                keyboardMouseCps,
                 forceHold,
                 OverlayState.isDragEnabled(context),
                 sensitivity,
@@ -160,6 +232,7 @@ final class InputRuntimeConfig {
                 expressionHotkey,
                 hideDisplayHotkey,
                 mediaUsesKeyboard,
+                actionUsesKeyboard,
                 forceTrigger,
                 forceTarget,
                 forceScan,
@@ -173,7 +246,7 @@ final class InputRuntimeConfig {
                 || keyboardCatEnabled || customCaptureEnabled || keyPromptEnabled || dpsEnabled
                 || forceHoldEnabled || (expressionHotkey >= 0 && InputBinding.isKeyboard(expressionHotkey))
                 || (hideDisplayHotkey >= 0 && InputBinding.isKeyboard(hideDisplayHotkey))
-                || floatingMediaUsesKeyboard;
+                || floatingMediaUsesKeyboard || actionHotkeyUsesKeyboard;
     }
 
     boolean needsMouseMonitor(boolean bindingActive) {
@@ -196,9 +269,10 @@ final class InputRuntimeConfig {
         return new InputRuntimeConfig(
                 keyboardEnabled, fullKeyboardEnabled, mouseEnabled, mouseTrajectoryEnabled,
                 customEnabled, superCustomEnabled, keyboardCatEnabled, customCaptureEnabled,
-                keyPromptEnabled, dpsEnabled, keyboardSpaceDpsEnabled, forceHoldEnabled,
-                dragEnabled, sensitivityEnabled, sensitivityMode, expressionHotkey,
-                hideDisplayHotkey, floatingMediaUsesKeyboard, forceHoldTriggerKey, forceHoldTargetKey,
+                keyPromptEnabled, dpsEnabled, keyboardSpaceDpsEnabled, keyboardMouseCpsEnabled,
+                forceHoldEnabled, dragEnabled, sensitivityEnabled, sensitivityMode, expressionHotkey,
+                hideDisplayHotkey, floatingMediaUsesKeyboard, actionHotkeyUsesKeyboard,
+                forceHoldTriggerKey, forceHoldTargetKey,
                 forceHoldTargetScanCode, target,
                 mouseMonitorRequiredByConfig || dpsNeedsMouse,
                 gamepadMonitorRequiredByConfig || dpsNeedsGamepad);

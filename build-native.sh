@@ -7,6 +7,8 @@ PROXY_SRC="$ROOT/native/sensitivityproxy.cpp"
 GAMEPAD_MONITOR_SRC="$ROOT/native/gamepadmonitor.cpp"
 KEYHOLD_SRC="$ROOT/native/keyhold.cpp"
 KEYMAPPER_SRC="$ROOT/native/keymapper.cpp"
+SYNCMAPPER_SRC="$ROOT/native/syncmapper.cpp"
+CUSTOMMAPPER_SRC="$ROOT/native/custommapper.cpp"
 TOUCH_MONITOR_SRC="$ROOT/native/touchmonitor.cpp"
 OUT_DIR="$ROOT/app/src/main/jniLibs/arm64-v8a"
 JNI_LIB="$OUT_DIR/libkeyengine.so"
@@ -14,6 +16,8 @@ PROXY_BIN="$OUT_DIR/libsensitivityproxy.so"
 GAMEPAD_MONITOR_BIN="$OUT_DIR/libgamepadmonitor.so"
 KEYHOLD_BIN="$OUT_DIR/libkeyhold.so"
 KEYMAPPER_BIN="$OUT_DIR/libkeymapper.so"
+SYNCMAPPER_BIN="$OUT_DIR/libsyncmapper.so"
+CUSTOMMAPPER_BIN="$OUT_DIR/libcustommapper.so"
 TOUCH_MONITOR_BIN="$OUT_DIR/libtouchmonitor.so"
 
 case "$(uname -m)" in
@@ -80,6 +84,22 @@ clang++ \
     "$KEYMAPPER_SRC" -o "$KEYMAPPER_BIN"
 chmod 755 "$KEYMAPPER_BIN"
 
+echo "[Axon Input] C++20 simultaneous click mapper -> libsyncmapper.so"
+clang++ \
+    -std=c++20 -fPIE -pie -O2 \
+    -fno-exceptions -fno-rtti -nostdlib++ \
+    -Wl,--no-undefined \
+    "$SYNCMAPPER_SRC" -o "$SYNCMAPPER_BIN"
+chmod 755 "$SYNCMAPPER_BIN"
+
+echo "[Axon Input] C++20 custom mapping macro -> libcustommapper.so"
+clang++ \
+    -std=c++20 -fPIE -pie -O2 \
+    -fno-exceptions -fno-rtti -nostdlib++ \
+    -Wl,--no-undefined \
+    "$CUSTOMMAPPER_SRC" -o "$CUSTOMMAPPER_BIN"
+chmod 755 "$CUSTOMMAPPER_BIN"
+
 if command -v readelf >/dev/null 2>&1; then
     echo "[Axon Input] JNI dependencies:"
     readelf -d "$JNI_LIB" | grep NEEDED || true
@@ -93,6 +113,10 @@ if command -v readelf >/dev/null 2>&1; then
     readelf -d "$KEYHOLD_BIN" | grep NEEDED || true
     echo "[Axon Input] Gamepad mapper dependencies:"
     readelf -d "$KEYMAPPER_BIN" | grep NEEDED || true
+    echo "[Axon Input] Simultaneous mapper dependencies:"
+    readelf -d "$SYNCMAPPER_BIN" | grep NEEDED || true
+    echo "[Axon Input] Custom mapper dependencies:"
+    readelf -d "$CUSTOMMAPPER_BIN" | grep NEEDED || true
 fi
 
 echo "[Axon Input] Native build complete"

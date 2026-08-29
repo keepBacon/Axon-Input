@@ -14,8 +14,10 @@ final class KeyAppearance {
 
     // One calm, readable state transition. Duration scales with remaining distance so reversing
     // mid-animation never forces a full-length replay from an endpoint.
-    static final long CARD_FEATURE_TOGGLE_MS = 460L;
-    static final long RIPPLE_MIN_MS = 190L;
+    // Press feedback is a high-frequency interaction. Keep the visual state readable, but never
+    // make the user wait hundreds of milliseconds before the press colour becomes visible.
+    static final long CARD_FEATURE_TOGGLE_MS = 145L;
+    static final long RIPPLE_MIN_MS = 90L;
     static final int DEFAULT_CORNER_STRENGTH = 40;
 
     private KeyAppearance() {}

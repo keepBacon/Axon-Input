@@ -105,8 +105,11 @@ public final class NativeKeyCanvasView extends View {
     private long mouseStats;
     private boolean showSpace = true;
     private boolean showSpaceDps;
+    private boolean showSpaceDash;
     private boolean showMouseButtons;
+    private boolean showKeyboardMouseCps;
     private int keyboardMouseButtons;
+    private long keyboardMouseStats;
     private int spaceDps;
     private long lastFrameMs;
     private boolean dragEnabled;
@@ -373,6 +376,25 @@ public final class NativeKeyCanvasView extends View {
         postInvalidateOnAnimation();
     }
 
+    public void setKeyboardSpaceDashEnabled(boolean enabled) {
+        if (displayType != DISPLAY_KEYBOARD || showSpaceDash == enabled) return;
+        showSpaceDash = enabled;
+        postInvalidateOnAnimation();
+    }
+
+    public void setKeyboardMouseCpsEnabled(boolean enabled) {
+        if (displayType != DISPLAY_KEYBOARD || showKeyboardMouseCps == enabled) return;
+        showKeyboardMouseCps = enabled;
+        if (!enabled) keyboardMouseStats = 0L;
+        postInvalidateOnAnimation();
+    }
+
+    public void setKeyboardMouseStats(long stats) {
+        if (displayType != DISPLAY_KEYBOARD || !showKeyboardMouseCps || keyboardMouseStats == stats) return;
+        keyboardMouseStats = stats;
+        postInvalidateOnAnimation();
+    }
+
     public void setMouseButtonsVisible(boolean visible) {
         if (displayType != DISPLAY_KEYBOARD && displayType != DISPLAY_TOUCH) return;
         if (showMouseButtons == visible) return;
@@ -478,6 +500,7 @@ public final class NativeKeyCanvasView extends View {
         if (displayType == DISPLAY_KEYBOARD) {
             setPressedMask(0);
             setKeyboardMouseButtons(0);
+            keyboardMouseStats = 0L;
         } else if (displayType == DISPLAY_TOUCH) {
             setPressedMask(0);
         } else if (displayType == DISPLAY_MOUSE) setMouseStats(0L);
@@ -570,7 +593,8 @@ public final class NativeKeyCanvasView extends View {
         }
         if (showSpace) {
             final float spaceY = nextTop + spaceHeight * 0.5f;
-            drawKey(canvas, SLOT_SPACE, "Space", centerX, spaceY, spaceWidth, spaceHeight, true);
+            drawKey(canvas, SLOT_SPACE, showSpaceDash ? "" : "Space", centerX, spaceY,
+                    spaceWidth, spaceHeight, true);
         }
     }
 
@@ -597,10 +621,12 @@ public final class NativeKeyCanvasView extends View {
         final float buttonWidth = (spaceWidth - dp(keyboardSpacingDp)) * 0.5f;
         final float buttonY = rowTop + spaceHeight * 0.5f;
         final float buttonOffset = (buttonWidth + dp(keyboardSpacingDp)) * 0.5f;
+        int leftCps = showKeyboardMouseCps ? (int) ((keyboardMouseStats >>> 8) & 0xffL) : 0;
+        int rightCps = showKeyboardMouseCps ? (int) ((keyboardMouseStats >>> 16) & 0xffL) : 0;
         drawKey(canvas, SLOT_MOUSE_L, "LMB", centerX - buttonOffset, buttonY,
-                buttonWidth, spaceHeight, false);
+                buttonWidth, spaceHeight, false, leftCps, showKeyboardMouseCps);
         drawKey(canvas, SLOT_MOUSE_R, "RMB", centerX + buttonOffset, buttonY,
-                buttonWidth, spaceHeight, false);
+                buttonWidth, spaceHeight, false, rightCps, showKeyboardMouseCps);
     }
 
     private void drawCustomKeys(Canvas canvas, float top) {
@@ -761,6 +787,11 @@ public final class NativeKeyCanvasView extends View {
 
     private void drawKey(Canvas canvas, int slot, String label, float cx, float cy,
                          float width, float height, boolean space) {
+        drawKey(canvas, slot, label, cx, cy, width, height, space, 0, false);
+    }
+
+    private void drawKey(Canvas canvas, int slot, String label, float cx, float cy,
+                         float width, float height, boolean space, int cps, boolean showCps) {
         final float motion = progress[slot];
         float centreFill = animationMode == OverlayState.MOTION_RIPPLE
                 ? clamp(rippleFill[slot], 0f, 1f) : 0f;
@@ -793,14 +824,17 @@ public final class NativeKeyCanvasView extends View {
         textPaint.setColor(withMotionAlpha(
                 resolveAnimatedTextColor(pressed, centreFill), motion, textOpacityPercent));
         if (space && showSpaceDps) {
-            // Space 始终保持 14dp。
-            textPaint.setTextSize(dp(14));
-            textPaint.setTypeface(typefaceBold);
-            Paint.FontMetrics fm = textPaint.getFontMetrics();
-            float centerBaseline = cy - (fm.ascent + fm.descent) * 0.5f;
-            canvas.drawText(label, cx, centerBaseline - dp(5), textPaint);
+            // Space 主内容保持稳定尺寸；横杠模式直接绘制图形，避免字体 glyph 差异。
+            if (showSpaceDash && displayType == DISPLAY_KEYBOARD && slot == SLOT_SPACE) {
+                drawSpaceMark(canvas, rect, cx, cy - dp(5), pressed, centreFill, motion);
+            } else {
+                textPaint.setTextSize(dp(14));
+                textPaint.setTypeface(typefaceBold);
+                Paint.FontMetrics fm = textPaint.getFontMetrics();
+                float centerBaseline = cy - (fm.ascent + fm.descent) * 0.5f;
+                canvas.drawText(label, cx, centerBaseline - dp(5), textPaint);
+            }
 
-            // 空间不足时只缩小 CPS，不缩小 Space。
             float dpsSize = Math.min(dp(8f), Math.max(dp(6f), height * 0.16f));
             textPaint.setTypeface(typefaceNormal);
             textPaint.setTextSize(dpsSize);
@@ -808,17 +842,23 @@ public final class NativeKeyCanvasView extends View {
             float dpsBaseline = rect.bottom - dp(4f) - dpsFm.descent;
             canvas.drawText(spaceDps + " CPS", cx, dpsBaseline, textPaint);
             textPaint.setTypeface(typefaceBold);
+        } else if (showCps) {
+            textPaint.setTextSize(dp(13));
+            textPaint.setTypeface(typefaceBold);
+            Paint.FontMetrics fm = textPaint.getFontMetrics();
+            float centerBaseline = cy - (fm.ascent + fm.descent) * 0.5f;
+            canvas.drawText(label, cx, centerBaseline - dp(5), textPaint);
+            textPaint.setTextSize(dp(8));
+            textPaint.setTypeface(typefaceNormal);
+            Paint.FontMetrics cpsFm = textPaint.getFontMetrics();
+            float cpsBaseline = rect.bottom - dp(4f) - cpsFm.descent;
+            canvas.drawText(Math.max(0, cps) + " CPS", cx, cpsBaseline, textPaint);
+            textPaint.setTypeface(typefaceBold);
         } else {
-            // Touch-display Space intentionally uses a graphic mark instead of text.
-            // The old implementation passed an empty label, so the key body rendered but
-            // the expected centre dash could never appear. Drawing the mark directly also
-            // avoids font/glyph compatibility problems on different Android builds.
-            if (displayType == DISPLAY_TOUCH && slot == SLOT_SPACE && label.isEmpty()) {
-                float markHalf = Math.min(rect.width() * 0.19f, dp(27));
-                spaceMarkPaint.setStrokeWidth(Math.max(dp(1.5f), rect.height() * 0.045f));
-                spaceMarkPaint.setColor(withMotionAlpha(
-                        resolveAnimatedTextColor(pressed, centreFill), motion, textOpacityPercent));
-                canvas.drawLine(cx - markHalf, cy, cx + markHalf, cy, spaceMarkPaint);
+            // Touch-display Space and optional keyboard dash use the same graphic mark.
+            if (slot == SLOT_SPACE && label.isEmpty()
+                    && (displayType == DISPLAY_TOUCH || (displayType == DISPLAY_KEYBOARD && showSpaceDash))) {
+                drawSpaceMark(canvas, rect, cx, cy, pressed, centreFill, motion);
             } else {
                 textPaint.setTextSize(space ? dp(14) : dp(17));
                 Paint.FontMetrics fm = textPaint.getFontMetrics();
@@ -826,6 +866,15 @@ public final class NativeKeyCanvasView extends View {
                 canvas.drawText(label, cx, baseline, textPaint);
             }
         }
+    }
+
+    private void drawSpaceMark(Canvas canvas, RectF rect, float cx, float cy,
+                               boolean pressed, float centreFill, float motion) {
+        float markHalf = Math.min(rect.width() * 0.19f, dp(27));
+        spaceMarkPaint.setStrokeWidth(Math.max(dp(1.5f), rect.height() * 0.045f));
+        spaceMarkPaint.setColor(withMotionAlpha(
+                resolveAnimatedTextColor(pressed, centreFill), motion, textOpacityPercent));
+        canvas.drawLine(cx - markHalf, cy, cx + markHalf, cy, spaceMarkPaint);
     }
 
     private boolean updateMotion() {

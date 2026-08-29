@@ -26,8 +26,11 @@ public final class KeyOverlayView extends FrameLayout {
     private int pressedMask;
     private boolean keyboardShowSpace = true;
     private boolean keyboardShowSpaceDps;
+    private boolean keyboardShowSpaceDash;
     private boolean keyboardShowMouseButtons;
+    private boolean keyboardShowMouseCps;
     private int keyboardMouseButtons;
+    private long keyboardMouseStats;
     private int keyboardSpaceDps;
     private long mouseStats;
     private int[] customKeyCodes = new int[0];
@@ -112,7 +115,7 @@ public final class KeyOverlayView extends FrameLayout {
     }
 
     public void setTextColor(int color) {
-        if (displayType == DISPLAY_KEYBOARD) nativeView.setTextColor(color);
+        nativeView.setTextColor(color);
     }
 
     public void setKeySpacing(int spacingDp) {
@@ -168,6 +171,27 @@ public final class KeyOverlayView extends FrameLayout {
         if (htmlView != null) htmlView.setKeyboardOptions(keyboardShowSpace, keyboardShowSpaceDps);
     }
 
+    public void setKeyboardSpaceDashEnabled(boolean enabled) {
+        if (displayType != DISPLAY_KEYBOARD) return;
+        keyboardShowSpaceDash = enabled;
+        nativeView.setKeyboardSpaceDashEnabled(enabled);
+        if (htmlView != null) htmlView.setKeyboardSpaceDashEnabled(enabled);
+    }
+
+    public void setKeyboardMouseCpsEnabled(boolean enabled) {
+        if (displayType != DISPLAY_KEYBOARD) return;
+        keyboardShowMouseCps = enabled;
+        if (!enabled) keyboardMouseStats = 0L;
+        nativeView.setKeyboardMouseCpsEnabled(enabled);
+        if (enabled) nativeView.setKeyboardMouseStats(keyboardMouseStats);
+    }
+
+    public void setKeyboardMouseStats(long stats) {
+        if (displayType != DISPLAY_KEYBOARD) return;
+        keyboardMouseStats = stats;
+        if (keyboardShowMouseCps) nativeView.setKeyboardMouseStats(stats);
+    }
+
     public void setKeyboardMouseButtonsEnabled(boolean enabled) {
         if (displayType != DISPLAY_KEYBOARD) return;
         keyboardShowMouseButtons = enabled;
@@ -221,7 +245,9 @@ public final class KeyOverlayView extends FrameLayout {
         if (displayType == DISPLAY_KEYBOARD) {
             pressedMask = 0;
             keyboardMouseButtons = 0;
+            keyboardMouseStats = 0L;
             nativeView.setKeyboardMouseButtons(0);
+            nativeView.setKeyboardMouseStats(0L);
             if (htmlView != null) htmlView.setKeyboardMask(0);
         } else if (displayType == DISPLAY_MOUSE) {
             mouseStats = 0L;
@@ -240,6 +266,7 @@ public final class KeyOverlayView extends FrameLayout {
         web.setDisplaySize(displaySizePercent);
         if (displayType == DISPLAY_KEYBOARD) {
             web.setKeyboardOptions(keyboardShowSpace, keyboardShowSpaceDps);
+            web.setKeyboardSpaceDashEnabled(keyboardShowSpaceDash);
             web.setKeyboardDps(keyboardSpaceDps);
             web.setKeyboardMask(pressedMask);
         } else if (displayType == DISPLAY_MOUSE) {

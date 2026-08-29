@@ -112,10 +112,12 @@ public final class FullKeyboardOverlayView extends View {
     private int baseColor;
     private int borderColor;
     private int pressColor;
+    private int textColor;
     private int backgroundOpacityPercent = 100;
     private int strokeOpacityPercent = 100;
     private int textOpacityPercent = 100;
     private int diffusionOpacityPercent = 100;
+    private int animationMode = OverlayState.MOTION_SIZE;
     private boolean centreFillActive;
     private OnKeyPickListener keyPickListener;
     private boolean pickerMode;
@@ -127,6 +129,7 @@ public final class FullKeyboardOverlayView extends View {
         baseColor = UiPalette.overlayKeyIdle(context);
         borderColor = UiPalette.overlayStroke(context);
         pressColor = UiPalette.overlayKeyPressed(context);
+        textColor = UiPalette.overlayTextIdle(context);
         paint.setTypeface(FontManager.normal(context));
         strokePaint.setStyle(Paint.Style.STROKE);
         strokePaint.setStrokeWidth(dp(0.8f));
@@ -166,6 +169,13 @@ public final class FullKeyboardOverlayView extends View {
         invalidate();
     }
 
+    public void setTextColor(int color) {
+        int resolved = 0xff000000 | (color & 0x00ffffff);
+        if (textColor == resolved) return;
+        textColor = resolved;
+        invalidate();
+    }
+
     public void setCornerStrength(int strength) {
         int resolved = KeyAppearance.clampCornerStrength(strength);
         if (cornerStrength == resolved) return;
@@ -182,6 +192,28 @@ public final class FullKeyboardOverlayView extends View {
 
     public void setDiffusionOpacity(int percent) {
         diffusionOpacityPercent = clampPercent(percent);
+        invalidate();
+    }
+
+    public void setAnimationMode(int mode) {
+        int resolved = OverlayState.clampMotionMode(mode);
+        if (animationMode == resolved) return;
+        animationMode = resolved;
+        if (animationMode == OverlayState.MOTION_NONE) {
+            long now = SystemClock.uptimeMillis();
+            for (KeySpec[] row : ROWS) {
+                for (KeySpec key : row) {
+                    boolean pressed = held.get(key.code) || flashUntil.get(key.code, 0L) > now
+                            || (pickerMode && pickerPressedKey == key.code);
+                    float value = pressed ? 1f : 0f;
+                    fillValue.put(key.code, value);
+                    fillFrom.put(key.code, value);
+                    fillTo.put(key.code, value);
+                    fillStartedAt.delete(key.code);
+                    fillDurationMs.delete(key.code);
+                }
+            }
+        }
         invalidate();
     }
 
@@ -311,31 +343,41 @@ public final class FullKeyboardOverlayView extends View {
             float radius = KeyAppearance.roundedRadius(rect, cornerStrength);
 
             ensureFillTarget(key.code, pressed, now);
-            float fillProgress = evaluateFill(key.code, now);
-            float bounce = KeyAppearance.cardFeatureBounce(fillProgress);
+            float fillProgress = animationMode == OverlayState.MOTION_NONE
+                    ? (pressed ? 1f : 0f) : evaluateFill(key.code, now);
+            float motionScale = 1f;
+            if (animationMode == OverlayState.MOTION_SIZE) {
+                motionScale = 1f - 0.028f * fillProgress;
+            } else if (animationMode == OverlayState.MOTION_RIPPLE) {
+                motionScale = KeyAppearance.cardFeatureBounce(fillProgress);
+            }
             int keySave = canvas.save();
-            canvas.scale(bounce, bounce, rect.centerX(), rect.centerY());
+            canvas.scale(motionScale, motionScale, rect.centerX(), rect.centerY());
 
-            // Matrix Card UI state animation: stable idle surface + centered key-shaped state fill.
-            paint.setColor(withOpacity(baseColor, backgroundOpacityPercent));
+            int bodyColor = animationMode == OverlayState.MOTION_RIPPLE
+                    ? baseColor : (pressed ? pressColor : baseColor);
+            paint.setColor(withMotionOpacity(bodyColor, fillProgress, backgroundOpacityPercent));
             KeyAppearance.drawShape(canvas, rect, keyStyle, radius, paint);
-            if (fillProgress > 0f) {
+            if (animationMode == OverlayState.MOTION_RIPPLE && fillProgress > 0f) {
                 KeyAppearance.drawCentreFill(canvas, rect, keyStyle, radius,
                         withOpacity(pressColor, diffusionOpacityPercent),
                         fillProgress, paint, fillClipPath);
             }
-            if (fillStartedAt.get(key.code, 0L) > 0L || flashUntil.get(key.code, 0L) > now) {
+            if (animationMode != OverlayState.MOTION_NONE
+                    && (fillStartedAt.get(key.code, 0L) > 0L || flashUntil.get(key.code, 0L) > now)) {
                 centreFillActive = true;
             }
 
-            strokePaint.setColor(withOpacity(borderColor, strokeOpacityPercent));
+            strokePaint.setColor(withMotionOpacity(borderColor, fillProgress, strokeOpacityPercent));
             KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
 
-            int keyText = KeyAppearance.blendColor(
-                    UiPalette.overlayTextIdle(getContext()),
-                    KeyAppearance.pressedTextColor(pressColor),
-                    KeyAppearance.centreTextMix(fillProgress));
-            paint.setColor(withOpacity(keyText, textOpacityPercent));
+            int keyText = animationMode == OverlayState.MOTION_RIPPLE
+                    ? KeyAppearance.blendColor(
+                            textColor,
+                            KeyAppearance.pressedTextColor(pressColor),
+                            KeyAppearance.centreTextMix(fillProgress))
+                    : (pressed ? KeyAppearance.pressedTextColor(pressColor) : textColor);
+            paint.setColor(withMotionOpacity(keyText, fillProgress, textOpacityPercent));
             paint.setTypeface(FontManager.normal(getContext()));
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setTextSize(Math.max(dp(7f), Math.min(height * 0.36f, dp(12f))));
@@ -356,8 +398,16 @@ public final class FullKeyboardOverlayView extends View {
     }
 
     private void startFillTransition(int keyCode, boolean enabledNow, long now) {
-        float current = evaluateFill(keyCode, now);
         float end = enabledNow ? 1f : 0f;
+        if (animationMode == OverlayState.MOTION_NONE) {
+            fillValue.put(keyCode, end);
+            fillFrom.put(keyCode, end);
+            fillTo.put(keyCode, end);
+            fillStartedAt.delete(keyCode);
+            fillDurationMs.delete(keyCode);
+            return;
+        }
+        float current = evaluateFill(keyCode, now);
         fillValue.put(keyCode, current);
         fillFrom.put(keyCode, current);
         fillTo.put(keyCode, end);
@@ -404,6 +454,14 @@ public final class FullKeyboardOverlayView extends View {
             for (KeySpec key : row) if (key.code == keyCode) return true;
         }
         return false;
+    }
+
+    private int withMotionOpacity(int color, float progress, int percent) {
+        float factor = animationMode == OverlayState.MOTION_ALPHA
+                ? Math.max(0.48f, Math.min(1f, 0.56f + 0.44f * clamp01(progress)))
+                : 1f;
+        int alpha = Math.round(Color.alpha(color) * clampPercent(percent) / 100f * factor);
+        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
     }
 
     private static int withOpacity(int color, int percent) {

@@ -3,6 +3,7 @@ package com.axon.input;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.os.SystemClock;
@@ -64,13 +65,14 @@ public final class GamepadOverlayView extends FrameLayout {
     private final Paint accentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint buttonPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect = new RectF();
+    private final RectF auxRect = new RectF();
+    private final Path motionClipPath = new Path();
     private final Typeface typefaceNormal;
     private final Typeface typefaceBold;
 
     private DragListener dragListener;
     private boolean dragEnabled;
     private boolean dragging;
-    private int stickShape = SHAPE_CIRCLE;
     private boolean faceReversed;
     private boolean faceSymbolIcons;
     private boolean vader5BackLabels;
@@ -89,6 +91,8 @@ public final class GamepadOverlayView extends FrameLayout {
     private int displaySizePercent = 100;
     private int faceSpacingDp = 8;
     private int stickDotSizePercent = 100;
+    private int stickCenterCornerStrength = 100;
+    private int stickCenterColor;
     private GlobalHtmlWebView htmlView;
     private boolean globalHtmlEnabled;
     private int keyStyle = KeyAppearance.STYLE_ROUNDED;
@@ -96,6 +100,12 @@ public final class GamepadOverlayView extends FrameLayout {
     private int baseColor;
     private int borderColor;
     private int pressColor;
+    private int textColor;
+    private int backgroundOpacityPercent = 100;
+    private int strokeOpacityPercent = 100;
+    private int textOpacityPercent = 100;
+    private int diffusionOpacityPercent = 100;
+    private int animationMode = OverlayState.MOTION_SIZE;
 
     private float targetX;
     private float targetY;
@@ -111,8 +121,8 @@ public final class GamepadOverlayView extends FrameLayout {
     private float triggerVelocityRt;
     private int buttons;
     private boolean stickPressDown;
-    private float stickPulse;
-    private float stickPulseVelocity;
+    private float stickPressProgress;
+    private float stickPressVelocity;
 
     private final float[] press = {1f, 1f, 1f, 1f};
     private final float[] pressVelocity = {0f, 0f, 0f, 0f};
@@ -152,11 +162,13 @@ public final class GamepadOverlayView extends FrameLayout {
         textPaint.setStyle(Paint.Style.FILL);
         textPaint.setTextAlign(Paint.Align.CENTER);
         textPaint.setTypeface(typefaceBold);
-        textPaint.setColor(UiPalette.overlayTextIdle(context));
+        textColor = UiPalette.overlayTextIdle(context);
+        textPaint.setColor(textColor);
         accentPaint.setStyle(Paint.Style.FILL);
-        accentPaint.setColor(UiPalette.overlayKeyPressed(context));
         buttonPaint.setStyle(Paint.Style.FILL);
         pressColor = UiPalette.overlayKeyPressed(context);
+        stickCenterColor = pressColor;
+        accentPaint.setColor(stickCenterColor);
         buttonPaint.setColor(pressColor);
 
         setScaleX(0.97f);
@@ -184,9 +196,11 @@ public final class GamepadOverlayView extends FrameLayout {
     }
 
     public void setKeyAppearance(int style, int color) {
-        keyStyle = KeyAppearance.clampStyle(style);
+        // Shape presets are retired; all built-in surfaces use cornerStrength.
+        keyStyle = KeyAppearance.STYLE_ROUNDED;
         pressColor = 0xff000000 | (color & 0x00ffffff);
-        buttonPaint.setColor(pressColor);
+        buttonPaint.setColor(withOpacity(pressColor, diffusionOpacityPercent));
+        accentPaint.setColor(withOpacity(pressColor, diffusionOpacityPercent));
         invalidate();
     }
 
@@ -194,14 +208,39 @@ public final class GamepadOverlayView extends FrameLayout {
         int resolved = 0xff000000 | (color & 0x00ffffff);
         if (baseColor == resolved) return;
         baseColor = resolved;
-        fillPaint.setColor(baseColor);
+        fillPaint.setColor(withOpacity(baseColor, backgroundOpacityPercent));
         invalidate();
     }
 
     public void setKeyBorderColor(int color) {
         if (borderColor == color) return;
         borderColor = color;
-        strokePaint.setColor(borderColor);
+        strokePaint.setColor(withOpacity(borderColor, strokeOpacityPercent));
+        invalidate();
+    }
+
+    public void setTextColor(int color) {
+        int resolved = 0xff000000 | (color & 0x00ffffff);
+        if (textColor == resolved) return;
+        textColor = resolved;
+        textPaint.setColor(withOpacity(textColor, textOpacityPercent));
+        invalidate();
+    }
+
+    public void setLayerOpacities(int backgroundPercent, int strokePercent, int textPercent) {
+        backgroundOpacityPercent = clampPercent(backgroundPercent);
+        strokeOpacityPercent = clampPercent(strokePercent);
+        textOpacityPercent = clampPercent(textPercent);
+        fillPaint.setColor(withOpacity(baseColor, backgroundOpacityPercent));
+        strokePaint.setColor(withOpacity(borderColor, strokeOpacityPercent));
+        textPaint.setColor(withOpacity(textColor, textOpacityPercent));
+        invalidate();
+    }
+
+    public void setDiffusionOpacity(int percent) {
+        diffusionOpacityPercent = clampPercent(percent);
+        buttonPaint.setColor(withOpacity(pressColor, diffusionOpacityPercent));
+        accentPaint.setColor(withOpacity(pressColor, diffusionOpacityPercent));
         invalidate();
     }
 
@@ -218,6 +257,35 @@ public final class GamepadOverlayView extends FrameLayout {
         invalidate();
     }
 
+    public void setStickCenterCornerStrength(int strength) {
+        int resolved = KeyAppearance.clampCornerStrength(strength);
+        if (stickCenterCornerStrength == resolved) return;
+        stickCenterCornerStrength = resolved;
+        invalidate();
+    }
+
+    public void setStickCenterColor(int color) {
+        int resolved = 0xff000000 | (color & 0x00ffffff);
+        if (stickCenterColor == resolved) return;
+        stickCenterColor = resolved;
+        invalidate();
+    }
+
+    public void setAnimationMode(int mode) {
+        int resolved = OverlayState.clampMotionMode(mode);
+        if (animationMode == resolved) return;
+        animationMode = resolved;
+        if (animationMode == OverlayState.MOTION_NONE) {
+            stickPressProgress = stickPressDown ? 1f : 0f;
+            stickPressVelocity = 0f;
+            for (int i = 0; i < press.length; i++) {
+                press[i] = pressTargets[i] ? 0.86f : 1f;
+                pressVelocity[i] = 0f;
+            }
+        }
+        postFrame();
+    }
+
     public void setGlobalHtmlRenderer(boolean enabled, String html) {
         boolean usable = enabled && html != null && !html.trim().isEmpty();
         globalHtmlEnabled = usable;
@@ -231,7 +299,6 @@ public final class GamepadOverlayView extends FrameLayout {
         web.setDisplaySize(displaySizePercent);
         web.setDotSizePercent(stickDotSizePercent);
         web.loadRendererHtml(html);
-        web.setStickShape(stickShape);
         web.setFaceReversed(faceReversed);
         web.setFaceSymbolIcons(faceSymbolIcons);
         web.setFaceDpsConfig(faceYDpsEnabled, faceXDpsEnabled, faceBDpsEnabled, faceADpsEnabled);
@@ -239,14 +306,6 @@ public final class GamepadOverlayView extends FrameLayout {
         web.setGamepadDpsStats(faceYDps, faceXDps, faceBDps, faceADps, l1Dps, r1Dps);
         web.setGamepadState(gamepadLxValue(), gamepadLyValue(), gamepadRxValue(), gamepadRyValue(),
                 Math.round(targetLt * 1000f), Math.round(targetRt * 1000f), buttons);
-        invalidate();
-    }
-
-    public void setStickShape(int shape) {
-        int resolved = shape == SHAPE_SQUARE ? SHAPE_SQUARE : SHAPE_CIRCLE;
-        if (stickShape == resolved) return;
-        stickShape = resolved;
-        if (htmlView != null) htmlView.setStickShape(stickShape);
         invalidate();
     }
 
@@ -312,8 +371,8 @@ public final class GamepadOverlayView extends FrameLayout {
         targetLt = targetRt = shownLt = shownRt = triggerVelocityLt = triggerVelocityRt = 0f;
         buttons = 0;
         stickPressDown = false;
-        stickPulse = 0f;
-        stickPulseVelocity = 0f;
+        stickPressProgress = 0f;
+        stickPressVelocity = 0f;
         for (int i = 0; i < 4; i++) {
             press[i] = 1f;
             pressVelocity[i] = 0f;
@@ -325,6 +384,7 @@ public final class GamepadOverlayView extends FrameLayout {
 
     /** 状态范围：摇杆 -1000..1000，扳机 0..1000，按键使用 Linux 位状态。 */
     public void setGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttonMask) {
+        boolean digitalChanged = buttons != buttonMask;
         if (displayType == DISPLAY_LEFT_STICK) {
             targetX = clamp(lx / 1000f, -1f, 1f);
             targetY = clamp(ly / 1000f, -1f, 1f);
@@ -339,12 +399,13 @@ public final class GamepadOverlayView extends FrameLayout {
         if (displayType == DISPLAY_LEFT_STICK || displayType == DISPLAY_RIGHT_STICK) {
             boolean pressed = displayType == DISPLAY_LEFT_STICK
                     ? (buttons & BTN_L3) != 0 : (buttons & BTN_R3) != 0;
-            if (pressed && !stickPressDown) {
-                // L3/R3 反馈只改变大小，不移动摇杆中心。
-                stickPulseVelocity += 3.6f;
-                postFrame();
+            if (stickPressDown != pressed) {
+                stickPressDown = pressed;
+                if (animationMode == OverlayState.MOTION_NONE) {
+                    stickPressProgress = pressed ? 1f : 0f;
+                    stickPressVelocity = 0f;
+                }
             }
-            stickPressDown = pressed;
         }
 
         if (displayType == DISPLAY_FACE) {
@@ -371,6 +432,9 @@ public final class GamepadOverlayView extends FrameLayout {
             pressTargets[3] = (buttons & BTN_DPAD_LEFT) != 0;
         }
         if (htmlView != null) htmlView.setGamepadState(lx, ly, rx, ry, lt, rt, buttonMask);
+        // Digital colour/text state can be painted on the very next traversal; the frame runner is
+        // still responsible for the secondary scale/axis interpolation.
+        if (digitalChanged && !globalHtmlEnabled) invalidate();
         postFrame();
     }
 
@@ -401,27 +465,40 @@ public final class GamepadOverlayView extends FrameLayout {
         float cy = getHeight() * 0.5f;
         float outer = side * 0.43f;
         float innerBase = side * 0.21f * (stickDotSizePercent / 100f);
-        float pulseScale = 1f + clamp(stickPulse, -0.08f, 0.16f);
-        float inner = innerBase * pulseScale;
-
-        if (stickShape == SHAPE_SQUARE) {
-            float radius = side * 0.16f;
-            rect.set(cx - outer, cy - outer, cx + outer, cy + outer);
-            canvas.drawRoundRect(rect, radius, radius, fillPaint);
-            canvas.drawRoundRect(rect, radius, radius, strokePaint);
-        } else {
-            canvas.drawCircle(cx, cy, outer, fillPaint);
-            canvas.drawCircle(cx, cy, outer, strokePaint);
+        float pressProgress = clamp(stickPressProgress, 0f, 1f);
+        float centerScale = 1f;
+        if (animationMode == OverlayState.MOTION_SIZE) {
+            centerScale = 1f - 0.08f * pressProgress;
+        } else if (animationMode == OverlayState.MOTION_RIPPLE) {
+            centerScale = KeyAppearance.cardFeatureBounce(pressProgress);
         }
+        float inner = innerBase * centerScale;
 
-        // 移动范围按原始摇杆半径计算。
-        // L3/R3 缩放不会改变摇杆中心位置。
+        rect.set(cx - outer, cy - outer, cx + outer, cy + outer);
+        float outerRadius = KeyAppearance.roundedRadius(rect, cornerStrength);
+        fillPaint.setColor(withOpacity(baseColor, backgroundOpacityPercent));
+        strokePaint.setColor(withOpacity(borderColor, strokeOpacityPercent));
+        KeyAppearance.drawShape(canvas, rect, KeyAppearance.STYLE_ROUNDED, outerRadius, fillPaint);
+        KeyAppearance.drawShape(canvas, rect, KeyAppearance.STYLE_ROUNDED, outerRadius, strokePaint);
+
+        // 移动范围按原始摇杆半径计算。L3/R3 动效只改变圆心视觉，不移动圆心。
         float travel = outer - innerBase - side * 0.04f;
         float knobX = cx + shownX * travel;
         float knobY = cy + shownY * travel;
-        canvas.drawCircle(knobX, knobY, inner, accentPaint);
-        strokePaint.setColor(borderColor);
-        canvas.drawCircle(knobX, knobY, inner, strokePaint);
+        rect.set(knobX - inner, knobY - inner, knobX + inner, knobY + inner);
+        float centerRadius = KeyAppearance.roundedRadius(rect, stickCenterCornerStrength);
+
+        int centerBody = animationMode == OverlayState.MOTION_RIPPLE
+                ? stickCenterColor : (stickPressDown ? pressColor : stickCenterColor);
+        accentPaint.setColor(withMotionOpacity(centerBody, pressProgress, diffusionOpacityPercent));
+        KeyAppearance.drawShape(canvas, rect, KeyAppearance.STYLE_ROUNDED, centerRadius, accentPaint);
+        if (animationMode == OverlayState.MOTION_RIPPLE && pressProgress > 0f) {
+            KeyAppearance.drawCentreFill(canvas, rect, KeyAppearance.STYLE_ROUNDED, centerRadius,
+                    withOpacity(pressColor, diffusionOpacityPercent), pressProgress,
+                    accentPaint, motionClipPath);
+        }
+        strokePaint.setColor(withMotionOpacity(borderColor, pressProgress, strokeOpacityPercent));
+        KeyAppearance.drawShape(canvas, rect, KeyAppearance.STYLE_ROUNDED, centerRadius, strokePaint);
     }
 
     private void drawFaceButtons(Canvas canvas) {
@@ -475,19 +552,16 @@ public final class GamepadOverlayView extends FrameLayout {
     }
 
     private void drawFaceButton(Canvas canvas, float cx, float cy, float radius, String logicalLabel, String label, float scale, boolean showDps, int dps) {
-        float r = radius * scale;
-        boolean pressed = scale < 0.97f;
         int index = faceIndex(logicalLabel);
+        float progress = pressProgress(scale);
+        boolean pressed = index >= 0 && pressTargets[index];
+        float r = radius * motionScale(progress);
         rect.set(cx - r, cy - r, cx + r, cy + r);
         float corner = KeyAppearance.roundedRadius(rect, cornerStrength);
-        Paint body = pressed ? buttonPaint : fillPaint;
+        drawMotionShape(canvas, rect, corner, pressed, progress);
         int oldText = textPaint.getColor();
         Typeface oldTypeface = textPaint.getTypeface();
-        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : UiPalette.overlayTextIdle(getContext()));
-        KeyAppearance.drawShape(canvas, rect, keyStyle, corner, body);
-        if (index >= 0) {
-        }
-        KeyAppearance.drawShape(canvas, rect, keyStyle, corner, strokePaint);
+        textPaint.setColor(motionTextColor(pressed, progress));
 
         // CPS 开关不改变主标签字号。
         final float primarySize = radius * 0.92f;
@@ -566,41 +640,44 @@ public final class GamepadOverlayView extends FrameLayout {
         float topHeight = h * 0.38f;
         float bottomTop = pad + topHeight + h * 0.08f;
 
-        float topScale = press[0];
+        float topProgress = pressProgress(press[0]);
+        float topScale = motionScale(topProgress);
         float topInset = (1f - topScale) * w * 0.06f;
         rect.set(pad + topInset, pad + (1f - topScale) * topHeight * 0.24f,
                 pad + w - topInset, pad + topHeight);
-        boolean topPressed = topScale < 0.97f;
-        Paint topPaint = topPressed ? buttonPaint : fillPaint;
+        boolean topPressed = pressTargets[0];
         float topRadius = KeyAppearance.roundedRadius(rect, cornerStrength);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, topRadius, topPaint);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, topRadius, strokePaint);
+        drawMotionShape(canvas, rect, topRadius, topPressed, topProgress);
         if (shoulderDpsEnabled) {
-            drawCenteredTextWithDps(canvas, left ? "L1" : "R1", left ? l1Dps : r1Dps, rect, topScale < 0.97f);
+            drawCenteredTextWithDps(canvas, left ? "L1" : "R1", left ? l1Dps : r1Dps,
+                    rect, topPressed, topProgress);
         } else {
-            drawCenteredText(canvas, left ? "L1" : "R1", rect, topScale < 0.97f);
+            drawCenteredText(canvas, left ? "L1" : "R1", rect, topPressed, topProgress);
         }
 
         float trigger = left ? shownLt : shownRt;
-        float bottomScale = press[1];
+        float bottomProgress = pressProgress(press[1]);
+        float bottomScale = motionScale(bottomProgress);
         float bottomInset = (1f - bottomScale) * w * 0.05f;
         rect.set(pad + bottomInset, bottomTop,
                 pad + w - bottomInset, pad + h);
-        boolean triggerPressed = bottomScale < 0.97f || trigger > 0.08f;
+        boolean triggerPressed = pressTargets[1] || trigger > 0.08f;
         float bottomRadius = KeyAppearance.roundedRadius(rect, cornerStrength);
-        Paint bottomPaint = (!triggerProgressEnabled && triggerPressed) ? buttonPaint : fillPaint;
-        KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, bottomPaint);
+        // 进度条模式下底板必须保持 idle 色，否则整块先变成按下色会吃掉模拟扳机进度。
+        drawMotionShape(canvas, rect, bottomRadius, triggerProgressEnabled ? false : triggerPressed, bottomProgress);
 
         if (triggerProgressEnabled && trigger > 0.001f) {
-            RectF fill = new RectF(rect.left, rect.top,
+            auxRect.set(rect.left, rect.top,
                     rect.left + rect.width() * clamp(trigger, 0f, 1f), rect.bottom);
+            buttonPaint.setColor(withMotionOpacity(pressColor, bottomProgress, diffusionOpacityPercent));
             canvas.save();
-            canvas.clipRect(fill);
+            canvas.clipRect(auxRect);
             KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, buttonPaint);
             canvas.restore();
+            strokePaint.setColor(withMotionOpacity(borderColor, bottomProgress, strokeOpacityPercent));
+            KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, strokePaint);
         }
-        KeyAppearance.drawShape(canvas, rect, keyStyle, bottomRadius, strokePaint);
-        drawCenteredText(canvas, left ? "L2" : "R2", rect, triggerPressed);
+        drawCenteredText(canvas, left ? "L2" : "R2", rect, triggerPressed, bottomProgress);
     }
 
     public void setVader5BackLabels(boolean enabled) {
@@ -610,6 +687,9 @@ public final class GamepadOverlayView extends FrameLayout {
     }
 
     private void drawDpad(Canvas canvas) {
+        fillPaint.setColor(withOpacity(baseColor, backgroundOpacityPercent));
+        buttonPaint.setColor(withOpacity(pressColor, diffusionOpacityPercent));
+        strokePaint.setColor(withOpacity(borderColor, strokeOpacityPercent));
         float side = Math.min(getWidth(), getHeight());
         float cx = getWidth() * 0.5f;
         float cy = getHeight() * 0.5f;
@@ -624,22 +704,23 @@ public final class GamepadOverlayView extends FrameLayout {
     }
 
     private void drawDpadButton(Canvas canvas, int index, String label, float cx, float cy, float size) {
-        float scale = press[index];
-        float half = size * 0.5f * scale;
+        float progress = pressProgress(press[index]);
+        float half = size * 0.5f * motionScale(progress);
         rect.set(cx - half, cy - half, cx + half, cy + half);
-        boolean pressed = scale < 0.97f;
-        Paint body = pressed ? buttonPaint : fillPaint;
+        boolean pressed = pressTargets[index];
         float radius = KeyAppearance.roundedRadius(rect, cornerStrength);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, body);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
+        drawMotionShape(canvas, rect, radius, pressed, progress);
         textPaint.setTextSize(Math.min(size * 0.36f, dp(18f)));
-        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : UiPalette.overlayTextIdle(getContext()));
+        textPaint.setColor(motionTextColor(pressed, progress));
         Paint.FontMetrics fm = textPaint.getFontMetrics();
         float baseline = rect.centerY() - (fm.ascent + fm.descent) * 0.5f;
         canvas.drawText(label, rect.centerX(), baseline, textPaint);
     }
 
     private void drawBackButtons(Canvas canvas) {
+        fillPaint.setColor(withOpacity(baseColor, backgroundOpacityPercent));
+        buttonPaint.setColor(withOpacity(pressColor, diffusionOpacityPercent));
+        strokePaint.setColor(withOpacity(borderColor, strokeOpacityPercent));
         float pad = dp(6f);
         float gap = dp(6f);
         float cellW = (getWidth() - pad * 2f - gap) * 0.5f;
@@ -652,29 +733,28 @@ public final class GamepadOverlayView extends FrameLayout {
     }
 
     private void drawBackButton(Canvas canvas, int index, String label, float left, float top, float width, float height) {
-        float scale = press[index];
+        float progress = pressProgress(press[index]);
+        float scale = motionScale(progress);
         float insetX = (1f - scale) * width * 0.08f;
         float insetY = (1f - scale) * height * 0.10f;
         rect.set(left + insetX, top + insetY, left + width - insetX, top + height - insetY);
-        boolean pressed = scale < 0.97f;
-        Paint body = pressed ? buttonPaint : fillPaint;
+        boolean pressed = pressTargets[index];
         float radius = KeyAppearance.roundedRadius(rect, cornerStrength);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, body);
-        KeyAppearance.drawShape(canvas, rect, keyStyle, radius, strokePaint);
-        drawCenteredText(canvas, label, rect, pressed);
+        drawMotionShape(canvas, rect, radius, pressed, progress);
+        drawCenteredText(canvas, label, rect, pressed, progress);
     }
 
-    private void drawCenteredText(Canvas canvas, String text, RectF area, boolean pressed) {
+    private void drawCenteredText(Canvas canvas, String text, RectF area, boolean pressed, float progress) {
         textPaint.setTextSize(Math.min(area.height() * 0.43f, dp(18f)));
-        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : UiPalette.overlayTextIdle(getContext()));
+        textPaint.setColor(motionTextColor(pressed, progress));
         Paint.FontMetrics fm = textPaint.getFontMetrics();
         float baseline = area.centerY() - (fm.ascent + fm.descent) * 0.5f;
         canvas.drawText(text, area.centerX(), baseline, textPaint);
     }
 
-    private void drawCenteredTextWithDps(Canvas canvas, String text, int dps, RectF area, boolean pressed) {
+    private void drawCenteredTextWithDps(Canvas canvas, String text, int dps, RectF area, boolean pressed, float progress) {
         Typeface oldTypeface = textPaint.getTypeface();
-        textPaint.setColor(pressed ? KeyAppearance.pressedTextColor(pressColor) : UiPalette.overlayTextIdle(getContext()));
+        textPaint.setColor(motionTextColor(pressed, progress));
 
         // L1/R1 主标签使用统一字号和字体。
         final float primarySize = Math.min(area.height() * 0.43f, dp(18f));
@@ -804,19 +884,34 @@ public final class GamepadOverlayView extends FrameLayout {
         shownLt += triggerVelocityLt * dt;
         shownRt += triggerVelocityRt * dt;
 
-        // L3/R3 只保留很轻的阻尼反馈，不再出现明显回弹。
-        // 缩放时保持摇杆中心位置不变。
-        float stickPulseA = -120f * stickPulse - 22f * stickPulseVelocity;
-        stickPulseVelocity += stickPulseA * dt;
-        stickPulse += stickPulseVelocity * dt;
-        if (Math.abs(stickPulse) < 0.0007f && Math.abs(stickPulseVelocity) < 0.012f) {
-            stickPulse = 0f;
-            stickPulseVelocity = 0f;
+        // L3/R3 的状态进度独立于摇杆位移。关闭动效时直接落到目标状态；
+        // 其余模式共享同一条临界阻尼状态曲线，由绘制层决定缩放/透明度/扩散。
+        boolean stickPressActive = false;
+        float stickPressTarget = stickPressDown ? 1f : 0f;
+        if (animationMode == OverlayState.MOTION_NONE) {
+            stickPressProgress = stickPressTarget;
+            stickPressVelocity = 0f;
+        } else {
+            float stickPressA = 145f * (stickPressTarget - stickPressProgress) - 24f * stickPressVelocity;
+            stickPressVelocity += stickPressA * dt;
+            stickPressProgress += stickPressVelocity * dt;
+            if (Math.abs(stickPressTarget - stickPressProgress) < 0.0008f
+                    && Math.abs(stickPressVelocity) < 0.012f) {
+                stickPressProgress = stickPressTarget;
+                stickPressVelocity = 0f;
+            } else {
+                stickPressActive = true;
+            }
         }
 
         boolean buttonActive = false;
         for (int i = 0; i < 4; i++) {
             float target = pressTargets[i] ? 0.86f : 1f;
+            if (animationMode == OverlayState.MOTION_NONE) {
+                press[i] = target;
+                pressVelocity[i] = 0f;
+                continue;
+            }
             float a = 145f * (target - press[i]) - 24f * pressVelocity[i];
             pressVelocity[i] += a * dt;
             press[i] += pressVelocity[i] * dt;
@@ -858,7 +953,6 @@ public final class GamepadOverlayView extends FrameLayout {
                 || Math.abs(velocityX) > 0.01f || Math.abs(velocityY) > 0.01f;
         boolean triggerActive = Math.abs(targetLt - shownLt) > 0.0008f || Math.abs(targetRt - shownRt) > 0.0008f
                 || Math.abs(triggerVelocityLt) > 0.01f || Math.abs(triggerVelocityRt) > 0.01f;
-        boolean stickPulseActive = Math.abs(stickPulse) > 0.0007f || Math.abs(stickPulseVelocity) > 0.012f;
         boolean hostActive = Math.abs(hostTarget - hostProgress) > 0.001f || Math.abs(hostVelocity) > 0.02f;
         boolean dragActive = Math.abs(dragTarget - dragProgress) > 0.001f || Math.abs(dragVelocity) > 0.02f;
         if (hostTarget == 0f && !hostActive && exitCallback != null) {
@@ -867,7 +961,68 @@ public final class GamepadOverlayView extends FrameLayout {
             post(callback);
             return;
         }
-        if (stickActive || triggerActive || stickPulseActive || buttonActive || hostActive || dragActive) postFrame();
+        if (stickActive || triggerActive || stickPressActive || buttonActive || hostActive || dragActive) postFrame();
+    }
+
+    private float pressProgress(float scale) {
+        return clamp((1f - scale) / 0.14f, 0f, 1f);
+    }
+
+    private float motionScale(float progress) {
+        if (animationMode == OverlayState.MOTION_SIZE) {
+            return 1f - 0.14f * clamp(progress, 0f, 1f);
+        }
+        if (animationMode == OverlayState.MOTION_RIPPLE) {
+            return KeyAppearance.cardFeatureBounce(progress);
+        }
+        return 1f;
+    }
+
+    private int withMotionOpacity(int color, float progress, int percent) {
+        float factor = animationMode == OverlayState.MOTION_ALPHA
+                ? clamp(0.56f + 0.44f * clamp(progress, 0f, 1f), 0.48f, 1f)
+                : 1f;
+        int alpha = Math.round(android.graphics.Color.alpha(color)
+                * clampPercent(percent) / 100f * factor);
+        return android.graphics.Color.argb(Math.max(0, Math.min(255, alpha)),
+                android.graphics.Color.red(color), android.graphics.Color.green(color),
+                android.graphics.Color.blue(color));
+    }
+
+    private void drawMotionShape(Canvas canvas, RectF area, float radius,
+                                 boolean pressed, float progress) {
+        int bodyColor = animationMode == OverlayState.MOTION_RIPPLE
+                ? baseColor : (pressed ? pressColor : baseColor);
+        fillPaint.setColor(withMotionOpacity(bodyColor, progress, backgroundOpacityPercent));
+        KeyAppearance.drawShape(canvas, area, keyStyle, radius, fillPaint);
+        if (animationMode == OverlayState.MOTION_RIPPLE && progress > 0f) {
+            KeyAppearance.drawCentreFill(canvas, area, keyStyle, radius,
+                    withOpacity(pressColor, diffusionOpacityPercent), progress,
+                    buttonPaint, motionClipPath);
+        }
+        strokePaint.setColor(withMotionOpacity(borderColor, progress, strokeOpacityPercent));
+        KeyAppearance.drawShape(canvas, area, keyStyle, radius, strokePaint);
+    }
+
+    private int motionTextColor(boolean pressed, float progress) {
+        int color;
+        if (animationMode == OverlayState.MOTION_RIPPLE) {
+            color = KeyAppearance.blendColor(textColor, KeyAppearance.pressedTextColor(pressColor),
+                    KeyAppearance.centreTextMix(progress));
+        } else {
+            color = pressed ? KeyAppearance.pressedTextColor(pressColor) : textColor;
+        }
+        return withMotionOpacity(color, progress, textOpacityPercent);
+    }
+
+    private static int clampPercent(int percent) {
+        return Math.max(0, Math.min(100, percent));
+    }
+
+    private static int withOpacity(int color, int percent) {
+        int alpha = Math.round(android.graphics.Color.alpha(color) * clampPercent(percent) / 100f);
+        return android.graphics.Color.argb(alpha, android.graphics.Color.red(color),
+                android.graphics.Color.green(color), android.graphics.Color.blue(color));
     }
 
     private float dp(float value) {

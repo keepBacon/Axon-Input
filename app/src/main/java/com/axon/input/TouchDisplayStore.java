@@ -25,9 +25,9 @@ final class TouchDisplayStore {
     }
 
     static void setEnabled(Context context, boolean enabled) {
-        if (PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_ENABLED, enabled)) {
-            AxonInputAccessibilityService.refreshActiveService();
-        }
+        if (!PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_ENABLED, enabled)) return;
+        if (enabled) AxonInputAccessibilityService.refreshActiveService();
+        else AxonInputAccessibilityService.refreshDisplayVisibilityImmediate();
     }
 
     static float[] getRegion(Context context, int region) {

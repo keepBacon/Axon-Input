@@ -112,6 +112,8 @@ public final class KeyPromptOverlayView extends FrameLayout {
     private int baseColor;
     private int borderColor;
     private int pressColor;
+    private int textColor;
+    private int animationMode = OverlayState.MOTION_SIZE;
 
     private final Runnable frameRunnable = new Runnable() {
         @Override public void run() {
@@ -128,6 +130,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
         baseColor = UiPalette.overlayKeyIdle(context);
         borderColor = UiPalette.overlayStroke(context);
         pressColor = UiPalette.overlayKeyPressed(context);
+        textColor = UiPalette.overlayTextIdle(context);
         setWillNotDraw(false);
         setLayerType(View.LAYER_TYPE_HARDWARE, null);
         textPaint.setTextAlign(Paint.Align.CENTER);
@@ -160,6 +163,13 @@ public final class KeyPromptOverlayView extends FrameLayout {
     public void setKeyBorderColor(int color) {
         if (borderColor == color) return;
         borderColor = color;
+        invalidate();
+    }
+
+    public void setTextColor(int color) {
+        int resolved = 0xff000000 | (color & 0x00ffffff);
+        if (textColor == resolved) return;
+        textColor = resolved;
         invalidate();
     }
 
@@ -203,6 +213,24 @@ public final class KeyPromptOverlayView extends FrameLayout {
 
     public void setDiffusionOpacity(int percent) {
         diffusionOpacityPercent = clampPercent(percent);
+        invalidate();
+    }
+
+    public void setAnimationMode(int mode) {
+        int resolved = OverlayState.clampMotionMode(mode);
+        if (animationMode == resolved) return;
+        animationMode = resolved;
+        if (animationMode == OverlayState.MOTION_NONE) {
+            for (Entry entry : entries) {
+                float value = entry.pressed ? 1f : 0f;
+                entry.fillProgress = value;
+                entry.fillFrom = value;
+                entry.fillTo = value;
+                entry.fillStartedAt = 0L;
+                entry.fillDurationMs = 0L;
+            }
+        }
+        if (htmlView != null) syncHtmlPromptState();
         invalidate();
     }
 
@@ -277,8 +305,16 @@ public final class KeyPromptOverlayView extends FrameLayout {
 
     private void startEntryFillTransition(Entry entry, boolean enabledNow, long now) {
         if (entry == null) return;
-        float current = evaluateEntryFill(entry, now);
         float end = enabledNow ? 1f : 0f;
+        if (animationMode == OverlayState.MOTION_NONE) {
+            entry.fillProgress = end;
+            entry.fillFrom = end;
+            entry.fillTo = end;
+            entry.fillStartedAt = 0L;
+            entry.fillDurationMs = 0L;
+            return;
+        }
+        float current = evaluateEntryFill(entry, now);
         entry.fillProgress = current;
         entry.fillFrom = current;
         entry.fillTo = end;
@@ -362,7 +398,7 @@ public final class KeyPromptOverlayView extends FrameLayout {
         float groupCenter = getWidth() * 0.5f;
 
         int idleColor = baseColor;
-        int idleText = UiPalette.overlayTextIdle(getContext());
+        int idleText = textColor;
         int pressedText = KeyAppearance.pressedTextColor(pressColor);
 
         textPaint.setTypeface(typefaceBold);
@@ -385,16 +421,27 @@ public final class KeyPromptOverlayView extends FrameLayout {
             int strokeAlpha = Math.round(alpha * strokeOpacityPercent / 100f);
             int textAlpha = Math.round(alpha * textOpacityPercent / 100f);
             float cornerRadius = KeyAppearance.roundedRadius(rect, cornerStrength);
-            float fillProgress = evaluateEntryFill(entry, now);
-            float stateBounce = KeyAppearance.cardFeatureBounce(fillProgress);
+            float fillProgress = animationMode == OverlayState.MOTION_NONE
+                    ? (entry.pressed ? 1f : 0f) : evaluateEntryFill(entry, now);
+            float stateScale = 1f;
+            if (animationMode == OverlayState.MOTION_SIZE) {
+                stateScale = 1f - 0.028f * fillProgress;
+            } else if (animationMode == OverlayState.MOTION_RIPPLE) {
+                stateScale = KeyAppearance.cardFeatureBounce(fillProgress);
+            }
+            float motionAlpha = animationMode == OverlayState.MOTION_ALPHA
+                    ? Math.max(0.48f, Math.min(1f, 0.56f + 0.44f * fillProgress))
+                    : 1f;
 
             int save = canvas.save();
-            canvas.scale(itemScale * stateBounce, itemScale * stateBounce, entry.centerX, centerY);
+            canvas.scale(itemScale * stateScale, itemScale * stateScale, entry.centerX, centerY);
 
             fillPaint.setStyle(Paint.Style.FILL);
-            fillPaint.setColor(withAlpha(idleColor, backgroundAlpha));
+            int body = animationMode == OverlayState.MOTION_RIPPLE
+                    ? idleColor : (entry.pressed ? pressColor : idleColor);
+            fillPaint.setColor(withAlpha(body, Math.round(backgroundAlpha * motionAlpha)));
             KeyAppearance.drawShape(canvas, rect, keyStyle, cornerRadius, fillPaint);
-            if (fillProgress > 0f) {
+            if (animationMode == OverlayState.MOTION_RIPPLE && fillProgress > 0f) {
                 int solidPress = Color.argb(diffusionAlpha, Color.red(pressColor), Color.green(pressColor), Color.blue(pressColor));
                 KeyAppearance.drawCentreFill(canvas, rect, keyStyle, cornerRadius, solidPress,
                         fillProgress, fillPaint, fillClipPath);
@@ -402,13 +449,14 @@ public final class KeyPromptOverlayView extends FrameLayout {
 
             strokePaint.setStyle(Paint.Style.STROKE);
             strokePaint.setStrokeWidth(Math.max(1f, dp(0.8f) * uiScale));
-            int borderAlpha = Math.round(Color.alpha(borderColor) * strokeAlpha / 255f);
+            int borderAlpha = Math.round(Color.alpha(borderColor) * strokeAlpha / 255f * motionAlpha);
             strokePaint.setColor(withAlpha(borderColor, borderAlpha));
             KeyAppearance.drawShape(canvas, rect, keyStyle, cornerRadius, strokePaint);
 
-            int keyText = KeyAppearance.blendColor(
-                    idleText, pressedText, KeyAppearance.centreTextMix(fillProgress));
-            textPaint.setColor(withAlpha(keyText, textAlpha));
+            int keyText = animationMode == OverlayState.MOTION_RIPPLE
+                    ? KeyAppearance.blendColor(idleText, pressedText, KeyAppearance.centreTextMix(fillProgress))
+                    : (entry.pressed ? pressedText : idleText);
+            textPaint.setColor(withAlpha(keyText, Math.round(textAlpha * motionAlpha)));
             float baseline = centerY - (textPaint.ascent() + textPaint.descent()) * 0.5f;
             canvas.drawText(entry.label, entry.centerX, baseline, textPaint);
             canvas.restoreToCount(save);

@@ -5,6 +5,8 @@
   const DESIGN_HEIGHT = 354;
   const FRAME_INTERVAL = 1000 / 60;
   const DAMPING_DECAY = 0.75;
+  let renderQuality = 'normal';
+  let renderDprCap = 2;
   const MIN_MOUSE_PRESS_MS = 36;
 
   // Exact input groups for BongoCat's original standard (mouse + keyboard) model.
@@ -79,9 +81,42 @@
   let lastFrameTime = 0;
   let animationHandle = 0;
   let recoveryScheduled = false;
+  let runtimePaused = false;
+  let runtimeDisposed = false;
+
+  function scheduleAnimation() {
+    if (runtimePaused || runtimeDisposed || animationHandle) return;
+    animationHandle = requestAnimationFrame(tick);
+  }
+
+  function pauseRuntime() {
+    if (runtimeDisposed || runtimePaused) return;
+    runtimePaused = true;
+    if (animationHandle) cancelAnimationFrame(animationHandle);
+    animationHandle = 0;
+    lastFrameTime = 0;
+  }
+
+  function resumeRuntime() {
+    if (runtimeDisposed) return;
+    runtimePaused = false;
+    lastFrameTime = 0;
+    scheduleAnimation();
+  }
+
+  function disposeRuntime() {
+    if (runtimeDisposed) return;
+    runtimeDisposed = true;
+    runtimePaused = true;
+    if (animationHandle) cancelAnimationFrame(animationHandle);
+    animationHandle = 0;
+    try { if (renderer && typeof renderer.dispose === 'function') renderer.dispose(); } catch (_) {}
+    renderer = null;
+    state.ready = false;
+  }
 
   function scheduleRendererRecovery() {
-    if (recoveryScheduled) return;
+    if (runtimeDisposed || recoveryScheduled) return;
     recoveryScheduled = true;
     setTimeout(() => location.reload(), 120);
   }
@@ -309,6 +344,15 @@
       syncGlobalReverse();
     },
 
+    setRenderQuality(mode) {
+      const next = String(mode || '').toLowerCase() === 'clear' ? 'clear' : 'normal';
+      const nextCap = next === 'clear' ? 3 : 2;
+      if (renderQuality === next && renderDprCap === nextCap) return;
+      renderQuality = next;
+      renderDprCap = nextCap;
+      if (renderer) renderer.resize();
+    },
+
     clear() {
       state.leftKey = null;
       state.rightKey = null;
@@ -326,6 +370,10 @@
         syncHandOverrides();
       }
     },
+
+    pause() { pauseRuntime(); },
+    resume() { resumeRuntime(); },
+    dispose() { disposeRuntime(); },
 
     isReady() {
       return state.ready;
@@ -349,7 +397,9 @@
   }
 
   function tick(now) {
-    animationHandle = requestAnimationFrame(tick);
+    animationHandle = 0;
+    if (runtimeDisposed || runtimePaused) return;
+    scheduleAnimation();
     if (!renderer) return;
     if (lastFrameTime && now - lastFrameTime < FRAME_INTERVAL - 0.5) return;
 
@@ -465,7 +515,7 @@
     }
 
     resize() {
-      const dpr = Math.max(1, devicePixelRatio || 1);
+      const dpr = Math.max(1, Math.min(renderDprCap, devicePixelRatio || 1));
       const width = Math.max(1, Math.round(innerWidth * dpr));
       const height = Math.max(1, Math.round(innerHeight * dpr));
       if (canvas.width !== width || canvas.height !== height) {
@@ -500,6 +550,21 @@
 
     clearOverrides() {
       this.overrides.clear();
+    }
+
+    dispose() {
+      const gl = this.gl;
+      if (gl) {
+        for (const texture of this.textures || []) { try { if (texture) gl.deleteTexture(texture); } catch (_) {} }
+        try { if (this.positionBuffer) gl.deleteBuffer(this.positionBuffer); } catch (_) {}
+        try { if (this.uvBuffer) gl.deleteBuffer(this.uvBuffer); } catch (_) {}
+        try { if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer); } catch (_) {}
+        try { if (this.program) gl.deleteProgram(this.program); } catch (_) {}
+        try { if (this.maskProgram) gl.deleteProgram(this.maskProgram); } catch (_) {}
+        try { const lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext(); } catch (_) {}
+      }
+      try { if (this.model && typeof this.model.release === 'function') this.model.release(); } catch (_) {}
+      if (this.overrides) this.overrides.clear();
     }
 
     setEyeBlink(value) {
@@ -692,13 +757,20 @@
       fallback.classList.add('hidden');
       state.ready = true;
 
-      if (!animationHandle) animationHandle = requestAnimationFrame(tick);
+      scheduleAnimation();
     } catch (error) {
       console.error('BongoCat source model init failed', error);
       fallback.classList.remove('hidden');
     }
   }
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pauseRuntime();
+    else resumeRuntime();
+  }, { passive: true });
+  addEventListener('pagehide', pauseRuntime, { passive: true });
+  addEventListener('pageshow', resumeRuntime, { passive: true });
+
   init();
-  animationHandle = requestAnimationFrame(tick);
+  scheduleAnimation();
 })();

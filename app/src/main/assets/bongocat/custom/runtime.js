@@ -8,9 +8,23 @@
   const FRAME_INTERVAL = 1000 / FRAME_RATE_LIMIT;
   const DAMPING_DECAY = 0.75;
   const MIN_MOUSE_PRESS_MS = 36;
+  // Direct evaluateJavascript events are authoritative. Native polling is only a desync safety net,
+  // so running it every animation frame wastes bridge/JSON work on high-refresh-rate devices.
+  const NATIVE_KEY_RECONCILE_INTERVAL_MS = 120;
+  const RENDER_DPR_CAP_NORMAL = Math.max(1, Math.min(3, Number(CONFIG.renderDprCapNormal) || Number(CONFIG.renderDprCap) || 2));
+  const RENDER_DPR_CAP_CLEAR = Math.max(RENDER_DPR_CAP_NORMAL, Math.min(3, Number(CONFIG.renderDprCapClear) || 3));
+  let renderQuality = String(CONFIG.renderQuality || 'normal') === 'clear' ? 'clear' : 'normal';
+  let renderDprCap = renderQuality === 'clear' ? RENDER_DPR_CAP_CLEAR : RENDER_DPR_CAP_NORMAL;
+  const TEXTURE_UPLOAD_YIELD_EVERY = Math.max(1, Math.min(8, Number(CONFIG.textureUploadYieldEvery) || 2));
+  const TEXTURE_ESTIMATED_RGBA_BYTES = Math.max(0, Number(CONFIG.textureEstimatedRgbaBytes) || 0);
+  const PHYSICS_ACTIVE_FPS = Math.max(15, Math.min(120, Number(CONFIG.physicsActiveFps) || 60));
+  const PHYSICS_IDLE_FPS = Math.max(12, Math.min(PHYSICS_ACTIVE_FPS, Number(CONFIG.physicsIdleFps) || 30));
+  let physicsControls = normalizePhysicsControls(CONFIG.physicsControls);
 
   const LEFT_KEYS = new Set(Array.isArray(CONFIG.leftKeys) ? CONFIG.leftKeys : []);
   const RIGHT_KEYS = new Set(Array.isArray(CONFIG.rightKeys) ? CONFIG.rightKeys : []);
+  const LEFT_KEY_ASSETS = CONFIG.leftKeyAssets && typeof CONFIG.leftKeyAssets === 'object' ? CONFIG.leftKeyAssets : {};
+  const RIGHT_KEY_ASSETS = CONFIG.rightKeyAssets && typeof CONFIG.rightKeyAssets === 'object' ? CONFIG.rightKeyAssets : {};
   const STYLE_MODE = String(CONFIG.mode || 'keyboard');
   const IS_MVER = CONFIG.mver === true || String(CONFIG.format || '') === 'mver016';
   const MVER_USE_LIVE2D = IS_MVER && CONFIG.useLive2d === true;
@@ -41,9 +55,19 @@
   const MVER_MOTIONS = Array.isArray(CONFIG.motions) ? CONFIG.motions : [];
   const MVER_MOTION_GROUPS = CONFIG.motionGroups && typeof CONFIG.motionGroups === 'object' ? CONFIG.motionGroups : {};
   const MVER_PHYSICS = CONFIG.physics && typeof CONFIG.physics === 'object' ? CONFIG.physics : null;
+  const PHYSICS_GROUP_KEYS = buildPhysicsGroupKeys(MVER_PHYSICS);
   const LIVE2D_POSE = CONFIG.pose && typeof CONFIG.pose === 'object' ? CONFIG.pose : null;
   const LIVE2D_EYE_BLINK_IDS = Array.isArray(CONFIG.eyeBlinkIds) ? CONFIG.eyeBlinkIds.map(String).filter(Boolean) : [];
   const LIVE2D_LIP_SYNC_IDS = Array.isArray(CONFIG.lipSyncIds) ? CONFIG.lipSyncIds.map(String).filter(Boolean) : [];
+  const PARAMETER_DEFINITIONS = Array.isArray(CONFIG.parameterDefinitions) ? CONFIG.parameterDefinitions : [];
+  const KEY_PARAMETER_MAP = CONFIG.keyParameterMap && typeof CONFIG.keyParameterMap === 'object' ? CONFIG.keyParameterMap : {};
+  const KEYBOARD_DOWN_PARAMETER_IDS = Array.isArray(CONFIG.keyboardDownParameterIds) ? CONFIG.keyboardDownParameterIds.map(String).filter(Boolean) : [];
+  const MOUSE_X_PARAMETER_IDS = Array.isArray(CONFIG.mouseXParameterIds) ? CONFIG.mouseXParameterIds.map(String).filter(Boolean) : [];
+  const MOUSE_Y_PARAMETER_IDS = Array.isArray(CONFIG.mouseYParameterIds) ? CONFIG.mouseYParameterIds.map(String).filter(Boolean) : [];
+  const MOUSE_LEFT_PARAMETER_IDS = Array.isArray(CONFIG.mouseLeftParameterIds) ? CONFIG.mouseLeftParameterIds.map(String).filter(Boolean) : [];
+  const MOUSE_RIGHT_PARAMETER_IDS = Array.isArray(CONFIG.mouseRightParameterIds) ? CONFIG.mouseRightParameterIds.map(String).filter(Boolean) : [];
+  const SAVED_PARAMETER_VALUES = CONFIG.savedParameterValues && typeof CONFIG.savedParameterValues === 'object' ? CONFIG.savedParameterValues : {};
+  const PARAMETER_LOCKS = CONFIG.parameterLocks && typeof CONFIG.parameterLocks === 'object' ? CONFIG.parameterLocks : {};
   const MVER_EMOTICON_CLEAR = Array.isArray(CONFIG.mverEmoticonClear) ? CONFIG.mverEmoticonClear : [];
   const MVER_EMOTICON_KEEP = CONFIG.mverEmoticonKeep === true;
   const MVER_SOUND_CLEAR = Array.isArray(CONFIG.mverSoundClear) ? CONFIG.mverSoundClear : [];
@@ -153,6 +177,7 @@
     debugExpressionKind: 'auto',
     debugExpressionIndex: -1,
     debugExpressionStartedAt: 0,
+    debugExpressionWeight: 1,
     mverBindingStates: new Map(),
     mverBindingOrder: new Map(),
     mverBindingSequence: 0,
@@ -160,6 +185,20 @@
     mverMotionIndex: -1,
     mverMotionStartedAt: 0,
     mverMotionLockHand: false,
+    modernPressed: new Set(),
+    modernGamepadPressed: new Set(),
+    modernParameterCounts: new Map(),
+    parameterToggles: new Map(),
+    parameterPulseUntil: new Map(),
+    // Test-preview state is separate from authored hotkey state.
+    parameterPreviewRestoreToggle: new Map(),
+    parameterSequenceEvents: [],
+    parameterSequenceGeneration: 0,
+    functionExpressionUntil: 0,
+    functionExpressionRestoreKind: 'auto',
+    functionExpressionRestoreIndex: -1,
+    functionExpressionRestoreStartedAt: 0,
+    staticFallback: false,
   };
 
   const stage = document.getElementById('stage');
@@ -501,7 +540,7 @@
 
   function startMverMotion(index, lockHand) {
     const resolved = Number(index) | 0;
-    if (resolved < 0 || !MVER_USE_LIVE2D || !MVER_MOTIONS[resolved]) return;
+    if (resolved < 0 || !MVER_MOTIONS[resolved]) return;
     state.mverMotionIndex = resolved;
     state.mverMotionStartedAt = performance.now();
     state.mverMotionLockHand = Boolean(lockHand);
@@ -882,9 +921,45 @@
   let lastFrameTime = 0;
   let animationHandle = 0;
   let recoveryScheduled = false;
+  let runtimePaused = false;
+  let runtimeDisposed = false;
+
+  function scheduleAnimation() {
+    if (runtimePaused || runtimeDisposed || animationHandle) return;
+    animationHandle = requestAnimationFrame(tick);
+  }
+
+  function pauseRuntime() {
+    if (runtimeDisposed || runtimePaused) return;
+    runtimePaused = true;
+    if (animationHandle) cancelAnimationFrame(animationHandle);
+    animationHandle = 0;
+    lastFrameTime = 0;
+    stopAllMverSounds();
+  }
+
+  function resumeRuntime() {
+    if (runtimeDisposed) return;
+    runtimePaused = false;
+    lastFrameTime = 0;
+    nextNativeKeyReconcileAt = 0;
+    scheduleAnimation();
+  }
+
+  function disposeRuntime() {
+    if (runtimeDisposed) return;
+    runtimeDisposed = true;
+    runtimePaused = true;
+    if (animationHandle) cancelAnimationFrame(animationHandle);
+    animationHandle = 0;
+    stopAllMverSounds();
+    try { if (renderer && typeof renderer.dispose === 'function') renderer.dispose(); } catch (_) {}
+    renderer = null;
+    state.ready = false;
+  }
 
   function scheduleRendererRecovery() {
-    if (recoveryScheduled) return;
+    if (runtimeDisposed || recoveryScheduled) return;
     recoveryScheduled = true;
     setTimeout(() => location.reload(), 120);
   }
@@ -981,7 +1056,10 @@
       image.removeAttribute('src');
       return;
     }
-    image.src = assetUrl(`resources/${side}-keys/${key}.png`);
+    const assets = side === 'left' ? LEFT_KEY_ASSETS : RIGHT_KEY_ASSETS;
+    // New imports provide exact file URIs so WEBP/JPEG overlays and non-lowercase resource
+    // directories work. Keep the legacy PNG path as a compatibility fallback for old imports.
+    image.src = String(assets[key] || assetUrl(`resources/${side}-keys/${key}.png`));
     image.classList.remove('hidden');
   }
 
@@ -1030,8 +1108,14 @@
       renderer.setFrameInput('CatParamRightHandDown', rightDown ? 1 : 0);
       return;
     }
-    renderer.setOverride('CatParamLeftHandDown', state.leftKey ? 1 : 0);
-    renderer.setOverride('CatParamRightHandDown', state.rightKey ? 1 : 0);
+    // Hybrid controller-mode models often have no dedicated digital-button parameters at all.
+    // Their generic CatParam*HandDown parameters are the intended visual press fallback. Merge
+    // keyboard and controller sources here so a gamepad press remains visible even when there is
+    // no South/East/... overlay image or explicit Cubism parameter.
+    const gamepadLeft = HAS_CONTROLLER_STICK_PARAMETERS && isGamepadHandActive('left');
+    const gamepadRight = HAS_CONTROLLER_STICK_PARAMETERS && isGamepadHandActive('right');
+    renderer.setOverride('CatParamLeftHandDown', (state.leftKey || gamepadLeft) ? 1 : 0);
+    renderer.setOverride('CatParamRightHandDown', (state.rightKey || gamepadRight) ? 1 : 0);
   }
 
   function setNormalizedFaceParameter(
@@ -1154,6 +1238,18 @@
     }
   }
 
+  function applyMouseAxisAliases(ids, ratio, transient) {
+    if (!renderer || !Array.isArray(ids)) return;
+    for (const idRaw of ids) {
+      const id = String(idRaw || '');
+      const range = renderer.range(id);
+      if (!range) continue;
+      const value = range[1] - Math.max(0, Math.min(1, Number(ratio) || 0)) * (range[1] - range[0]);
+      if (transient) renderer.setFrameInput(id, value);
+      else renderer.setOverride(id, value);
+    }
+  }
+
   function applyPointerOverrides(xRatio, yRatio) {
     if (!renderer) return;
 
@@ -1179,6 +1275,8 @@
       if (mouseYRange) {
         renderer.setFrameInput('ParamMouseY', mouseYRange[1] - effectiveY * (mouseYRange[1] - mouseYRange[0]));
       }
+      applyMouseAxisAliases(MOUSE_X_PARAMETER_IDS, effectiveX, true);
+      applyMouseAxisAliases(MOUSE_Y_PARAMETER_IDS, effectiveY, true);
       return;
     }
 
@@ -1202,6 +1300,10 @@
       }
       renderer.setOverride(id, value);
     }
+    let effectiveX = Math.max(0, Math.min(1, Number(xRatio) || 0));
+    if (state.globalReverse) effectiveX = 1 - effectiveX;
+    applyMouseAxisAliases(MOUSE_X_PARAMETER_IDS, effectiveX, false);
+    applyMouseAxisAliases(MOUSE_Y_PARAMETER_IDS, yRatio, false);
   }
 
   function syncGlobalReverse() {
@@ -1224,6 +1326,8 @@
     renderer.setDragTarget(0, 0);
     renderer.clearFrameInput('ParamMouseX');
     renderer.clearFrameInput('ParamMouseY');
+    for (const id of MOUSE_X_PARAMETER_IDS) renderer.clearFrameInput(String(id));
+    for (const id of MOUSE_Y_PARAMETER_IDS) renderer.clearFrameInput(String(id));
     // Non-Mver fallback uses persistent overrides for pointer tracking; release only the pointer
     // parameters here so face/expression/motion capture can immediately regain control.
     if (!IS_MVER) {
@@ -1263,6 +1367,7 @@
   }
 
   function updateMouseButtonVisual(now) {
+    const before = state.mouseVisualButtons;
     for (let index = 0; index < 2; index++) {
       const bit = 1 << index;
       if (state.mouseButtons & bit) {
@@ -1271,14 +1376,504 @@
         state.mouseVisualButtons &= ~bit;
       }
     }
+    return before !== state.mouseVisualButtons;
   }
 
   const nativePolledKeys = new Set();
+  const keyParameterIdCache = new Map();
+  const functionGroupParameterIds = new Map();
+  for (const item of PARAMETER_DEFINITIONS) {
+    if (!item || String(item.category || '') !== 'function' || !item.id) continue;
+    const group = String(item.groupId || item.group || '');
+    if (!group) continue;
+    let ids = functionGroupParameterIds.get(group);
+    if (!ids) { ids = []; functionGroupParameterIds.set(group, ids); }
+    const id = String(item.id);
+    if (!ids.includes(id)) ids.push(id);
+  }
+
+  function keyParameterIds(rawKey) {
+    const key = String(rawKey || '');
+    const cached = keyParameterIdCache.get(key);
+    if (cached) return cached;
+    const candidates = [key];
+    if (key.startsWith('Shift')) candidates.push('Shift');
+    if (key.startsWith('Control')) candidates.push('Control');
+    if (key === 'AltGr') candidates.push('Alt');
+    const result = [];
+    const seen = new Set();
+    for (const candidate of candidates) {
+      const ids = Array.isArray(KEY_PARAMETER_MAP[candidate]) ? KEY_PARAMETER_MAP[candidate] : [];
+      for (const rawId of ids) {
+        const id = String(rawId);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        result.push(id);
+      }
+    }
+    keyParameterIdCache.set(key, result);
+    return result;
+  }
+
+  function setFrameActiveIds(ids, active) {
+    if (!renderer || !Array.isArray(ids)) return;
+    for (const id of ids) renderer.setFrameActive(String(id), Boolean(active));
+  }
+
+  function syncModernKeyParameters(rawKey, pressed) {
+    if (!renderer) return;
+    const key = String(rawKey || '');
+    const wasPressed = state.modernPressed.has(key);
+    if (wasPressed === Boolean(pressed)) return;
+    if (pressed) state.modernPressed.add(key);
+    else state.modernPressed.delete(key);
+
+    // Keep a reference count per authored parameter. ShiftLeft/ShiftRight (and similar aliases)
+    // can target one Cubism parameter; releasing one source must not clear the other source.
+    for (const id of keyParameterIds(key)) {
+      const before = state.modernParameterCounts.get(id) || 0;
+      const after = Math.max(0, before + (pressed ? 1 : -1));
+      if (after > 0) state.modernParameterCounts.set(id, after);
+      else state.modernParameterCounts.delete(id);
+      if ((before > 0) !== (after > 0)) renderer.setFrameActive(id, after > 0);
+    }
+    setFrameActiveIds(KEYBOARD_DOWN_PARAMETER_IDS, state.modernPressed.size > 0);
+  }
+
+  const gamepadParameterIdCache = new Map();
+  const HAS_CONTROLLER_STICK_PARAMETERS = PARAMETER_DEFINITIONS.some((item) => {
+    const id = String((item && item.id) || '');
+    return id === 'CatParamStickLX' || id === 'CatParamStickLY'
+      || id === 'CatParamStickRX' || id === 'CatParamStickRY';
+  });
+
+  function normalizeControllerToken(raw) {
+    return String(raw || '').trim().toLowerCase().replace(/[\s_\-]/g, '');
+  }
+
+  function canonicalGamepadSemantic(raw) {
+    const token = normalizeControllerToken(raw);
+    if (['south', 'a', 'buttona', 'btna', 'cross'].includes(token)) return 'South';
+    if (['east', 'b', 'buttonb', 'btnb', 'circle'].includes(token)) return 'East';
+    if (['west', 'x', 'buttonx', 'btnx', 'square'].includes(token)) return 'West';
+    if (['north', 'y', 'buttony', 'btny', 'triangle'].includes(token)) return 'North';
+    if (['l1', 'lb', 'leftbumper', 'leftshoulder', 'lefttrigger'].includes(token)) return 'LeftTrigger';
+    if (['r1', 'rb', 'rightbumper', 'rightshoulder', 'righttrigger'].includes(token)) return 'RightTrigger';
+    if (['l2', 'lt', 'lefttrigger2'].includes(token)) return 'LeftTrigger2';
+    if (['r2', 'rt', 'righttrigger2'].includes(token)) return 'RightTrigger2';
+    if (['l3', 'ls', 'leftstick', 'leftstickclick', 'leftthumb'].includes(token)) return 'L3';
+    if (['r3', 'rs', 'rightstick', 'rightstickclick', 'rightthumb'].includes(token)) return 'R3';
+    if (['select', 'back', 'view'].includes(token)) return 'Select';
+    if (['start', 'menu', 'options'].includes(token)) return 'Start';
+    if (['mode', 'guide', 'home', 'ps'].includes(token)) return 'Mode';
+    if (['dpadup', 'up', 'hatup'].includes(token)) return 'DPadUp';
+    if (['dpaddown', 'down', 'hatdown'].includes(token)) return 'DPadDown';
+    if (['dpadleft', 'left', 'hatleft'].includes(token)) return 'DPadLeft';
+    if (['dpadright', 'right', 'hatright'].includes(token)) return 'DPadRight';
+    if (['m1', 'back1', 'paddle1'].includes(token)) return 'M1';
+    if (['m2', 'back2', 'paddle2'].includes(token)) return 'M2';
+    if (['m3', 'back3', 'paddle3'].includes(token)) return 'M3';
+    if (['m4', 'back4', 'paddle4'].includes(token)) return 'M4';
+    if (token === 'c') return 'C';
+    if (token === 'z') return 'Z';
+    return String(raw || '');
+  }
+
+  function gamepadSemanticAliases(raw) {
+    const canonical = canonicalGamepadSemantic(raw);
+    const aliases = {
+      South: ['South', 'A', 'ButtonA', 'BtnA', 'Cross'],
+      East: ['East', 'B', 'ButtonB', 'BtnB', 'Circle'],
+      West: ['West', 'X', 'ButtonX', 'BtnX', 'Square'],
+      North: ['North', 'Y', 'ButtonY', 'BtnY', 'Triangle'],
+      LeftTrigger: ['LeftTrigger', 'LeftShoulder', 'LeftBumper', 'L1', 'LB'],
+      RightTrigger: ['RightTrigger', 'RightShoulder', 'RightBumper', 'R1', 'RB'],
+      LeftTrigger2: ['LeftTrigger2', 'L2', 'LT'],
+      RightTrigger2: ['RightTrigger2', 'R2', 'RT'],
+      L3: ['L3', 'LS', 'LeftStick', 'LeftStickClick', 'LeftThumb'],
+      R3: ['R3', 'RS', 'RightStick', 'RightStickClick', 'RightThumb'],
+      Select: ['Select', 'Back', 'View'],
+      Start: ['Start', 'Menu', 'Options'],
+      Mode: ['Mode', 'Guide', 'Home', 'PS'],
+      DPadUp: ['DPadUp', 'Up', 'HatUp'],
+      DPadDown: ['DPadDown', 'Down', 'HatDown'],
+      DPadLeft: ['DPadLeft', 'Left', 'HatLeft'],
+      DPadRight: ['DPadRight', 'Right', 'HatRight'],
+      M1: ['M1', 'Back1', 'Paddle1'], M2: ['M2', 'Back2', 'Paddle2'],
+      M3: ['M3', 'Back3', 'Paddle3'], M4: ['M4', 'Back4', 'Paddle4'],
+      C: ['C'], Z: ['Z'],
+    };
+    return aliases[canonical] || [canonical];
+  }
+
+  function definitionMatchesGamepadSemantic(item, canonical) {
+    if (!item || !item.id) return false;
+    const id = normalizeControllerToken(item.id);
+    const name = normalizeControllerToken(item.name);
+    const group = normalizeControllerToken(item.group || item.groupId);
+    const combined = `${id}${name}${group}`;
+    const controllerContext = group.includes('手柄') || group.includes('控制器')
+      || group.includes('gamepad') || group.includes('controller') || group.includes('joystick')
+      || id.includes('gamepad') || id.includes('controller') || id.includes('joystick')
+      || id.includes('button') || id.includes('btn') || id.startsWith('catparamstick');
+    const bare = (values) => controllerContext && values.includes(name);
+    switch (canonical) {
+      case 'South': return combined.includes('buttona') || combined.includes('btna') || combined.includes('south') || combined.includes('cross') || bare(['a', '按键a', '按钮a']);
+      case 'East': return combined.includes('buttonb') || combined.includes('btnb') || combined.includes('east') || combined.includes('circle') || bare(['b', '按键b', '按钮b']);
+      case 'West': return combined.includes('buttonx') || combined.includes('btnx') || combined.includes('west') || combined.includes('square') || bare(['x', '按键x', '按钮x']);
+      case 'North': return combined.includes('buttony') || combined.includes('btny') || combined.includes('north') || combined.includes('triangle') || bare(['y', '按键y', '按钮y']);
+      case 'LeftTrigger': return combined.includes('leftbumper') || combined.includes('leftshoulder') || combined.includes('buttonl1') || combined.includes('btnl1') || combined.includes('左肩键') || bare(['l1', 'lb']);
+      case 'RightTrigger': return combined.includes('rightbumper') || combined.includes('rightshoulder') || combined.includes('buttonr1') || combined.includes('btnr1') || combined.includes('右肩键') || bare(['r1', 'rb']);
+      case 'LeftTrigger2': return combined.includes('lefttrigger2') || combined.includes('buttonl2') || combined.includes('btnl2') || combined.includes('左扳机') || combined.includes('左触发') || bare(['l2', 'lt']);
+      case 'RightTrigger2': return combined.includes('righttrigger2') || combined.includes('buttonr2') || combined.includes('btnr2') || combined.includes('右扳机') || combined.includes('右触发') || bare(['r2', 'rt']);
+      case 'L3': return combined.includes('leftstickdown') || combined.includes('leftstickclick') || combined.includes('buttonl3') || combined.includes('btnl3') || combined.includes('左摇杆按下') || bare(['l3', 'ls']);
+      case 'R3': return combined.includes('rightstickdown') || combined.includes('rightstickclick') || combined.includes('buttonr3') || combined.includes('btnr3') || combined.includes('右摇杆按下') || bare(['r3', 'rs']);
+      case 'DPadUp': return combined.includes('dpadup') || combined.includes('hatup') || combined.includes('十字键上') || combined.includes('方向键上');
+      case 'DPadDown': return combined.includes('dpaddown') || combined.includes('hatdown') || combined.includes('十字键下') || combined.includes('方向键下');
+      case 'DPadLeft': return combined.includes('dpadleft') || combined.includes('hatleft') || combined.includes('十字键左') || combined.includes('方向键左');
+      case 'DPadRight': return combined.includes('dpadright') || combined.includes('hatright') || combined.includes('十字键右') || combined.includes('方向键右');
+      case 'Select': return combined.includes('select') || combined.includes('buttonback') || combined.includes('view') || combined.includes('选择键');
+      case 'Start': return combined.includes('start') || combined.includes('menu') || combined.includes('options') || combined.includes('开始键');
+      case 'Mode': return combined.includes('guide') || combined.includes('mode') || combined.includes('home') || combined.includes('ps键');
+      case 'M1': return combined.includes('buttonm1') || combined.includes('btnm1') || combined.includes('back1') || combined.includes('paddle1') || bare(['m1']);
+      case 'M2': return combined.includes('buttonm2') || combined.includes('btnm2') || combined.includes('back2') || combined.includes('paddle2') || bare(['m2']);
+      case 'M3': return combined.includes('buttonm3') || combined.includes('btnm3') || combined.includes('back3') || combined.includes('paddle3') || bare(['m3']);
+      case 'M4': return combined.includes('buttonm4') || combined.includes('btnm4') || combined.includes('back4') || combined.includes('paddle4') || bare(['m4']);
+      default: return false;
+    }
+  }
+
+  function gamepadParameterIds(rawKey) {
+    const key = String(rawKey || '');
+    const cached = gamepadParameterIdCache.get(key);
+    if (cached) return cached;
+    const canonical = canonicalGamepadSemantic(key);
+    const result = [];
+    const seen = new Set();
+    for (const alias of gamepadSemanticAliases(canonical)) {
+      for (const rawId of (Array.isArray(KEY_PARAMETER_MAP[alias]) ? KEY_PARAMETER_MAP[alias] : [])) {
+        const id = String(rawId || '');
+        if (id && !seen.has(id)) { seen.add(id); result.push(id); }
+      }
+    }
+    // Old imported manifests can lack the canonical key map entirely. Re-scan the CDI-derived
+    // parameter definitions in the Web runtime so the user does not have to re-import the style.
+    for (const item of PARAMETER_DEFINITIONS) {
+      if (!definitionMatchesGamepadSemantic(item, canonical)) continue;
+      const id = String(item.id || '');
+      if (id && !seen.has(id)) { seen.add(id); result.push(id); }
+    }
+
+    // Some BongoCat "standard mode" packages (including 大月下) do not author dedicated
+    // ButtonA/ButtonB/... parameters. They switch the artwork into controller mode with a
+    // model-function parameter, keep CatParamStick* for analog motion, and deliberately reuse
+    // the keyboard A/B/X/Y parameters for the face buttons. Only enable this fallback when the
+    // model actually exposes controller-stick parameters, so ordinary keyboard models never
+    // reinterpret a physical gamepad A as keyboard A.
+    if (result.length === 0 && HAS_CONTROLLER_STICK_PARAMETERS) {
+      const keyboardFallback = {
+        South: 'KeyA', East: 'KeyB', West: 'KeyX', North: 'KeyY',
+        DPadUp: 'UpArrow', DPadDown: 'DownArrow',
+        DPadLeft: 'LeftArrow', DPadRight: 'RightArrow',
+      }[canonical];
+      if (keyboardFallback) {
+        for (const rawId of keyParameterIds(keyboardFallback)) {
+          const id = String(rawId || '');
+          if (id && !seen.has(id)) { seen.add(id); result.push(id); }
+        }
+      }
+    }
+    gamepadParameterIdCache.set(key, result);
+    return result;
+  }
+
+  function gamepadHandSide(rawKey) {
+    const key = canonicalGamepadSemantic(rawKey);
+    if (['DPadUp','DPadDown','DPadLeft','DPadRight','LeftTrigger','LeftTrigger2','L3','Select','M1','M3'].includes(key)) return 'left';
+    if (['South','East','West','North','C','Z','RightTrigger','RightTrigger2','R3','Start','Mode','M2','M4'].includes(key)) return 'right';
+    return '';
+  }
+
+  function isGamepadHandActive(side) {
+    for (const key of state.modernGamepadPressed) {
+      if (gamepadHandSide(key) === side) return true;
+    }
+    return false;
+  }
+
+  function syncModernGamepadParameters(rawKey, pressed) {
+    if (!renderer) return;
+    const key = canonicalGamepadSemantic(rawKey);
+    const wasPressed = state.modernGamepadPressed.has(key);
+    if (wasPressed === Boolean(pressed)) return;
+    if (pressed) state.modernGamepadPressed.add(key);
+    else state.modernGamepadPressed.delete(key);
+
+    // Share the parameter reference counter with keyboard semantics so two physical sources that
+    // intentionally target the same authored Cubism parameter cannot release each other early.
+    for (const id of gamepadParameterIds(key)) {
+      const before = state.modernParameterCounts.get(id) || 0;
+      const after = Math.max(0, before + (pressed ? 1 : -1));
+      if (after > 0) state.modernParameterCounts.set(id, after);
+      else state.modernParameterCounts.delete(id);
+      if ((before > 0) !== (after > 0)) renderer.setFrameActive(id, after > 0);
+    }
+  }
+
+  function applySavedParameterValues() {
+    if (!renderer) return;
+    for (const [id, raw] of Object.entries(SAVED_PARAMETER_VALUES)) {
+      const ratio = Number(raw);
+      if (!Number.isFinite(ratio)) continue;
+      renderer.setNormalizedOverride(String(id), Math.max(0, Math.min(1, ratio)));
+      state.parameterToggles.set(String(id), false);
+    }
+  }
+
+  function restoreSavedParameter(id) {
+    if (!renderer) return;
+    const parameterId = String(id || '');
+    if (Object.prototype.hasOwnProperty.call(SAVED_PARAMETER_VALUES, parameterId)) {
+      const ratio = Number(SAVED_PARAMETER_VALUES[parameterId]);
+      if (Number.isFinite(ratio)) {
+        renderer.setNormalizedOverride(parameterId, Math.max(0, Math.min(1, ratio)));
+        state.parameterToggles.set(parameterId, false);
+        return;
+      }
+    }
+    renderer.clearOverride(parameterId);
+    state.parameterToggles.set(parameterId, false);
+  }
+
+  function queueParameterSequence(ids) {
+    if (!renderer || !Array.isArray(ids)) return false;
+    const seen = new Set();
+    const unique = [];
+    for (const rawId of ids) {
+      const id = String(rawId || '');
+      if (!id || seen.has(id) || !renderer.range(id) || renderer.isParameterLocked(id)) continue;
+      seen.add(id);
+      unique.push(id);
+    }
+    if (!unique.length) return false;
+
+    // Cancel stale pulse/sequence restores for the same parameters. The previous implementation
+    // filtered by the *new* generation id (which could never match old events), so repeatedly
+    // triggering a transformation could let an old restore event interrupt the new sequence.
+    const affected = new Set(unique);
+    state.parameterSequenceEvents = state.parameterSequenceEvents.filter((item) => !affected.has(item.id));
+    for (const id of unique) {
+      state.parameterPulseUntil.delete(id);
+      state.parameterPreviewRestoreToggle.delete(id);
+      restoreSavedParameter(id);
+    }
+
+    const now = performance.now();
+    const generation = ++state.parameterSequenceGeneration;
+    unique.forEach((id, index) => {
+      state.parameterSequenceEvents.push({ at: now + index * 90, id, active: true, generation });
+    });
+    const restoreAt = now + Math.max(620, unique.length * 90 + 360);
+    unique.forEach((id) => {
+      state.parameterSequenceEvents.push({ at: restoreAt, id, active: false, generation });
+    });
+    return true;
+  }
+
+  function processParameterSequences(now) {
+    if (!renderer || !state.parameterSequenceEvents.length) return;
+    const events = state.parameterSequenceEvents;
+    let write = 0;
+    for (let read = 0; read < events.length; read++) {
+      const event = events[read];
+      if (now < event.at) {
+        events[write++] = event;
+        continue;
+      }
+      if (event.active) {
+        renderer.setNormalizedOverride(event.id, 1);
+        state.parameterToggles.set(event.id, true);
+      } else {
+        restoreSavedParameter(event.id);
+      }
+    }
+    events.length = write;
+  }
+
+  function triggerParameter(id, mode, pressed) {
+    if (!renderer) return false;
+    const parameterId = String(id || '');
+    if (!renderer.range(parameterId) || renderer.isParameterLocked(parameterId)) return false;
+    const trigger = String(mode || 'toggle').toLowerCase();
+    state.parameterPreviewRestoreToggle.delete(parameterId);
+    if (trigger === 'hold') {
+      if (pressed) {
+        state.parameterPulseUntil.delete(parameterId);
+        state.parameterSequenceEvents = state.parameterSequenceEvents.filter((event) => event.id !== parameterId);
+        renderer.setNormalizedOverride(parameterId, 1);
+        state.parameterToggles.set(parameterId, true);
+      } else {
+        restoreSavedParameter(parameterId);
+      }
+      return true;
+    }
+    if (!pressed) return true;
+    if (trigger === 'pulse') {
+      state.parameterSequenceEvents = state.parameterSequenceEvents.filter((event) => event.id !== parameterId);
+      renderer.setNormalizedOverride(parameterId, 1);
+      state.parameterToggles.set(parameterId, true);
+      state.parameterPulseUntil.set(parameterId, performance.now() + 520);
+      return true;
+    }
+    if (trigger === 'sequence') return queueParameterSequence([parameterId]);
+    state.parameterPulseUntil.delete(parameterId);
+    state.parameterSequenceEvents = state.parameterSequenceEvents.filter((event) => event.id !== parameterId);
+    const next = !Boolean(state.parameterToggles.get(parameterId));
+    if (next) {
+      state.parameterToggles.set(parameterId, true);
+      renderer.setNormalizedOverride(parameterId, 1);
+    } else {
+      restoreSavedParameter(parameterId);
+    }
+    return true;
+  }
+
+  /**
+   * UI-only model action preview. Parameter actions are always pulsed so pressing "Test"
+   * cannot leave a toggle latched or require a synthetic key-up later. Runtime hotkeys still use
+   * triggerModelFunction() and preserve their authored hold/toggle/pulse/sequence semantics.
+   */
+  function previewModelFunction(token, mode) {
+    const raw = String(token || '');
+    if (raw.startsWith('param:')) {
+      const id = raw.slice(6);
+      if (!renderer || !renderer.range(id) || renderer.isParameterLocked(id)) return false;
+      const trigger = String(mode || 'toggle').toLowerCase();
+      if (trigger === 'sequence') return queueParameterSequence([id]);
+      state.parameterSequenceEvents = state.parameterSequenceEvents.filter((event) => event.id !== id);
+      state.parameterPreviewRestoreToggle.set(id, Boolean(state.parameterToggles.get(id)));
+      if (!renderer.setNormalizedOverride(id, 1)) {
+        state.parameterPreviewRestoreToggle.delete(id);
+        return false;
+      }
+      state.parameterToggles.set(id, true);
+      state.parameterPulseUntil.set(id, performance.now() + 900);
+      return true;
+    }
+    if (raw.startsWith('sequence:')) {
+      return queueParameterSequence(groupedSequenceParameterIds(raw.slice(9)));
+    }
+    return triggerModelFunction(raw, mode, true);
+  }
+
+  function groupedSequenceParameterIds(groupKey) {
+    return functionGroupParameterIds.get(String(groupKey || '')) || [];
+  }
+
+  function clampPhysicsStrength(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(2, parsed)) : 1;
+  }
+
+  function normalizePhysicsControls(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const groupsIn = source.groups && typeof source.groups === 'object' ? source.groups : {};
+    const groups = Object.create(null);
+    for (const key of Object.keys(groupsIn)) {
+      const item = groupsIn[key] && typeof groupsIn[key] === 'object' ? groupsIn[key] : {};
+      groups[String(key)] = {
+        enabled: item.enabled !== false,
+        strength: clampPhysicsStrength(item.strength),
+      };
+    }
+    return {
+      globalStrength: clampPhysicsStrength(source.globalStrength),
+      groups,
+    };
+  }
+
+  function buildPhysicsGroupKeys(physics) {
+    const settings = physics && Array.isArray(physics.PhysicsSettings) ? physics.PhysicsSettings : [];
+    const seen = new Set();
+    const result = [];
+    for (let i = 0; i < settings.length; i++) {
+      const setting = settings[i] || {};
+      const id = String(setting.Id || setting.id || '').trim();
+      const name = String(setting.Name || setting.name || '').trim();
+      let key = id || name || `physics-${i}`;
+      if (seen.has(key)) key = `${key}#${i}`;
+      seen.add(key);
+      result.push(key);
+    }
+    return result;
+  }
+
+  function physicsControlFor(index) {
+    const key = PHYSICS_GROUP_KEYS[index] || `physics-${index}`;
+    const item = physicsControls.groups[key];
+    return {
+      key,
+      enabled: !item || item.enabled !== false,
+      strength: item ? clampPhysicsStrength(item.strength) : 1,
+    };
+  }
+
+  function physicsEnabledTopologyChanged(previous, next) {
+    for (const key of PHYSICS_GROUP_KEYS) {
+      const before = previous && previous.groups ? previous.groups[key] : null;
+      const after = next && next.groups ? next.groups[key] : null;
+      const beforeEnabled = !before || before.enabled !== false;
+      const afterEnabled = !after || after.enabled !== false;
+      if (beforeEnabled !== afterEnabled) return true;
+    }
+    return false;
+  }
+
+  function beginTemporaryExpression(kind, index) {
+    if (state.functionExpressionUntil <= 0) {
+      state.functionExpressionRestoreKind = state.debugExpressionKind;
+      state.functionExpressionRestoreIndex = state.debugExpressionIndex;
+      state.functionExpressionRestoreStartedAt = state.debugExpressionStartedAt;
+    }
+    state.debugExpressionKind = kind;
+    state.debugExpressionIndex = index;
+    state.debugExpressionStartedAt = performance.now();
+    state.functionExpressionUntil = performance.now() + 1400;
+  }
+
+  function triggerModelFunction(token, mode, pressed) {
+    const raw = String(token || '');
+    if (raw.startsWith('param:')) return triggerParameter(raw.slice(6), mode, pressed);
+    if (!pressed) return true;
+    if (raw.startsWith('sequence:')) {
+      return queueParameterSequence(groupedSequenceParameterIds(raw.slice(9)));
+    }
+    if (raw.startsWith('expression:')) {
+      const index = Number(raw.slice(11)) | 0;
+      if (index < 0 || index >= MVER_EXPRESSIONS.length) return false;
+      beginTemporaryExpression('live2d', index);
+      return true;
+    }
+    if (raw.startsWith('face:')) {
+      const index = Number(raw.slice(5)) | 0;
+      if (!IS_MVER || index < 0) return false;
+      beginTemporaryExpression('face', index);
+      syncMverFaceAndExpressions();
+      return true;
+    }
+    if (raw.startsWith('motion:')) {
+      const index = Number(raw.slice(7)) | 0;
+      startMverMotion(index, false);
+      return index >= 0 && index < MVER_MOTIONS.length;
+    }
+    return false;
+  }
 
   window.AxonBongoCat = {
     key(key, pressed) {
       state.inputCount += 1;
       state.lastInput = `key:${String(key || '')}:${Boolean(pressed)}`;
+      syncModernKeyParameters(String(key || ''), Boolean(pressed));
       if (IS_MVER) {
         setMverKey(String(key || ''), Boolean(pressed), false);
         return;
@@ -1307,8 +1902,22 @@
     },
 
     gamepadButton(name, pressed) {
-      if (IS_MVER) return;
-      const value = resolveSupportedKey(String(name || ''));
+      const semantic = canonicalGamepadSemantic(String(name || ''));
+      state.inputCount += 1;
+      state.lastInput = `gamepad:${semantic}:${Boolean(pressed)}`;
+      // Always feed Cubism parameters, including Mver-derived Live2D packages. Older builds
+      // returned early for IS_MVER, which made sticks appear functional while every digital
+      // controller button was silently discarded.
+      syncModernGamepadParameters(semantic, Boolean(pressed));
+      // Always update generic hand fallback before looking for optional raster button overlays.
+      // The previous early return meant controller-mode Live2D packages with no South.png etc.
+      // received the button edge internally but showed no visible hand movement.
+      syncHandOverrides();
+      if (IS_MVER) {
+        setMverKey(semantic, Boolean(pressed), true);
+        return;
+      }
+      const value = resolveSupportedKey(semantic);
       if (!value) return;
       const side = keySide(value);
       if (!side) return;
@@ -1325,8 +1934,13 @@
     },
 
     gamepadAxes(lx, ly, rx, ry, leftDown, rightDown) {
-      if (IS_MVER) return;
-      if (!renderer || STYLE_MODE !== 'gamepad') return;
+      if (!renderer) return;
+      // Hybrid community models can expose a normal/keyboard skin and switch to controller mode
+      // through a model function. Do not gate stick input solely on the imported style label when
+      // the Cubism model itself contains stick parameters.
+      const hasStickParameters = ['CatParamStickLX', 'CatParamStickLY', 'CatParamStickRX', 'CatParamStickRY']
+        .some((id) => Boolean(renderer.range(id)));
+      if (STYLE_MODE !== 'gamepad' && !hasStickParameters) return;
       const values = [
         ['CatParamStickLX', Number(lx) || 0], ['CatParamStickLY', Number(ly) || 0],
         ['CatParamStickRX', Number(rx) || 0], ['CatParamStickRY', Number(ry) || 0],
@@ -1373,17 +1987,81 @@
       state.pointerActive = true;
     },
 
-    setDebugExpression(kind, index) {
+    setModelParameter(id, normalized) {
+      if (!renderer) return false;
+      const parameterId = String(id || '');
+      const ratio = Math.max(0, Math.min(1, Number(normalized) || 0));
+      // A manual debug adjustment becomes the new authoritative baseline. Cancel any
+      // older pulse/sequence restore for this parameter first so it cannot snap the
+      // slider back a few frames later.
+      state.parameterPulseUntil.delete(parameterId);
+      state.parameterPreviewRestoreToggle.delete(parameterId);
+      state.parameterSequenceEvents = state.parameterSequenceEvents.filter((event) => event.id !== parameterId);
+      state.parameterToggles.set(parameterId, false);
+      if (!renderer.setNormalizedOverride(parameterId, ratio)) return false;
+      SAVED_PARAMETER_VALUES[parameterId] = ratio;
+      return true;
+    },
+
+    resetModelParameter(id) {
+      const parameterId = String(id || '');
+      delete SAVED_PARAMETER_VALUES[parameterId];
+      state.parameterToggles.delete(parameterId);
+      state.parameterPulseUntil.delete(parameterId);
+      state.parameterPreviewRestoreToggle.delete(parameterId);
+      state.parameterSequenceEvents = state.parameterSequenceEvents.filter((event) => event.id !== parameterId);
+      if (renderer) renderer.clearOverride(parameterId);
+    },
+
+    setParameterLock(id, normalized) {
+      if (!renderer) return false;
+      return renderer.setNormalizedLock(String(id || ''), normalized);
+    },
+
+    clearParameterLock(id) {
+      if (!renderer) return false;
+      return renderer.clearLock(String(id || ''));
+    },
+
+    parameterDebug(id) {
+      return renderer ? renderer.parameterDebug(String(id || '')) : null;
+    },
+
+    triggerModelFunction(token, mode, pressed) {
+      return triggerModelFunction(token, mode, Boolean(pressed));
+    },
+
+    testModelFunction(token, mode) {
+      return previewModelFunction(token, mode);
+    },
+
+    modelCapabilities() {
+      return {
+        parameters: PARAMETER_DEFINITIONS,
+        expressions: MVER_EXPRESSIONS.length,
+        motions: MVER_MOTIONS.map((item, index) => ({ index, name: String(item && item.name || `motion-${index}`) })),
+        physics: Boolean(MVER_PHYSICS),
+        keyParameters: Object.keys(KEY_PARAMETER_MAP).length,
+      };
+    },
+
+    setDebugExpression(kind, index, weight = 1) {
+      state.functionExpressionUntil = 0;
+      state.functionExpressionRestoreKind = 'auto';
+      state.functionExpressionRestoreIndex = -1;
+      state.functionExpressionRestoreStartedAt = 0;
       const normalized = String(kind || 'auto').toLowerCase();
       const parsedIndex = Math.max(-1, Number(index) | 0);
       if ((normalized === 'live2d' || normalized === 'face') && parsedIndex >= 0) {
         state.debugExpressionKind = normalized;
         state.debugExpressionIndex = parsedIndex;
         state.debugExpressionStartedAt = performance.now();
+        state.debugExpressionWeight = Math.max(0, Math.min(1, Number(weight) || 0));
       } else {
         state.debugExpressionKind = 'auto';
         state.debugExpressionIndex = -1;
         state.debugExpressionStartedAt = 0;
+        state.debugExpressionWeight = 1;
       }
       if (IS_MVER) syncMverFaceAndExpressions();
     },
@@ -1426,17 +2104,53 @@
       if (renderer) renderer.resize();
     },
 
+    setRenderQuality(mode) {
+      const next = String(mode || '').toLowerCase() === 'clear' ? 'clear' : 'normal';
+      const nextCap = next === 'clear' ? RENDER_DPR_CAP_CLEAR : RENDER_DPR_CAP_NORMAL;
+      if (renderQuality === next && Math.abs(renderDprCap - nextCap) < 0.001) return;
+      renderQuality = next;
+      renderDprCap = nextCap;
+      if (renderer) renderer.resize();
+    },
+
+    triggerPhysicsGroupAction(groupKey, magnitude = 1) {
+      return renderer && typeof renderer.triggerPhysicsGroupAction === 'function'
+        ? renderer.triggerPhysicsGroupAction(String(groupKey || ''), magnitude)
+        : false;
+    },
+
+    setPhysicsControls(value) {
+      const next = normalizePhysicsControls(value);
+      const resetParticles = physicsEnabledTopologyChanged(physicsControls, next);
+      physicsControls = next;
+      if (renderer && typeof renderer.invalidatePhysicsControlState === 'function') {
+        // Strength drags keep particle continuity; only enable/disable topology changes rebuild
+        // particle state to prevent a long-disabled group from jumping when it is turned back on.
+        renderer.invalidatePhysicsControlState(resetParticles);
+      }
+      return true;
+    },
+
     clear() {
       state.leftKey = null;
       state.rightKey = null;
       state.mverPressed.clear();
+      state.modernPressed.clear();
+      state.modernGamepadPressed.clear();
+      state.modernParameterCounts.clear();
       nativePolledKeys.clear();
+      lastNativeKeySnapshot = '';
+      nextNativeKeyReconcileAt = 0;
       state.mverPressOrder = [];
       state.mverLx = state.mverLy = state.mverRx = state.mverRy = 0;
       state.mverL3 = state.mverR3 = false;
       state.mverLatchedFaceIndex = -1;
       state.mverExpressionIndex = -1;
       state.mverExpressionStartedAt = 0;
+      state.debugExpressionKind = 'auto';
+      state.debugExpressionIndex = -1;
+      state.debugExpressionStartedAt = 0;
+      state.debugExpressionWeight = 1;
       state.mverBindingStates.clear();
       state.mverBindingOrder.clear();
       state.mverBindingSequence = 0;
@@ -1444,6 +2158,14 @@
       state.mverMotionIndex = -1;
       state.mverMotionStartedAt = 0;
       state.mverMotionLockHand = false;
+      state.parameterPulseUntil.clear();
+      state.parameterPreviewRestoreToggle.clear();
+      state.parameterSequenceEvents = [];
+      state.parameterSequenceGeneration += 1;
+      state.functionExpressionUntil = 0;
+      state.functionExpressionRestoreKind = 'auto';
+      state.functionExpressionRestoreIndex = -1;
+      state.functionExpressionRestoreStartedAt = 0;
       stopAllMverSounds();
       state.mouseButtons = 0;
       state.mouseVisualButtons = 0;
@@ -1466,6 +2188,7 @@
       if (renderer) {
         renderer.clearOverrides();
         if (IS_MVER) renderer.resetDrag();
+        applySavedParameterValues();
         syncHandOverrides();
       }
     },
@@ -1478,6 +2201,7 @@
         mver: IS_MVER,
         useLive2d: MVER_USE_LIVE2D,
         runtimeError: state.runtimeError,
+        staticFallback: state.staticFallback,
         inputCount: state.inputCount,
         lastInput: state.lastInput,
         pressed: Array.from(state.mverPressed),
@@ -1492,8 +2216,45 @@
         baseLayerZ: MVER_BASE_LAYER_Z,
         fullFrameOffset: [MVER_FULLFRAME_OFFSET_X, MVER_FULLFRAME_OFFSET_Y],
         parameterCount: renderer ? renderer.parameters.count : 0,
+        discoveredParameters: PARAMETER_DEFINITIONS.length,
+        discoveredKeySemantics: Object.keys(KEY_PARAMETER_MAP).length,
+        physicsSettings: MVER_PHYSICS && Array.isArray(MVER_PHYSICS.PhysicsSettings) ? MVER_PHYSICS.PhysicsSettings.length : 0,
+        sequenceQueue: state.parameterSequenceEvents.length,
         webgl: renderer ? renderer.glInfo : '',
+        maxTextureSize: renderer ? renderer.maxTextureSize : 0,
+        drawableColorStats: renderer ? renderer.drawableColorStats : null,
+        rendererCompatibility: renderer ? {
+          premultipliedAlpha: true,
+          alphaBlendSeparate: true,
+          softMaskFramebuffer: Boolean(renderer.maskFramebuffer && renderer.maskFramebufferUsable),
+          maskFramebufferUsable: renderer.maskFramebufferUsable,
+          maskSize: [renderer.maskWidth || 0, renderer.maskHeight || 0],
+          textureDiagnostics: renderer.textureDiagnostics,
+        } : null,
+        renderQuality,
+        renderDprCap,
+        renderDprCapNormal: RENDER_DPR_CAP_NORMAL,
+        renderDprCapClear: RENDER_DPR_CAP_CLEAR,
+        textureEstimatedRgbaBytes: TEXTURE_ESTIMATED_RGBA_BYTES,
+        physicsActiveFps: PHYSICS_ACTIVE_FPS,
+        physicsIdleFps: PHYSICS_IDLE_FPS,
+        physicsGlobalStrength: physicsControls.globalStrength,
+        physicsGroupControls: physicsControls.groups,
+        physicsGroupKeys: PHYSICS_GROUP_KEYS,
+        paused: runtimePaused,
       };
+    },
+
+    pause() {
+      pauseRuntime();
+    },
+
+    resume() {
+      resumeRuntime();
+    },
+
+    dispose() {
+      disposeRuntime();
     },
 
     isReady() {
@@ -1511,12 +2272,21 @@
     pose: Boolean(LIVE2D_POSE),
     eyeBlinkIds: LIVE2D_EYE_BLINK_IDS.length,
   });
-  function reconcileNativeHeldKeys() {
-    if (!IS_MVER || !window.AxonNativeInput
+  let nextNativeKeyReconcileAt = 0;
+  let lastNativeKeySnapshot = '';
+
+  function reconcileNativeHeldKeys(now) {
+    if (!IS_MVER || now < nextNativeKeyReconcileAt || !window.AxonNativeInput
       || typeof window.AxonNativeInput.snapshotKeys !== 'function') return;
-    let snapshot;
-    try { snapshot = JSON.parse(String(window.AxonNativeInput.snapshotKeys() || '{}')); }
+    nextNativeKeyReconcileAt = now + NATIVE_KEY_RECONCILE_INTERVAL_MS;
+    let raw;
+    try { raw = String(window.AxonNativeInput.snapshotKeys() || '{}'); }
     catch (_) { return; }
+    if (raw === lastNativeKeySnapshot) return;
+    lastNativeKeySnapshot = raw;
+
+    let snapshot;
+    try { snapshot = JSON.parse(raw); } catch (_) { return; }
     const keys = new Set(Array.isArray(snapshot.keys) ? snapshot.keys.map(String) : []);
     for (const key of nativePolledKeys) {
       if (!keys.has(key)) setMverKey(key, false, false);
@@ -1533,35 +2303,70 @@
   }
 
   function updatePointer(deltaMs) {
-    if (!state.pointerActive || (!renderer && !IS_MVER)) return;
-    const alpha = 1 - DAMPING_DECAY ** (deltaMs / (1000 / 60));
+    if (!state.pointerActive || (!renderer && !IS_MVER)) return false;
     const dx = state.targetX - state.cursorX;
     const dy = state.targetY - state.cursorY;
-
-    if (Math.hypot(dx, dy) < 0.0001) {
+    // Once the damped pointer has settled, its renderer inputs and Mver arm geometry are already
+    // persistent. Do not redraw the arm / rewrite parameter maps forever while the mouse is idle.
+    if (dx * dx + dy * dy < 1e-8) {
+      if (state.cursorX === state.targetX && state.cursorY === state.targetY) return false;
       state.cursorX = state.targetX;
       state.cursorY = state.targetY;
     } else {
+      const alpha = 1 - DAMPING_DECAY ** (deltaMs / (1000 / 60));
       state.cursorX += dx * alpha;
       state.cursorY += dy * alpha;
     }
     if (renderer) applyPointerOverrides(state.cursorX, state.cursorY);
     if (IS_MVER) syncMverMouseVisual();
+    return true;
   }
 
   function tick(now) {
-    animationHandle = requestAnimationFrame(tick);
+    animationHandle = 0;
+    if (runtimeDisposed || runtimePaused) return;
+    // A modern imported model that fell back to its static cover has no live work left to do.
+    // Stop the RAF loop entirely instead of waking WebView 60/120 times per second forever.
+    if (state.staticFallback && !IS_MVER && !renderer) return;
+    scheduleAnimation();
     if (!renderer && !IS_MVER) return;
     if (lastFrameTime && now - lastFrameTime < FRAME_INTERVAL - 0.5) return;
 
     const deltaMs = Math.min(100, Math.max(0.1, lastFrameTime ? now - lastFrameTime : FRAME_INTERVAL));
     lastFrameTime = now;
-    reconcileNativeHeldKeys();
-    updatePointer(deltaMs);
-    updateMouseButtonVisual(now);
-    if (IS_MVER) {
-      updateMverMotionLifetime(now);
-      syncMverMouseVisual();
+    reconcileNativeHeldKeys(now);
+    const mouseVisualChanged = updateMouseButtonVisual(now);
+    const pointerChanged = updatePointer(deltaMs);
+    updateMverMotionLifetime(now);
+    if (IS_MVER && mouseVisualChanged && !pointerChanged) syncMverMouseVisual();
+    processParameterSequences(now);
+    if (renderer && state.parameterPulseUntil.size) {
+      for (const [id, until] of state.parameterPulseUntil) {
+        if (now < until) continue;
+        state.parameterPulseUntil.delete(id);
+        if (state.parameterPreviewRestoreToggle.has(id)) {
+          const wasToggled = Boolean(state.parameterPreviewRestoreToggle.get(id));
+          state.parameterPreviewRestoreToggle.delete(id);
+          if (wasToggled) {
+            renderer.setNormalizedOverride(id, 1);
+            state.parameterToggles.set(id, true);
+          } else {
+            restoreSavedParameter(id);
+          }
+        } else {
+          restoreSavedParameter(id);
+        }
+      }
+    }
+    if (state.functionExpressionUntil > 0 && now >= state.functionExpressionUntil) {
+      state.functionExpressionUntil = 0;
+      state.debugExpressionKind = state.functionExpressionRestoreKind;
+      state.debugExpressionIndex = state.functionExpressionRestoreIndex;
+      state.debugExpressionStartedAt = state.functionExpressionRestoreStartedAt;
+      state.functionExpressionRestoreKind = 'auto';
+      state.functionExpressionRestoreIndex = -1;
+      state.functionExpressionRestoreStartedAt = 0;
+      if (IS_MVER) syncMverFaceAndExpressions();
     }
     if (renderer) {
       renderer.setEyeBlink(eyeBlinkValue(now));
@@ -1705,10 +2510,24 @@
       this.drawables = model.drawables;
       this.parameters = model.parameters;
       this.canvasInfo = model.canvasinfo;
+      this.drawableColorStats = this.measureDrawableColorUsage();
+      // Renderer compatibility state is shared by standalone Live2D and imported keyboard-cat
+      // models. Keep diagnostics in the renderer so model-specific white/black failures can be
+      // separated from WebView/window failures without adding user-facing debug toggles.
+      this.missingTextureDrawables = new Set();
+      this.maskFramebuffer = null;
+      this.maskTexture = null;
+      this.maskWidth = 0;
+      this.maskHeight = 0;
+      this.maskFramebufferUsable = true;
+      this.lastMaskKey = '';
+      this.textureDiagnostics = { uploaded: 0, mipmapped: 0, missingDrawableTextures: 0 };
       this.paramIndex = new Map();
       this.paramRanges = new Map();
       this.overrides = new Map();
+      this.locks = new Map();
       this.frameInputs = new Map();
+      this.motionTouchedParameters = new Set();
       // Camera results arrive at ~15-25 Hz. Keep targets separate from rendered values so the
       // 60 Hz Cubism loop interpolates them instead of visibly stepping every camera frame.
       this.trackingTargets = new Map();
@@ -1747,11 +2566,26 @@
         // allocating a fresh [min,max] array for every alias on every frame.
         this.paramRanges.set(id, [this.parameters.minimumValues[i], this.parameters.maximumValues[i]]);
       }
+      for (const [id, normalized] of Object.entries(PARAMETER_LOCKS)) {
+        const index = this.paramIndex.get(String(id));
+        if (index === undefined) continue;
+        const ratio = Math.max(0, Math.min(1, Number(normalized) || 0));
+        const min = this.parameters.minimumValues[index];
+        const max = this.parameters.maximumValues[index];
+        this.locks.set(index, min + (max - min) * ratio);
+      }
       this.partIndex = new Map();
       if (model.parts && model.parts.ids) {
         for (let i = 0; i < model.parts.count; i++) this.partIndex.set(String(model.parts.ids[i]), i);
       }
       this.physicsStates = this.createPhysicsStates();
+      this.physicsOutputIndices = this.createPhysicsOutputIndices();
+      this.physicsOutputDeltas = new Map();
+      this.physicsAccumulator = 0;
+      // Short user-triggered impulses keep Physics on the active cadence while the authored
+      // particle chain settles. This is an action, not an enable/disable toggle.
+      this.physicsActionUntil = 0;
+      this.physicsActionSequence = 0;
       this.poseState = this.createPoseState();
 
       const contextOptions = {
@@ -1765,6 +2599,7 @@
         || canvas.getContext('experimental-webgl', contextOptions);
       if (!gl) throw new Error('WebGL unavailable');
       this.gl = gl;
+      this.maxTextureSize = Math.max(1, Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 4096);
       const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
       this.glInfo = debugInfo
         ? `${gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)} / ${gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)}`
@@ -1776,8 +2611,115 @@
       this.positionBuffer = gl.createBuffer();
       this.uvBuffer = gl.createBuffer();
       this.indexBuffer = gl.createBuffer();
+      this.boundResize = () => this.resize();
       this.resize();
-      addEventListener('resize', () => this.resize(), { passive: true });
+      addEventListener('resize', this.boundResize, { passive: true });
+    }
+
+    measureDrawableColorUsage() {
+      const d = this.drawables;
+      let multiply = 0;
+      let screen = 0;
+      let authored = 0;
+      for (let i = 0; i < d.count; i++) {
+        const base = i * 4;
+        const m = d.multiplyColors;
+        const sc = d.screenColors;
+        const hasMultiply = Boolean(m) && (
+          Math.abs((Number(m[base]) || 0) - 1) > 0.00001
+          || Math.abs((Number(m[base + 1]) || 0) - 1) > 0.00001
+          || Math.abs((Number(m[base + 2]) || 0) - 1) > 0.00001
+        );
+        const hasScreen = Boolean(sc) && (
+          Math.abs(Number(sc[base]) || 0) > 0.00001
+          || Math.abs(Number(sc[base + 1]) || 0) > 0.00001
+          || Math.abs(Number(sc[base + 2]) || 0) > 0.00001
+        );
+        if (hasMultiply) multiply++;
+        if (hasScreen) screen++;
+        if (hasMultiply || hasScreen) authored++;
+      }
+      let masked = 0;
+      let additive = 0;
+      let multiplicative = 0;
+      const utils = this.core && this.core.Utils ? this.core.Utils : {};
+      for (let i = 0; i < d.count; i++) {
+        if (Number(d.maskCounts && d.maskCounts[i]) > 0) masked++;
+        const flags = d.constantFlags ? d.constantFlags[i] : 0;
+        if (typeof utils.hasBlendAdditiveBit === 'function' && utils.hasBlendAdditiveBit(flags)) additive++;
+        if (typeof utils.hasBlendMultiplicativeBit === 'function' && utils.hasBlendMultiplicativeBit(flags)) multiplicative++;
+      }
+      const stats = { drawableCount: d.count, authored, multiply, screen, masked, additive, multiplicative };
+      console.info('[AxonBongoCat] drawable color pipeline', JSON.stringify(stats));
+      return stats;
+    }
+
+    readDrawableColor(colors, drawableIndex, identity) {
+      const fallback = identity || [1, 1, 1, 1];
+      const base = drawableIndex * 4;
+      const clamp = (value, defaultValue) => {
+        const number = Number(value);
+        return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : defaultValue;
+      };
+      // Cubism Core 4.2/5 exposes a flat Float32Array. A few wrapped Core builds expose vectors;
+      // accept both so an unexpected wrapper cannot turn the default multiply color into black.
+      if (colors && colors.length >= base + 4 && Number.isFinite(Number(colors[base]))) {
+        return [
+          clamp(colors[base], fallback[0]),
+          clamp(colors[base + 1], fallback[1]),
+          clamp(colors[base + 2], fallback[2]),
+          clamp(colors[base + 3], fallback[3]),
+        ];
+      }
+      const item = colors && colors[drawableIndex];
+      if (item && typeof item === 'object') {
+        return [
+          clamp(item.R ?? item.r ?? item.X ?? item.x ?? item[0], fallback[0]),
+          clamp(item.G ?? item.g ?? item.Y ?? item.y ?? item[1], fallback[1]),
+          clamp(item.B ?? item.b ?? item.Z ?? item.z ?? item[2], fallback[2]),
+          clamp(item.A ?? item.a ?? item.W ?? item.w ?? item[3], fallback[3]),
+        ];
+      }
+      return fallback.slice();
+    }
+
+    drawableOpacity(drawableIndex) {
+      const value = Number(this.drawables.opacities && this.drawables.opacities[drawableIndex]);
+      return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+    }
+
+    drawableTexture(drawableIndex) {
+      const index = Number(this.drawables.textureIndices && this.drawables.textureIndices[drawableIndex]);
+      if (!Number.isInteger(index) || index < 0 || index >= this.textures.length || !this.textures[index]) {
+        if (!this.missingTextureDrawables.has(drawableIndex)) {
+          this.missingTextureDrawables.add(drawableIndex);
+          this.textureDiagnostics.missingDrawableTextures = this.missingTextureDrawables.size;
+          console.error('[AxonBongoCat] drawable references missing texture', JSON.stringify({ drawableIndex, textureIndex: index, uploaded: this.textures.length }));
+        }
+        return null;
+      }
+      return this.textures[index];
+    }
+
+    async loadTexturesSequentially(urls) {
+      this.textures.length = 0;
+      let uploadedBytes = 0;
+      for (let i = 0; i < urls.length; i++) {
+        if (runtimeDisposed) throw new Error('runtime disposed during texture load');
+        const image = await loadImage(urls[i]);
+        const width = Math.max(0, Number(image.naturalWidth || image.width) || 0);
+        const height = Math.max(0, Number(image.naturalHeight || image.height) || 0);
+        this.textures.push(this.createTexture(image));
+        uploadedBytes += width * height * 4;
+        // Release decoded DOM pixels immediately. Large community models otherwise hold the decoded
+        // bitmap and WebGL copy at the same time until GC, doubling peak memory during startup.
+        try { image.onload = image.onerror = null; image.src = ''; } catch (_) {}
+        if ((i + 1) % TEXTURE_UPLOAD_YIELD_EVERY === 0) {
+          try { this.gl.flush(); } catch (_) {}
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      console.info('[AxonBongoCat] texture upload complete', JSON.stringify({ count: urls.length, uploadedBytes, estimatedBytes: TEXTURE_ESTIMATED_RGBA_BYTES }));
     }
 
     createProgram(mask) {
@@ -1786,13 +2728,16 @@
         attribute vec2 aPosition;
         attribute vec2 aUv;
         varying vec2 vUv;
+        varying vec2 vScreenUv;
         uniform vec4 uCanvas;
         uniform vec2 uViewport;
         void main() {
           float px = uCanvas.x + aPosition.x * uCanvas.z;
           float py = uCanvas.y - aPosition.y * uCanvas.z;
-          gl_Position = vec4(px / uCanvas.w * 2.0 - 1.0, 1.0 - py / uViewport.y * 2.0, 0.0, 1.0);
+          vec4 position = vec4(px / uCanvas.w * 2.0 - 1.0, 1.0 - py / uViewport.y * 2.0, 0.0, 1.0);
+          gl_Position = position;
           vUv = aUv;
+          vScreenUv = position.xy * 0.5 + 0.5;
         }
       `;
       const fragment = mask ? `
@@ -1800,16 +2745,38 @@
         varying vec2 vUv;
         uniform sampler2D uTexture;
         void main() {
-          if (texture2D(uTexture, vUv).a < 0.01) discard;
-          gl_FragColor = vec4(1.0);
+          // Cubism clipping masks are alpha masks. Do not apply Multiply/Screen color here:
+          // current Cubism Web Framework intentionally keeps drawable colors out of mask setup.
+          float a = texture2D(uTexture, vUv).a;
+          if (a < 0.001) discard;
+          gl_FragColor = vec4(a, a, a, a);
         }
       ` : `
         precision mediump float;
         varying vec2 vUv;
+        varying vec2 vScreenUv;
         uniform sampler2D uTexture;
+        uniform sampler2D uMaskTexture;
         uniform float uOpacity;
+        uniform float uUseMask;
+        uniform float uMaskInverted;
+        uniform vec4 uMultiplyColor;
+        uniform vec4 uScreenColor;
         void main() {
-          gl_FragColor = texture2D(uTexture, vUv) * uOpacity;
+          // This matches Cubism Web Framework's premultiplied-alpha color pipeline. MultiplyColor
+          // defaults to white and ScreenColor defaults to black. Sanitized CPU-side fallbacks stop
+          // absent/invalid Core color buffers from turning an otherwise valid model solid black.
+          vec4 texColor = texture2D(uTexture, vUv);
+          texColor.rgb = texColor.rgb * uMultiplyColor.rgb;
+          texColor.rgb = (texColor.rgb + uScreenColor.rgb * texColor.a)
+            - (texColor.rgb * uScreenColor.rgb);
+          vec4 color = texColor * uOpacity;
+          if (uUseMask > 0.5) {
+            float maskValue = texture2D(uMaskTexture, vScreenUv).a;
+            if (uMaskInverted > 0.5) maskValue = 1.0 - maskValue;
+            color *= clamp(maskValue, 0.0, 1.0);
+          }
+          gl_FragColor = color;
         }
       `;
 
@@ -1825,20 +2792,125 @@
 
     createTexture(image) {
       const gl = this.gl;
+      const width = Math.max(0, Number(image && (image.naturalWidth || image.width)) || 0);
+      const height = Math.max(0, Number(image && (image.naturalHeight || image.height)) || 0);
+      if (width > this.maxTextureSize || height > this.maxTextureSize) {
+        throw new Error(`texture ${width}x${height} exceeds WebGL limit ${this.maxTextureSize}`);
+      }
       const texture = gl.createTexture();
+      if (!texture) throw new Error('WebGL texture allocation failed');
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      // Cubism Web's renderer is premultiplied-alpha only. Always perform the premultiply exactly
+      // once at WebGL upload; Java-side atlas adaptation now preserves straight-alpha source data.
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const powerOfTwo = width > 0 && height > 0 && (width & (width - 1)) === 0 && (height & (height - 1)) === 0;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, powerOfTwo ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+      // Clear any stale error before upload, then fail loudly instead of publishing an incomplete
+      // renderer that Java later mistakes for a valid custom style.
+      gl.getError();
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      let uploadError = gl.getError();
+      if (uploadError === gl.NO_ERROR && powerOfTwo) {
+        gl.generateMipmap(gl.TEXTURE_2D);
+        uploadError = gl.getError();
+        if (uploadError === gl.NO_ERROR) this.textureDiagnostics.mipmapped++;
+      }
+      if (uploadError !== gl.NO_ERROR) {
+        gl.deleteTexture(texture);
+        throw new Error(`WebGL texture upload failed: 0x${uploadError.toString(16)} (${width}x${height})`);
+      }
+      this.textureDiagnostics.uploaded++;
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      return texture;
+    }
+
+    releaseMaskTarget() {
+      const gl = this.gl;
+      try { if (this.maskFramebuffer) gl.deleteFramebuffer(this.maskFramebuffer); } catch (_) {}
+      try { if (this.maskTexture) gl.deleteTexture(this.maskTexture); } catch (_) {}
+      this.maskFramebuffer = null;
+      this.maskTexture = null;
+      this.maskWidth = 0;
+      this.maskHeight = 0;
+      this.lastMaskKey = '';
+    }
+
+    ensureMaskTarget() {
+      if (!this.maskFramebufferUsable) return false;
+      const gl = this.gl;
+      // A dedicated full-screen clipping target avoids the old binary stencil approximation while
+      // keeping GPU memory bounded on 2K/3K phones. NDC coordinates make the lower-resolution mask
+      // texture line up exactly with the main canvas.
+      const maxEdge = renderQuality === 'clear' ? 1536 : 1024;
+      const scale = Math.min(1, maxEdge / Math.max(1, this.pixelWidth, this.pixelHeight));
+      const width = Math.max(64, Math.round(this.pixelWidth * scale));
+      const height = Math.max(64, Math.round(this.pixelHeight * scale));
+      if (this.maskFramebuffer && this.maskTexture && this.maskWidth === width && this.maskHeight === height) return true;
+      this.releaseMaskTarget();
+      const texture = gl.createTexture();
+      const framebuffer = gl.createFramebuffer();
+      if (!texture || !framebuffer) {
+        this.maskFramebufferUsable = false;
+        this.releaseMaskTarget();
+        return false;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-      return texture;
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      if (!complete) {
+        try { gl.deleteFramebuffer(framebuffer); } catch (_) {}
+        try { gl.deleteTexture(texture); } catch (_) {}
+        this.maskFramebufferUsable = false;
+        console.warn('[AxonBongoCat] alpha clipping framebuffer unavailable; using stencil fallback');
+        return false;
+      }
+      this.maskFramebuffer = framebuffer;
+      this.maskTexture = texture;
+      this.maskWidth = width;
+      this.maskHeight = height;
+      return true;
+    }
+
+    buildAlphaMask(maskIndices, maskCount) {
+      if (!this.ensureMaskTarget()) return false;
+      const key = Array.from(maskIndices || []).slice(0, maskCount).join(',');
+      if (key && key === this.lastMaskKey) return true;
+      const gl = this.gl;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.maskFramebuffer);
+      gl.viewport(0, 0, this.maskWidth, this.maskHeight);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.enable(gl.BLEND);
+      // Union mask alpha while preserving soft/feathered edges.
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      for (let i = 0; i < maskCount; i++) this.draw(maskIndices[i], true, false, false);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.pixelWidth, this.pixelHeight);
+      this.lastMaskKey = key;
+      return true;
     }
 
     resize() {
-      const dpr = Math.max(1, devicePixelRatio || 1);
+      // High-DPI Android devices can allocate very large color/stencil/mask buffers even when the
+      // overlay is visually small. Cap render DPR according to the import-time texture pressure;
+      // model texture resolution itself is untouched.
+      const dpr = Math.max(1, Math.min(renderDprCap, devicePixelRatio || 1));
       const cssWidth = Math.max(1, canvas.clientWidth || innerWidth || 1);
       const cssHeight = Math.max(1, canvas.clientHeight || innerHeight || 1);
       const width = Math.max(1, Math.round(cssWidth * dpr));
@@ -1953,6 +3025,11 @@
       return this.paramRanges.get(id) || null;
     }
 
+    isParameterLocked(id) {
+      const index = this.paramIndex.get(String(id || ''));
+      return index !== undefined && this.locks.has(index);
+    }
+
     clamp(index, value) {
       return Math.max(
         this.parameters.minimumValues[index],
@@ -1970,6 +3047,65 @@
       const index = this.paramIndex.get(id);
       if (index === undefined) return;
       this.overrides.delete(index);
+    }
+
+    setNormalizedLock(id, normalized) {
+      const index = this.paramIndex.get(String(id || ''));
+      if (index === undefined) return false;
+      const ratio = Math.max(0, Math.min(1, Number(normalized) || 0));
+      const min = this.parameters.minimumValues[index];
+      const max = this.parameters.maximumValues[index];
+      this.locks.set(index, this.clamp(index, min + (max - min) * ratio));
+      return true;
+    }
+
+    clearLock(id) {
+      const index = this.paramIndex.get(String(id || ''));
+      if (index === undefined) return false;
+      this.locks.delete(index);
+      return true;
+    }
+
+    applyLocks() {
+      for (const [index, value] of this.locks) this.parameters.values[index] = value;
+    }
+
+    parameterDebug(id) {
+      const parameterId = String(id || '');
+      const index = this.paramIndex.get(parameterId);
+      if (index === undefined) return null;
+      const min = Number(this.parameters.minimumValues[index]) || 0;
+      const max = Number(this.parameters.maximumValues[index]) || 0;
+      const def = Number(this.parameters.defaultValues[index]) || 0;
+      const value = Number(this.parameters.values[index]) || 0;
+      const span = Math.max(0.000001, max - min);
+      let source = 'BASE';
+      if (this.locks.has(index)) source = 'LOCK';
+      else if (this.trackingOwners.has(index)) source = String(this.trackingOwners.get(index) || 'TRACKING').toUpperCase();
+      else if (this.overrides.has(index)) source = 'MANUAL';
+      else if (this.frameInputs.has(index)) source = 'INPUT';
+      else if (MOUSE_X_PARAMETER_IDS.includes(parameterId) || MOUSE_Y_PARAMETER_IDS.includes(parameterId)
+          || MOUSE_LEFT_PARAMETER_IDS.includes(parameterId) || MOUSE_RIGHT_PARAMETER_IDS.includes(parameterId)
+          || parameterId === 'ParamMouseLeftDown' || parameterId === 'ParamMouseRightDown'
+          || parameterId === 'ParamMouseRihgtDown') source = 'INPUT';
+      else if (this.physicsOutputDeltas.has(index) && Math.abs(Number(this.physicsOutputDeltas.get(index)) || 0) > 1e-7) source = 'PHYSICS';
+      else {
+        const forcedExpression = state.debugExpressionKind === 'live2d' && state.debugExpressionIndex >= 0
+          ? state.debugExpressionIndex : state.mverExpressionIndex;
+        const expression = MVER_EXPRESSIONS[Math.max(0, forcedExpression | 0)];
+        if (expression && Array.isArray(expression.Parameters)
+            && expression.Parameters.some((item) => String(item && item.Id || '') === parameterId)) source = 'EXPRESSION';
+        else if (this.motionTouchedParameters.has(index)) source = 'MOTION';
+        else if (LIVE2D_EYE_BLINK_IDS.includes(parameterId) || parameterId === 'ParamEyeLOpen' || parameterId === 'ParamEyeROpen') source = 'BLINK';
+        else if (parameterId === 'ParamBreath' || parameterId === 'ParamAngleX' || parameterId === 'ParamAngleY'
+            || parameterId === 'ParamAngleZ' || parameterId === 'ParamBodyAngleX') source = 'IDLE';
+      }
+      return {
+        id: parameterId, value, min, max, defaultValue: def,
+        normalized: Math.max(0, Math.min(1, (value - min) / span)),
+        source, locked: this.locks.has(index),
+        lockNormalized: this.locks.has(index) ? Math.max(0, Math.min(1, (this.locks.get(index) - min) / span)) : null,
+      };
     }
 
     clearOverrides() {
@@ -2128,6 +3264,31 @@
       this.parameters.values[index] = this.clamp(index, value);
     }
 
+    setFrameActive(id, active) {
+      const index = this.paramIndex.get(String(id || ''));
+      if (index === undefined) return;
+      if (!active) { this.frameInputs.delete(index); return; }
+      this.frameInputs.set(index, this.parameters.maximumValues[index]);
+    }
+
+    setBooleanValue(id, active) {
+      const index = this.paramIndex.get(String(id || ''));
+      if (index === undefined) return;
+      this.parameters.values[index] = active
+        ? this.parameters.maximumValues[index]
+        : this.parameters.defaultValues[index];
+    }
+
+    setNormalizedOverride(id, normalized) {
+      const index = this.paramIndex.get(String(id || ''));
+      if (index === undefined) return false;
+      const ratio = Math.max(0, Math.min(1, Number(normalized) || 0));
+      const min = this.parameters.minimumValues[index];
+      const max = this.parameters.maximumValues[index];
+      this.overrides.set(index, this.clamp(index, min + (max - min) * ratio));
+      return true;
+    }
+
     addValue(id, value, weight) {
       const index = this.paramIndex.get(id);
       if (index === undefined) return;
@@ -2139,7 +3300,7 @@
 
     applyMotionIndex(index, startedAt, now = performance.now()) {
       const resolved = Number(index) | 0;
-      if (!IS_MVER || resolved < 0 || resolved >= MVER_MOTIONS.length) return false;
+      if (resolved < 0 || resolved >= MVER_MOTIONS.length) return false;
       const item = MVER_MOTIONS[resolved];
       const motion = item && item.json && typeof item.json === 'object' ? item.json : null;
       if (!motion) return false;
@@ -2185,6 +3346,7 @@
             touchedLip.add(id);
           }
           const current = this.parameters.values[parameterIndex];
+          this.motionTouchedParameters.add(parameterIndex);
           this.parameters.values[parameterIndex] = this.clamp(
             parameterIndex, current + (value - current) * weight,
           );
@@ -2203,6 +3365,7 @@
           if (touchedBlink.has(id)) continue;
           const parameterIndex = this.paramIndex.get(id);
           if (parameterIndex === undefined) continue;
+          this.motionTouchedParameters.add(parameterIndex);
           this.parameters.values[parameterIndex] = this.clamp(
             parameterIndex, this.parameters.values[parameterIndex] * motionEyeBlink,
           );
@@ -2228,7 +3391,7 @@
     }
 
     ensureIdleMotion(now = performance.now()) {
-      if (!IS_MVER || state.mverMotionIndex >= 0) return -1;
+      if (state.mverMotionIndex >= 0) return -1;
       const group = this.idleGroup();
       if (!group.length) return -1;
       let expired = this.idleMotionIndex < 0;
@@ -2254,7 +3417,6 @@
     }
 
     applyMverMotions(now = performance.now()) {
-      if (!IS_MVER) return false;
       if (state.mverMotionIndex >= 0) {
         return this.applyMotionIndex(state.mverMotionIndex, state.mverMotionStartedAt, now);
       }
@@ -2397,8 +3559,110 @@
       return result;
     }
 
+    createPhysicsOutputIndices() {
+      const result = new Set();
+      if (!MVER_PHYSICS || !Array.isArray(MVER_PHYSICS.PhysicsSettings)) return result;
+      for (const setting of MVER_PHYSICS.PhysicsSettings) {
+        const outputs = setting && Array.isArray(setting.Output) ? setting.Output : [];
+        for (const output of outputs) {
+          const id = output && output.Destination ? String(output.Destination.Id || '') : '';
+          const index = this.paramIndex.get(id);
+          if (index !== undefined) result.add(index);
+        }
+      }
+      return result;
+    }
+
+    invalidatePhysicsControlState(resetParticles) {
+      if (resetParticles) {
+        this.physicsStates = this.createPhysicsStates();
+        this.physicsActionUntil = 0;
+      }
+      this.physicsOutputDeltas.clear();
+      this.physicsAccumulator = 0;
+    }
+
+    /**
+     * Trigger one Cubism Physics group without changing its enabled state. The impulse is injected
+     * into particle velocity, so it travels through the model's authored radius/delay/mobility and
+     * naturally damps out. Repeated presses alternate direction to stay visible without drift.
+     */
+    triggerPhysicsGroupAction(groupKey, magnitude = 1) {
+      if (!MVER_PHYSICS || !this.physicsStates.length) return false;
+      const key = String(groupKey || '');
+      const settingIndex = PHYSICS_GROUP_KEYS.indexOf(key);
+      if (settingIndex < 0) return false;
+      const control = physicsControlFor(settingIndex);
+      const authoredStrength = physicsControls.globalStrength * control.strength;
+      if (!control.enabled || authoredStrength <= 0) return false;
+      const particles = this.physicsStates[settingIndex];
+      if (!particles || particles.length < 2) return false;
+      const settings = Array.isArray(MVER_PHYSICS.PhysicsSettings) ? MVER_PHYSICS.PhysicsSettings : [];
+      const setting = settings[settingIndex] || {};
+      const vertices = Array.isArray(setting.Vertices) ? setting.Vertices : [];
+      const amount = Math.max(0.2, Math.min(2, Number(magnitude) || 1));
+      const strength = Math.max(0.25, Math.min(2, authoredStrength));
+      const direction = (++this.physicsActionSequence & 1) ? 1 : -1;
+      const tail = Math.max(1, particles.length - 1);
+      for (let i = 1; i < particles.length; i++) {
+        const particle = particles[i];
+        const vertex = vertices[i] || {};
+        const radius = Math.max(0.0001, Number(vertex.Radius) || 1);
+        const phase = i / tail;
+        const impulse = radius * amount * strength * (0.32 + phase * 0.38);
+        particle.velocityX += direction * impulse;
+        // A small vertical component prevents perfectly horizontal chains from looking robotic.
+        particle.velocityY += impulse * (0.05 + 0.05 * (1 - phase));
+      }
+      this.physicsActionUntil = performance.now() + 900;
+      this.physicsAccumulator = Math.max(this.physicsAccumulator, 1 / Math.max(1, PHYSICS_ACTIVE_FPS));
+      // Never replay a cached pre-action delta on the first action frame.
+      this.physicsOutputDeltas.clear();
+      return true;
+    }
+
+    physicsIsInteractive() {
+      const pointerMoving = Math.abs(state.targetX - state.cursorX) > 0.0015
+        || Math.abs(state.targetY - state.cursorY) > 0.0015;
+      const dragMoving = Math.abs(this.dragVX) > 0.015 || Math.abs(this.dragVY) > 0.015;
+      return state.mverPressed.size > 0 || state.modernPressed.size > 0
+        || state.modernGamepadPressed.size > 0 || state.mouseButtons !== 0
+        || state.parameterPulseUntil.size > 0 || state.parameterSequenceEvents.length > 0
+        || state.mverMotionIndex >= 0 || performance.now() < this.physicsActionUntil
+        || pointerMoving || dragMoving;
+    }
+
+    applyAdaptivePhysics(deltaSeconds) {
+      if (!MVER_PHYSICS || !this.physicsStates.length) return;
+      if (physicsControls.globalStrength <= 0) {
+        this.physicsAccumulator = 0;
+        this.physicsOutputDeltas.clear();
+        return;
+      }
+      const targetFps = this.physicsIsInteractive() ? PHYSICS_ACTIVE_FPS : PHYSICS_IDLE_FPS;
+      const interval = 1 / Math.max(1, targetFps);
+      this.physicsAccumulator = Math.min(0.12, this.physicsAccumulator + Math.max(0, Number(deltaSeconds) || 0));
+      if (this.physicsAccumulator + 1e-6 < interval && this.physicsOutputDeltas.size) {
+        // Reapply the previous physics delta over this frame's fresh motion/expression base. Caching
+        // absolute values would incorrectly overwrite a motion while physics is on a skipped frame.
+        for (const [index, delta] of this.physicsOutputDeltas) {
+          this.parameters.values[index] = this.clamp(index, this.parameters.values[index] + delta);
+        }
+        return;
+      }
+      const before = new Map();
+      for (const index of this.physicsOutputIndices) before.set(index, this.parameters.values[index]);
+      const step = Math.max(1 / 240, Math.min(0.1, this.physicsAccumulator || deltaSeconds || interval));
+      this.physicsAccumulator = 0;
+      this.applyMverPhysics(step);
+      this.physicsOutputDeltas.clear();
+      for (const [index, value] of before) {
+        this.physicsOutputDeltas.set(index, this.parameters.values[index] - value);
+      }
+    }
+
     applyMverPhysics(deltaSeconds) {
-      if (!IS_MVER || !MVER_PHYSICS || !this.physicsStates.length) return;
+      if (!MVER_PHYSICS || !this.physicsStates.length) return;
       const settings = Array.isArray(MVER_PHYSICS.PhysicsSettings) ? MVER_PHYSICS.PhysicsSettings : [];
       const forces = MVER_PHYSICS.Meta && MVER_PHYSICS.Meta.EffectiveForces
         ? MVER_PHYSICS.Meta.EffectiveForces : {};
@@ -2413,6 +3677,9 @@
 
       for (let settingIndex = 0; settingIndex < settings.length; settingIndex++) {
         const setting = settings[settingIndex] || {};
+        const control = physicsControlFor(settingIndex);
+        const strength = physicsControls.globalStrength * control.strength;
+        if (!control.enabled || strength <= 0) continue;
         const particles = this.physicsStates[settingIndex];
         if (!particles || particles.length < 2) continue;
         const normalization = setting.Normalization || {};
@@ -2538,8 +3805,12 @@
           const clamped = this.clamp(parameterIndex, value);
           const weight = Math.max(0, Math.min(1, (Number(output.Weight) || 0) / 100));
           const current = this.parameters.values[parameterIndex];
+          // Strength scales the physics contribution relative to the fresh motion/expression base.
+          // Values above 100% intentionally allow a stronger response, then clamp to the model's
+          // authored parameter range instead of globally stretching every parameter.
+          const effectiveWeight = weight * strength;
           this.parameters.values[parameterIndex] = this.clamp(
-            parameterIndex, current * (1 - weight) + clamped * weight,
+            parameterIndex, current + (clamped - current) * effectiveWeight,
           );
         }
       }
@@ -2557,7 +3828,8 @@
       const fadeIn = Math.max(0, Number(expression.FadeInTime) || 0);
       const startedAt = forced ? state.debugExpressionStartedAt : state.mverExpressionStartedAt;
       const elapsed = Math.max(0, (now - Math.max(0, startedAt || now)) / 1000);
-      const weight = fadeIn > 0 ? Math.max(0, Math.min(1, elapsed / fadeIn)) : 1;
+      const fadeWeight = fadeIn > 0 ? Math.max(0, Math.min(1, elapsed / fadeIn)) : 1;
+      const weight = fadeWeight * (forced ? Math.max(0, Math.min(1, Number(state.debugExpressionWeight) || 0)) : 1);
       for (const item of parameters) {
         const index = this.paramIndex.get(String(item.Id || ''));
         if (index === undefined) continue;
@@ -2585,6 +3857,7 @@
       }
       // Base motion track: keyed CAT_motion/CAT_motion_lock takes priority; otherwise play Idle.
       // Cubism skips standalone eye blink while a motion manager is actively updating the model.
+      this.motionTouchedParameters.clear();
       const motionUpdated = this.applyMverMotions(now);
 
       // Long-term API overrides belong to the saved base, matching Cubism's long-term cache.
@@ -2600,6 +3873,8 @@
       const mouseRightDown = (state.mouseVisualButtons & 2) ? 1 : 0;
       this.setValue('ParamMouseLeftDown', mouseLeftDown);
       this.setValue('ParamMouseRightDown', mouseRightDown);
+      for (const id of MOUSE_LEFT_PARAMETER_IDS) this.setBooleanValue(String(id), mouseLeftDown > 0);
+      for (const id of MOUSE_RIGHT_PARAMETER_IDS) this.setBooleanValue(String(id), mouseRightDown > 0);
       // A number of Mver skins shipped with this historical misspelling in the model. Missing
       // parameters are ignored by setValue, so feeding both names is safe for correct models.
       this.setValue('ParamMouseRihgtDown', mouseRightDown);
@@ -2619,12 +3894,15 @@
       this.addValue('ParamBodyAngleX', 4 * Math.sin(t / 15.5345), 0.5);
       this.addValue('ParamBreath', 0.5 + 0.5 * Math.sin(t / 3.2345), 0.5);
 
-      this.applyMverPhysics(deltaSeconds);
+      this.applyAdaptivePhysics(deltaSeconds);
       // Cubism framework applies Pose after Physics/LipSync and before model.update().
       this.applyPose(deltaSeconds);
       // Face/head channels are direct performer controls. Reapply them after blink/expression/physics
       // so authored idle effects cannot wipe out real eye, brow, lip or profile tracking.
       this.applyTrackingInputs(true);
+      // Parameter locks are a debug final-pass override: Motion/Expression/Physics/Tracking may all
+      // continue updating internally, but the selected parameter remains fixed on the rendered model.
+      this.applyLocks();
       // Watermark suppression is intentionally last. Hide both the declared toggle parameter and
       // any DisplayInfo parts explicitly named 水印/watermark; this fixes models where the visible
       // artwork is a dedicated part rather than a pure parameter switch.
@@ -2644,68 +3922,120 @@
       }
     }
 
-    bindGeometry(program, drawableIndex) {
+    dispose() {
+      try { removeEventListener('resize', this.boundResize); } catch (_) {}
+      const gl = this.gl;
+      if (gl) {
+        for (const texture of this.textures) { try { if (texture) gl.deleteTexture(texture); } catch (_) {} }
+        this.textures.length = 0;
+        try { if (this.positionBuffer) gl.deleteBuffer(this.positionBuffer); } catch (_) {}
+        try { if (this.uvBuffer) gl.deleteBuffer(this.uvBuffer); } catch (_) {}
+        try { if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer); } catch (_) {}
+        this.releaseMaskTarget();
+        try { if (this.program) gl.deleteProgram(this.program); } catch (_) {}
+        try { if (this.maskProgram) gl.deleteProgram(this.maskProgram); } catch (_) {}
+        try { const lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext(); } catch (_) {}
+      }
+      try { if (this.model && typeof this.model.release === 'function') this.model.release(); } catch (_) {}
+      this.physicsActionUntil = 0;
+      this.physicsOutputDeltas.clear();
+      this.frameInputs.clear();
+      this.overrides.clear();
+    }
+
+    bindGeometry(program, drawableIndex, options = null) {
       const gl = this.gl;
       const d = this.drawables;
+      const opts = options || {};
       gl.useProgram(program);
 
       const positionAttribute = gl.getAttribLocation(program, 'aPosition');
       const uvAttribute = gl.getAttribLocation(program, 'aUv');
       gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, d.vertexPositions[drawableIndex], gl.DYNAMIC_DRAW);
-      gl.enableVertexAttribArray(positionAttribute);
-      gl.vertexAttribPointer(positionAttribute, 2, gl.FLOAT, false, 0, 0);
+      if (positionAttribute >= 0) {
+        gl.enableVertexAttribArray(positionAttribute);
+        gl.vertexAttribPointer(positionAttribute, 2, gl.FLOAT, false, 0, 0);
+      }
 
       gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, d.vertexUvs[drawableIndex], gl.DYNAMIC_DRAW);
-      gl.enableVertexAttribArray(uvAttribute);
-      gl.vertexAttribPointer(uvAttribute, 2, gl.FLOAT, false, 0, 0);
+      if (uvAttribute >= 0) {
+        gl.enableVertexAttribArray(uvAttribute);
+        gl.vertexAttribPointer(uvAttribute, 2, gl.FLOAT, false, 0, 0);
+      }
 
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, d.indices[drawableIndex], gl.DYNAMIC_DRAW);
 
       const canvasUniform = gl.getUniformLocation(program, 'uCanvas');
       const viewportUniform = gl.getUniformLocation(program, 'uViewport');
-      gl.uniform4f(
+      if (canvasUniform !== null) gl.uniform4f(
         canvasUniform,
         this.canvasInfo.CanvasOriginX * this.scale + this.offsetX,
         this.canvasInfo.CanvasOriginY * this.scale + this.offsetY,
         this.canvasInfo.PixelsPerUnit * this.scale,
         this.pixelWidth,
       );
-      gl.uniform2f(viewportUniform, this.pixelWidth, this.pixelHeight);
+      if (viewportUniform !== null) gl.uniform2f(viewportUniform, this.pixelWidth, this.pixelHeight);
 
       const opacityUniform = gl.getUniformLocation(program, 'uOpacity');
-      if (opacityUniform !== null) gl.uniform1f(opacityUniform, d.opacities[drawableIndex] * this.modelOpacity);
+      if (opacityUniform !== null) gl.uniform1f(opacityUniform, this.drawableOpacity(drawableIndex) * Math.max(0, Math.min(1, Number(this.modelOpacity) || 0)));
+
+      const multiplyUniform = gl.getUniformLocation(program, 'uMultiplyColor');
+      if (multiplyUniform !== null) {
+        const color = this.readDrawableColor(d.multiplyColors, drawableIndex, [1, 1, 1, 1]);
+        gl.uniform4f(multiplyUniform, color[0], color[1], color[2], color[3]);
+      }
+      const screenUniform = gl.getUniformLocation(program, 'uScreenColor');
+      if (screenUniform !== null) {
+        const color = this.readDrawableColor(d.screenColors, drawableIndex, [0, 0, 0, 1]);
+        gl.uniform4f(screenUniform, color[0], color[1], color[2], color[3]);
+      }
+
+      const useMaskUniform = gl.getUniformLocation(program, 'uUseMask');
+      if (useMaskUniform !== null) gl.uniform1f(useMaskUniform, opts.useMask && this.maskTexture ? 1 : 0);
+      const invertedUniform = gl.getUniformLocation(program, 'uMaskInverted');
+      if (invertedUniform !== null) gl.uniform1f(invertedUniform, opts.inverted ? 1 : 0);
+      const maskSampler = gl.getUniformLocation(program, 'uMaskTexture');
+      if (maskSampler !== null && opts.useMask && this.maskTexture) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this.maskTexture);
+        gl.uniform1i(maskSampler, 1);
+      }
 
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.textures[d.textureIndices[drawableIndex]]);
+      gl.bindTexture(gl.TEXTURE_2D, opts.texture || this.drawableTexture(drawableIndex));
+      const sampler = gl.getUniformLocation(program, 'uTexture');
+      if (sampler !== null) gl.uniform1i(sampler, 0);
     }
 
     applyDrawableBlend(drawableIndex) {
       const gl = this.gl;
       const flags = this.drawables.constantFlags[drawableIndex];
       const utils = this.core && this.core.Utils ? this.core.Utils : {};
+      // Cubism's premultiplied blend modes deliberately keep Add/Multiply from modifying the
+      // destination alpha. gl.blendFunc() applies RGB factors to alpha too and can make a transparent
+      // overlay become opaque black/white when a model uses many Add/Multiply ArtMeshes.
       if (typeof utils.hasBlendAdditiveBit === 'function' && utils.hasBlendAdditiveBit(flags)) {
-        gl.blendFunc(gl.ONE, gl.ONE);
+        gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
       } else if (typeof utils.hasBlendMultiplicativeBit === 'function' && utils.hasBlendMultiplicativeBit(flags)) {
-        gl.blendFunc(gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA);
+        gl.blendFuncSeparate(gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
       } else {
-        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       }
     }
 
-    draw(drawableIndex, mask) {
-      const gl = this.gl;
+    draw(drawableIndex, mask, useMask = false, inverted = false) {
+      const texture = this.drawableTexture(drawableIndex);
+      if (!texture) return false;
+      const count = Number(this.drawables.indexCounts && this.drawables.indexCounts[drawableIndex]) || 0;
+      if (count <= 0) return false;
       const program = mask ? this.maskProgram : this.program;
       if (!mask) this.applyDrawableBlend(drawableIndex);
-      this.bindGeometry(program, drawableIndex);
-      gl.drawElements(
-        gl.TRIANGLES,
-        this.drawables.indexCounts[drawableIndex],
-        gl.UNSIGNED_SHORT,
-        0,
-      );
+      this.bindGeometry(program, drawableIndex, { texture, useMask, inverted });
+      this.gl.drawElements(this.gl.TRIANGLES, count, this.gl.UNSIGNED_SHORT, 0);
+      return true;
     }
 
     render(deltaSeconds) {
@@ -2713,7 +4043,9 @@
       const d = this.drawables;
       this.prepareParameters(deltaSeconds);
       this.model.update();
+      this.lastMaskKey = '';
 
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, this.pixelWidth, this.pixelHeight);
       gl.clearColor(0, 0, 0, 0);
       gl.clearStencil(0);
@@ -2722,37 +4054,43 @@
       gl.disable(gl.CULL_FACE);
       gl.enable(gl.BLEND);
       gl.blendEquation(gl.FUNC_ADD);
-      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
       const order = Array.from({ length: d.count }, (_, index) => index)
         .sort((a, b) => d.renderOrders[a] - d.renderOrders[b]);
 
       for (const index of order) {
         if (!this.core.Utils.hasIsVisibleBit(d.dynamicFlags[index])) continue;
-        if (d.opacities[index] <= 0.00001) continue;
+        if (this.drawableOpacity(index) <= 0.00001) continue;
+        if (!this.drawableTexture(index)) continue;
 
-        const maskCount = d.maskCounts[index];
+        const maskCount = Math.max(0, Number(d.maskCounts && d.maskCounts[index]) || 0);
         if (maskCount > 0) {
-          gl.enable(gl.STENCIL_TEST);
-          gl.clear(gl.STENCIL_BUFFER_BIT);
-          gl.colorMask(false, false, false, false);
-          gl.stencilMask(0xff);
-          gl.stencilFunc(gl.ALWAYS, 1, 0xff);
-          gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
-          for (let maskIndex = 0; maskIndex < maskCount; maskIndex++) {
-            this.draw(d.masks[index][maskIndex], true);
-          }
-
-          gl.colorMask(true, true, true, true);
-          gl.stencilMask(0x00);
           const inverted = this.core.Utils.hasIsInvertedMaskBit(d.constantFlags[index]);
-          gl.stencilFunc(inverted ? gl.NOTEQUAL : gl.EQUAL, 1, 0xff);
-          gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
-          this.draw(index, false);
-          gl.disable(gl.STENCIL_TEST);
-          gl.stencilMask(0xff);
+          if (this.buildAlphaMask(d.masks[index], maskCount)) {
+            this.draw(index, false, true, inverted);
+          } else {
+            // Extremely constrained/buggy WebGL implementations can reject the auxiliary FBO.
+            // Retain the previous stencil path as a safe fallback rather than dropping the model.
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.viewport(0, 0, this.pixelWidth, this.pixelHeight);
+            gl.enable(gl.STENCIL_TEST);
+            gl.clear(gl.STENCIL_BUFFER_BIT);
+            gl.colorMask(false, false, false, false);
+            gl.stencilMask(0xff);
+            gl.stencilFunc(gl.ALWAYS, 1, 0xff);
+            gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+            for (let maskIndex = 0; maskIndex < maskCount; maskIndex++) this.draw(d.masks[index][maskIndex], true);
+            gl.colorMask(true, true, true, true);
+            gl.stencilMask(0x00);
+            gl.stencilFunc(inverted ? gl.NOTEQUAL : gl.EQUAL, 1, 0xff);
+            gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+            this.draw(index, false, false, false);
+            gl.disable(gl.STENCIL_TEST);
+            gl.stencilMask(0xff);
+          }
         } else {
-          this.draw(index, false);
+          this.draw(index, false, false, false);
         }
       }
 
@@ -2767,6 +4105,41 @@
       image.onerror = () => reject(new Error(`texture load failed: ${src}`));
       image.src = src;
     });
+  }
+
+  function base64ToBytes(value) {
+    const raw = atob(String(value || ''));
+    if (!raw) return null;
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes;
+  }
+
+  function loadFileArrayBuffer(src) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', src, true);
+      xhr.responseType = 'arraybuffer';
+      xhr.onload = () => {
+        // file:// commonly reports status 0 on Android WebView.
+        if ((xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) && xhr.response) resolve(xhr.response);
+        else reject(new Error(`moc load failed: HTTP ${xhr.status}`));
+      };
+      xhr.onerror = () => reject(new Error(`moc load failed: ${src}`));
+      xhr.send();
+    });
+  }
+
+  async function loadMocBytes() {
+    const inline = String(CONFIG.mocBase64 || '');
+    if (inline) {
+      const bytes = base64ToBytes(inline);
+      if (bytes && bytes.length) return bytes;
+    }
+    const uri = String(CONFIG.mocUri || '');
+    if (!uri) throw new Error('moc data missing');
+    const buffer = await loadFileArrayBuffer(uri);
+    return new Uint8Array(buffer);
   }
 
   async function init() {
@@ -2789,22 +4162,35 @@
         await new Promise((resolve) => setTimeout(resolve, 16));
       }
       if (!core || !core.Moc) throw new Error('Cubism Core unavailable');
+      try {
+        const coreVersion = core.Version && core.Version.csmGetVersion ? core.Version.csmGetVersion() : 0;
+        const latestMoc = core.Version && core.Version.csmGetLatestMocVersion ? core.Version.csmGetLatestMocVersion() : 0;
+        console.info('[AxonBongoCat] Cubism compatibility', { coreVersion, latestMoc, modelMoc: Number(CONFIG.mocVersion || 0) });
+      } catch (_) {}
 
-      const raw = atob(String(CONFIG.mocBase64 || ''));
-      if (!raw) throw new Error('moc data missing');
-      const bytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-
+      const bytes = await loadMocBytes();
       const textureUrls = Array.isArray(CONFIG.textures) ? CONFIG.textures : [];
       if (!textureUrls.length) throw new Error('texture list missing');
-      const textureImages = await Promise.all(textureUrls.map(loadImage));
 
-      const moc = core.Moc.fromArrayBuffer(bytes.buffer);
+      let moc;
+      try {
+        moc = core.Moc.fromArrayBuffer(bytes.buffer);
+      } catch (error) {
+        const modelVersion = Number(CONFIG.mocVersion || 0);
+        const hint = modelVersion >= 5 ? ' (MOC3 v5 requires a Cubism 5+ Core)' : '';
+        throw new Error(`moc parse failed${hint}: ${String(error && error.message || error || '')}`);
+      }
       if (!moc) throw new Error('moc parse failed');
       const model = core.Model.fromMoc(moc);
       if (!model) throw new Error('model init failed');
 
-      renderer = new CoreRenderer(core, model, textureImages);
+      // Keep the global renderer unpublished until every atlas has been uploaded. The animation
+      // loop is already alive while init() awaits; publishing a half-initialized renderer can make
+      // it draw with missing texture slots on large multi-atlas models and fail nondeterministically.
+      const createdRenderer = new CoreRenderer(core, model, []);
+      await createdRenderer.loadTexturesSequentially(textureUrls);
+      renderer = createdRenderer;
+      applySavedParameterValues();
       applyLive2DWatermarkVisibility(AXON_LIVE2D_HIDE_WATERMARK);
       // Match Mver 0.1.6 compositor semantics: l2d_horizontal_flip is not a visual canvas
       // mirror. The desk/background and full-frame hand overlays are already authored in final
@@ -2820,17 +4206,37 @@
       syncHandOverrides();
       state.mouseVisualButtons = state.mouseButtons;
       fallback.classList.add('hidden');
+      state.staticFallback = false;
       state.ready = true;
-      console.info('[AxonBongoCat] runtime ready', window.AxonBongoCat.debugState());
+      console.info('[AxonBongoCat] runtime ready', JSON.stringify(window.AxonBongoCat.debugState()));
 
-      if (!animationHandle) animationHandle = requestAnimationFrame(tick);
+      scheduleAnimation();
     } catch (error) {
       state.runtimeError = String(error && (error.stack || error.message) || error || 'unknown runtime error');
       console.error('BongoCat source model init failed', error);
-      fallback.classList.remove('hidden');
+      const hasImportedCover = !IS_MVER && Boolean(String(CONFIG.cover || ''));
+      if (hasImportedCover) {
+        // Keep the imported skin visible even when a particular GPU/WebView cannot initialize its
+        // Live2D renderer. Input overlays still work, so do not bounce all the way back to the
+        // built-in white cat and make a successful import look like it was ignored.
+        canvas.classList.add('hidden');
+        fallback.classList.remove('hidden');
+        state.staticFallback = true;
+        state.ready = true;
+        console.warn('[AxonBongoCat] using imported static cover fallback');
+      } else {
+        fallback.classList.remove('hidden');
+      }
     }
   }
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pauseRuntime();
+    else resumeRuntime();
+  }, { passive: true });
+  addEventListener('pagehide', pauseRuntime, { passive: true });
+  addEventListener('pageshow', resumeRuntime, { passive: true });
+
   init();
-  animationHandle = requestAnimationFrame(tick);
+  scheduleAnimation();
 })();

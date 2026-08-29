@@ -245,7 +245,7 @@ final class SuperCustomControlView extends FrameLayout {
         switch (spec.motionMode) {
             case OverlayState.MOTION_ALPHA:
                 animate().alpha(pressed ? baseAlpha * 0.62f : baseAlpha)
-                        .setDuration(pressed ? UiMotion.stateMs() : UiMotion.enterMs())
+                        .setDuration(pressed ? UiMotion.pressMs() : UiMotion.releaseMs())
                         .setInterpolator(UiMotion.easeOut())
                         .start();
                 break;
@@ -274,7 +274,7 @@ final class SuperCustomControlView extends FrameLayout {
                 animate().scaleX(pressed ? 0.978f : 1f)
                         .scaleY(pressed ? 0.978f : 1f)
                         .alpha(baseAlpha)
-                        .setDuration(pressed ? UiMotion.stateMs() : UiMotion.enterMs())
+                        .setDuration(pressed ? UiMotion.pressMs() : UiMotion.releaseMs())
                         .setInterpolator(UiMotion.easeOut())
                         .start();
                 break;

@@ -19,8 +19,8 @@ import android.view.animation.PathInterpolator;
  *    where state moved, just like the bottom navigation's moving selection surface.
  */
 public final class UiMotion {
-    private static final long PRESS_MS = 170L;
-    private static final long RELEASE_MS = 270L;
+    private static final long PRESS_MS = 125L;
+    private static final long RELEASE_MS = 150L;
     private static final long STATE_MS = 320L;
     private static final long ENTER_MS = 360L;
     private static final long EXIT_MS = 300L;
@@ -38,6 +38,8 @@ public final class UiMotion {
 
     static Interpolator easeOut() { return EASE_OUT; }
     static Interpolator easeMove() { return EASE_MOVE; }
+    static long pressMs() { return PRESS_MS; }
+    static long releaseMs() { return RELEASE_MS; }
     static long stateMs() { return STATE_MS; }
     static long enterMs() { return ENTER_MS; }
     static long exitMs() { return EXIT_MS; }

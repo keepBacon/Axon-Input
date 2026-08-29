@@ -92,14 +92,40 @@ echo "[Axon Input] Android jar: $ANDROID_JAR"
 mkdir -p "$ASSETS_STAGE"
 cp -a "$ROOT/app/src/main/assets/." "$ASSETS_STAGE/"
 
+# Cubism Core is proprietary and the current Core is not published on GitHub. The project keeps
+# its bundled legacy Core as an offline fallback, but refreshes the APK staging copy from Live2D's
+# official hosted Cubism Core endpoint so Cubism 5 / MOC3 v5 community models can load.
+# Set AXON_SKIP_CUBISM_CORE_REFRESH=1 to force the bundled fallback, or AXON_CUBISM_CORE_URL to
+# override the official hosting URL when Live2D changes it.
+CUBISM_CORE_URL="${AXON_CUBISM_CORE_URL:-https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js}"
+CUBISM_CORE_STAGE="$ASSETS_STAGE/bongocat/live2dcubismcore.min.js"
+if [ "${AXON_SKIP_CUBISM_CORE_REFRESH:-0}" != "1" ]; then
+    CUBISM_TMP="$BUILD/live2dcubismcore.latest.js"
+    echo "[Axon Input] Refreshing Live2D Cubism Core for Cubism 5 compatibility..."
+    if curl -fL --retry 2 --connect-timeout 12 --max-time 90 \
+        "$CUBISM_CORE_URL" -o "$CUBISM_TMP" >/dev/null 2>&1; then
+        CUBISM_SIZE="$(wc -c < "$CUBISM_TMP" | tr -d ' ')"
+        if [ "$CUBISM_SIZE" -ge 120000 ] && grep -q "Live2D Cubism Core" "$CUBISM_TMP"; then
+            cp -f "$CUBISM_TMP" "$CUBISM_CORE_STAGE"
+            echo "[Axon Input] Cubism Core refreshed: $CUBISM_SIZE bytes"
+        else
+            echo "[Axon Input] WARNING: Cubism Core download validation failed; using bundled fallback" >&2
+        fi
+    else
+        echo "[Axon Input] WARNING: Cubism Core refresh failed; using bundled fallback (Cubism 5 models may not load)" >&2
+    fi
+fi
+
 
 # 1）构建 Native C++
-"$ROOT/build-native.sh"
+bash "$ROOT/build-native.sh"
 NATIVE_LIB="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyengine.so"
 PROXY_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libsensitivityproxy.so"
 GAMEPAD_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libgamepadmonitor.so"
 KEYHOLD_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyhold.so"
 KEYMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeymapper.so"
+SYNCMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libsyncmapper.so"
+CUSTOMMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libcustommapper.so"
 TOUCH_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libtouchmonitor.so"
 [ -f "$NATIVE_LIB" ] || fail "C++ JNI 输出不存在"
 [ -f "$PROXY_BIN" ] || fail "灵敏度代理输出不存在"
@@ -107,6 +133,8 @@ TOUCH_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libtouchmonitor.so"
 [ -f "$TOUCH_MONITOR_BIN" ] || fail "触屏监听输出不存在"
 [ -f "$KEYHOLD_BIN" ] || fail "强制长按代理输出不存在"
 [ -f "$KEYMAPPER_BIN" ] || fail "手柄映射代理输出不存在"
+[ -f "$SYNCMAPPER_BIN" ] || fail "同时点击映射代理输出不存在"
+[ -f "$CUSTOMMAPPER_BIN" ] || fail "自定义映射代理输出不存在"
 
 # 2）编译资源
 # 编译完整 Android 资源，包括 PNG 图标。
@@ -166,6 +194,8 @@ cp "$GAMEPAD_MONITOR_BIN" "$APK_STAGE/lib/arm64-v8a/libgamepadmonitor.so"
 cp "$TOUCH_MONITOR_BIN" "$APK_STAGE/lib/arm64-v8a/libtouchmonitor.so"
 cp "$KEYHOLD_BIN" "$APK_STAGE/lib/arm64-v8a/libkeyhold.so"
 cp "$KEYMAPPER_BIN" "$APK_STAGE/lib/arm64-v8a/libkeymapper.so"
+cp "$SYNCMAPPER_BIN" "$APK_STAGE/lib/arm64-v8a/libsyncmapper.so"
+cp "$CUSTOMMAPPER_BIN" "$APK_STAGE/lib/arm64-v8a/libcustommapper.so"
 (
     cd "$APK_STAGE"
     zip -q -u "$UNSIGNED" classes.dex

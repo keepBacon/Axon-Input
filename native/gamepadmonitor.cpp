@@ -59,12 +59,35 @@ bool getDeviceName(int fd, char* out, size_t size) {
     return ioctl(fd, EVIOCGNAME(static_cast<int>(size - 1)), out) >= 0;
 }
 
+bool getDevicePhys(int fd, char* out, size_t size) {
+    if (!out || size == 0) return false;
+    memset(out, 0, size);
+    return ioctl(fd, EVIOCGPHYS(static_cast<int>(size - 1)), out) >= 0;
+}
+
+bool relatedPhysPath(const char* first, const char* second) {
+    if (!first || !second || !first[0] || !second[0]) return false;
+    if (strcmp(first, second) == 0) return true;
+    char a[128]{};
+    char b[128]{};
+    snprintf(a, sizeof(a), "%s", first);
+    snprintf(b, sizeof(b), "%s", second);
+    char* ai = strstr(a, "/input");
+    char* bi = strstr(b, "/input");
+    if (ai) *ai = '\0';
+    if (bi) *bi = '\0';
+    return a[0] && b[0] && strcmp(a, b) == 0;
+}
+
 int gamepadDeviceScore(int fd) {
     unsigned long evBits[8]{};
     unsigned long absBits[8]{};
     unsigned long keyBits[16]{};
-    if (!getBits(fd, 0, evBits) || !bitTest(evBits, EV_KEY)) return 0;
-    if (!getBits(fd, EV_KEY, keyBits)) return 0;
+    if (!getBits(fd, 0, evBits)) return 0;
+    const bool hasKeys = bitTest(evBits, EV_KEY);
+    const bool hasAbs = bitTest(evBits, EV_ABS);
+    if (!hasKeys && !hasAbs) return 0;
+    if (hasKeys) (void)getBits(fd, EV_KEY, keyBits);
 
     int buttonCount = 0;
     const int gamepadKeys[] = {
@@ -80,21 +103,44 @@ int gamepadDeviceScore(int fd) {
     for (int code : gamepadKeys) if (bitTest(keyBits, code)) ++buttonCount;
 
     int axisCount = 0;
-    if (bitTest(evBits, EV_ABS) && getBits(fd, EV_ABS, absBits)) {
+    if (hasAbs && getBits(fd, EV_ABS, absBits)) {
         const int axes[] = {ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_BRAKE, ABS_GAS, ABS_HAT0X, ABS_HAT0Y};
         for (int code : axes) if (bitTest(absBits, code)) ++axisCount;
     }
 
-    // 至少有两个典型手柄按键，或同时具备摇杆轴和手柄按键。
-    if (buttonCount < 2 && !(buttonCount >= 1 && axisCount >= 2)) return 0;
+    // Some Android/Bluetooth controllers expose buttons and analog sticks as separate evdev
+    // nodes. The old detector required gamepad buttons on every candidate, so the analog node was
+    // discarded and BongoCat never saw stick movement. A node with >=4 canonical controller axes
+    // is safe to accept even without EV_KEY; touchscreen/sensor nodes do not expose this axis set.
+    if (buttonCount < 2 && !(buttonCount >= 1 && axisCount >= 2) && axisCount < 4) return 0;
     int score = buttonCount * 10 + axisCount * 3;
     if (bitTest(keyBits, BTN_GAMEPAD) || bitTest(keyBits, BTN_SOUTH)) score += 30;
-    if (axisCount >= 4) score += 20;
+    // Prefer the analog-capable node when one physical controller is split across multiple event
+    // files. Android KeyEvent merging in the service still supplies its digital buttons.
+    if (axisCount >= 4) score += 90;
     return score;
 }
 
 bool isGamepadDevice(int fd) {
     return gamepadDeviceScore(fd) > 0;
+}
+
+int gamepadButtonCapabilityCount(int fd) {
+    unsigned long evBits[8]{};
+    unsigned long keyBits[16]{};
+    if (!getBits(fd, 0, evBits) || !bitTest(evBits, EV_KEY) || !getBits(fd, EV_KEY, keyBits)) return 0;
+    const int keys[] = {
+        BTN_GAMEPAD, BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_C, BTN_Z,
+        BTN_TL, BTN_TR, BTN_TL2, BTN_TR2, BTN_SELECT, BTN_START, BTN_MODE,
+        BTN_THUMBL, BTN_THUMBR, BTN_TRIGGER, BTN_THUMB, BTN_THUMB2, BTN_TOP,
+        BTN_TOP2, BTN_PINKIE, BTN_BASE, BTN_BASE2, BTN_BASE3, BTN_BASE4, BTN_BASE5, BTN_BASE6,
+        BTN_TRIGGER_HAPPY1, BTN_TRIGGER_HAPPY2, BTN_TRIGGER_HAPPY3, BTN_TRIGGER_HAPPY4,
+        BTN_TRIGGER_HAPPY5, BTN_TRIGGER_HAPPY6, BTN_TRIGGER_HAPPY7, BTN_TRIGGER_HAPPY8,
+        BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT
+    };
+    int count = 0;
+    for (int code : keys) if (bitTest(keyBits, code)) ++count;
+    return count;
 }
 
 bool axisInfo(int fd, int code, input_absinfo* out) {
@@ -233,6 +279,7 @@ struct Device {
     int fd = -1;
     char path[64]{};
     char name[128]{};
+    char phys[128]{};
     input_absinfo leftX{}, leftY{}, rightX{}, rightY{}, triggerL{}, triggerR{};
     int rightXCode = -1;
     int rightYCode = -1;
@@ -252,11 +299,27 @@ struct Device {
     uint16_t product = 0;
     uint32_t evdevBackMask = 0;
     uint32_t rawBackMask = 0;
+    // A physical controller may expose sticks and digital keys on separate evdev nodes.
+    // Keep the companion key-node mask independent so releasing one source never clears another.
+    uint32_t companionButtons = 0;
     GamepadState state{};
     GamepadState emitted{};
     bool emittedOnce = false;
 };
 
+
+struct ButtonCompanion {
+    int fd = -1;
+    char path[64]{};
+    char name[128]{};
+    char phys[128]{};
+    uint16_t vendor = 0;
+    uint16_t product = 0;
+    bool hasStandardEast = false;
+    bool hasStandardWest = false;
+    bool legacyThumb2AsL1 = false;
+    uint32_t buttons = 0;
+};
 
 struct VaderRaw {
     int fd = -1;
@@ -564,6 +627,7 @@ bool attachDevice(const char* path, Device* d) {
     }
     snprintf(candidate.path, sizeof(candidate.path), "%s", path);
     snprintf(candidate.name, sizeof(candidate.name), "%s", name[0] ? name : "gamepad");
+    getDevicePhys(fd, candidate.phys, sizeof(candidate.phys));
     *d = candidate;
     printf("STATUS gamepad-ready %s %s%s%s\n", d->path, d->name,
            d->vader5Pro ? " vader5-pro" : "",
@@ -599,6 +663,144 @@ void scan(Device* d) {
     if (bestScore > 0) (void)attachDevice(bestPath, d);
 }
 
+void emit(Device* d, bool force);
+
+void closeButtonCompanion(ButtonCompanion* c, Device* d) {
+    if (!c) return;
+    if (c->fd >= 0) close(c->fd);
+    c->fd = -1;
+    c->path[0] = '\0';
+    c->name[0] = '\0';
+    c->buttons = 0;
+    if (d && d->companionButtons != 0) {
+        d->companionButtons = 0;
+        emit(d, true);
+    }
+}
+
+bool samePhysicalController(int fd, const Device& primary) {
+    // EVIOCGPHYS is a stronger signal than the user-visible name and often survives cases where
+    // Android exposes one controller as separate analog/button interfaces with different names or
+    // partially zeroed ids. USB siblings commonly differ only in the trailing /inputN component.
+    char phys[128]{};
+    getDevicePhys(fd, phys, sizeof(phys));
+    if (relatedPhysPath(primary.phys, phys)) return true;
+
+    input_id id{};
+    bool hasId = ioctl(fd, EVIOCGID, &id) >= 0;
+    // USB/Bluetooth split nodes normally retain vendor/product ids. Require an exact pair when
+    // available so a second controller cannot accidentally become the first controller's key node.
+    if ((primary.vendor != 0 || primary.product != 0) && hasId
+            && (id.vendor != 0 || id.product != 0)) {
+        return id.vendor == primary.vendor && id.product == primary.product;
+    }
+    // A few Bluetooth stacks expose zeroed ids for one of the split nodes. Fall back to the
+    // kernel device name only in that case; this is intentionally stricter than accepting every
+    // gamepad-like key node because two controllers may be connected at the same time.
+    char name[128]{};
+    getDeviceName(fd, name, sizeof(name));
+    if (!name[0] || !primary.name[0]) return false;
+    return strcmp(name, primary.name) == 0 || strstr(name, primary.name) != nullptr
+            || strstr(primary.name, name) != nullptr;
+}
+
+void scanButtonCompanion(const Device& primary, ButtonCompanion* out) {
+    if (!out || out->fd >= 0 || primary.fd < 0) return;
+    int bestScore = 0;
+    char bestPath[64]{};
+    for (int i = 0; i < kMaxEvents; ++i) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        if (strcmp(path, primary.path) == 0 || access(path, R_OK) != 0) continue;
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) continue;
+        char name[128]{};
+        getDeviceName(fd, name, sizeof(name));
+        int buttonCount = (name[0] && strstr(name, kVirtualPrefix)) ? 0 : gamepadButtonCapabilityCount(fd);
+        if (buttonCount >= 2 && samePhysicalController(fd, primary)) {
+            int score = buttonCount * 20;
+            if (strstr(name, "Gamepad") || strstr(name, "Controller") || strstr(name, "Joystick")) score += 15;
+            if (score > bestScore) {
+                bestScore = score;
+                snprintf(bestPath, sizeof(bestPath), "%s", path);
+            }
+        }
+        close(fd);
+    }
+    if (bestScore <= 0) return;
+
+    int fd = open(bestPath, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return;
+    ButtonCompanion candidate{};
+    candidate.fd = fd;
+    input_id id{};
+    if (ioctl(fd, EVIOCGID, &id) >= 0) {
+        candidate.vendor = id.vendor;
+        candidate.product = id.product;
+    }
+    char name[128]{};
+    getDeviceName(fd, name, sizeof(name));
+    unsigned long keyBits[16]{};
+    if (getBits(fd, EV_KEY, keyBits)) {
+        candidate.hasStandardEast = bitTest(keyBits, BTN_EAST);
+        candidate.hasStandardWest = bitTest(keyBits, BTN_WEST);
+        candidate.legacyThumb2AsL1 = candidate.hasStandardWest && bitTest(keyBits, BTN_THUMB2);
+    }
+    snprintf(candidate.path, sizeof(candidate.path), "%s", bestPath);
+    snprintf(candidate.name, sizeof(candidate.name), "%s", name[0] ? name : "gamepad-buttons");
+    getDevicePhys(fd, candidate.phys, sizeof(candidate.phys));
+    *out = candidate;
+    printf("STATUS gamepad-button-companion-ready %s %s\n", out->path, out->name);
+    fflush(stdout);
+}
+
+bool processButtonCompanion(ButtonCompanion* c, Device* d, const input_event& ev) {
+    if (!c || !d || c->fd < 0) return false;
+    if (ev.type == EV_KEY) {
+        int index = buttonIndex(ev.code, c->hasStandardEast, c->hasStandardWest, c->legacyThumb2AsL1);
+        if (index >= 0 && index < 32) {
+            uint32_t bit = static_cast<uint32_t>(1u << index);
+            if (ev.value != 0) c->buttons |= bit;
+            else c->buttons &= ~bit;
+        }
+        return true;
+    }
+    if (ev.type == EV_ABS) {
+        if (ev.code == ABS_HAT0X) {
+            c->buttons &= ~(kDpadLeft | kDpadRight);
+            if (ev.value < 0) c->buttons |= kDpadLeft;
+            else if (ev.value > 0) c->buttons |= kDpadRight;
+        } else if (ev.code == ABS_HAT0Y) {
+            c->buttons &= ~(kDpadUp | kDpadDown);
+            if (ev.value < 0) c->buttons |= kDpadUp;
+            else if (ev.value > 0) c->buttons |= kDpadDown;
+        }
+        return true;
+    }
+    if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+        if (d->companionButtons != c->buttons) {
+            d->companionButtons = c->buttons;
+            emit(d, true);
+        }
+        return true;
+    }
+    return true;
+}
+
+bool readButtonCompanion(ButtonCompanion* c, Device* d) {
+    input_event events[32];
+    for (;;) {
+        ssize_t n = read(c->fd, events, sizeof(events));
+        if (n > 0) {
+            size_t count = static_cast<size_t>(n) / sizeof(input_event);
+            for (size_t i = 0; i < count; ++i) if (!processButtonCompanion(c, d, events[i])) return false;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) return true;
+        return n != 0;
+    }
+}
+
 bool same(const GamepadState& a, const GamepadState& b) {
     return a.lx == b.lx && a.ly == b.ly && a.rx == b.rx && a.ry == b.ry
             && a.lt == b.lt && a.rt == b.rt && a.buttons == b.buttons;
@@ -606,12 +808,14 @@ bool same(const GamepadState& a, const GamepadState& b) {
 
 void emit(Device* d, bool force = false) {
     if (!d) return;
-    if (!force && d->emittedOnce && same(d->state, d->emitted)) return;
+    GamepadState effective = d->state;
+    effective.buttons |= d->companionButtons;
+    if (!force && d->emittedOnce && same(effective, d->emitted)) return;
     printf("GAMEPAD %d %d %d %d %d %d %u\n",
-           d->state.lx, d->state.ly, d->state.rx, d->state.ry,
-           d->state.lt, d->state.rt, static_cast<unsigned>(d->state.buttons));
+           effective.lx, effective.ly, effective.rx, effective.ry,
+           effective.lt, effective.rt, static_cast<unsigned>(effective.buttons));
     fflush(stdout);
-    d->emitted = d->state;
+    d->emitted = effective;
     d->emittedOnce = true;
 }
 
@@ -689,6 +893,8 @@ int main() {
 
     Device device{};
     device.fd = -1;
+    ButtonCompanion buttonCompanion{};
+    buttonCompanion.fd = -1;
     VaderRaw vaderRaws[kMaxVaderRaw]{};
     for (auto& raw : vaderRaws) raw.fd = -1;
     int vaderRawCount = 0;
@@ -706,9 +912,16 @@ int main() {
         }
 
         if (device.fd < 0 && now - lastScan >= kScanIntervalMs) {
+            closeButtonCompanion(&buttonCompanion, nullptr);
             scan(&device);
             if (device.fd < 0) printf("STATUS waiting-gamepad\n");
-            else emit(&device, true);
+            else {
+                emit(&device, true);
+                scanButtonCompanion(device, &buttonCompanion);
+            }
+            lastScan = now;
+        } else if (device.fd >= 0 && buttonCompanion.fd < 0 && now - lastScan >= kScanIntervalMs) {
+            scanButtonCompanion(device, &buttonCompanion);
             lastScan = now;
         }
 
@@ -731,9 +944,9 @@ int main() {
             lastRawInitRetry = now;
         }
 
-        pollfd pfds[1 + kMaxVaderRaw]{};
-        int kinds[1 + kMaxVaderRaw]{};
-        int refs[1 + kMaxVaderRaw]{};
+        pollfd pfds[2 + kMaxVaderRaw]{};
+        int kinds[2 + kMaxVaderRaw]{};
+        int refs[2 + kMaxVaderRaw]{};
         int count = 0;
         if (device.fd >= 0) {
             pfds[count] = pollfd{device.fd, POLLIN | POLLERR | POLLHUP, 0};
@@ -741,7 +954,13 @@ int main() {
             refs[count] = -1;
             ++count;
         }
-        for (int i = 0; i < vaderRawCount && count < 1 + kMaxVaderRaw; ++i) {
+        if (buttonCompanion.fd >= 0) {
+            pfds[count] = pollfd{buttonCompanion.fd, POLLIN | POLLERR | POLLHUP, 0};
+            kinds[count] = 2;
+            refs[count] = -1;
+            ++count;
+        }
+        for (int i = 0; i < vaderRawCount && count < 2 + kMaxVaderRaw; ++i) {
             if (vaderRaws[i].fd < 0) continue;
             pfds[count] = pollfd{vaderRaws[i].fd, POLLIN | POLLERR | POLLHUP, 0};
             kinds[count] = 1;
@@ -767,7 +986,14 @@ int main() {
                 if (kinds[i] == 0) {
                     if ((pfds[i].revents & (POLLERR | POLLHUP)) || !readEvents(&device)) {
                         printf("STATUS gamepad-disconnected\n");
+                        closeButtonCompanion(&buttonCompanion, nullptr);
                         closeDevice(&device);
+                    }
+                } else if (kinds[i] == 2) {
+                    if ((pfds[i].revents & (POLLERR | POLLHUP))
+                            || !readButtonCompanion(&buttonCompanion, &device)) {
+                        printf("STATUS gamepad-button-companion-disconnected\n");
+                        closeButtonCompanion(&buttonCompanion, &device);
                     }
                 } else {
                     int rawIndex = refs[i];
@@ -794,6 +1020,7 @@ int main() {
     }
 
     closeVaderRaws(vaderRaws, &vaderRawCount, &device);
+    closeButtonCompanion(&buttonCompanion, nullptr);
     closeDevice(&device);
     printf("STATUS stopped\n");
     return 0;

@@ -1080,6 +1080,8 @@ public final class SuperCustomDisplayActivity extends Activity {
         if (FloatingMediaStore.hotkeyConflicts(this, mediaId, inputCode)) return true;
         if (OverlayState.isForceHoldEnabled(this)
                 && inputCode == OverlayState.getForceHoldTriggerKeyCode(this)) return true;
+        if (SimultaneousClickStore.usesSource(this, inputCode)) return true;
+        if (CustomMappingStore.usesTrigger(this, inputCode)) return true;
         return inputCode == OverlayState.getKeyboardCatExpressionHotkeyKeyCode(this)
                 || inputCode == OverlayState.getHideDisplayHotkeyInputCode(this);
     }
