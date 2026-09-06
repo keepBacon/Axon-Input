@@ -283,9 +283,11 @@ public final class ShizukuBridge {
         }
 
         IBinder processBinder = createRemoteProcess(command);
-        int exitCode = waitForProcess(processBinder);
-        destroyProcess(processBinder);
-        return exitCode;
+        try {
+            return waitForProcess(processBinder);
+        } finally {
+            destroyProcess(processBinder);
+        }
     }
 
     private static IBinder createRemoteProcess(String command) throws RemoteException {

@@ -27,6 +27,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
@@ -61,6 +62,7 @@ public final class Live2DModelStore {
     private static final int MAX_TEXTURE_EDGE = 4096;
     /** Keep the aggregate decoded RGBA atlas budget sane on Android WebView/GPU. */
     private static final long MAX_TOTAL_TEXTURE_PIXELS = 48L * 1024L * 1024L;
+    private static final AtomicBoolean IMPORT_IN_FLIGHT = new AtomicBoolean(false);
 
     private Live2DModelStore() {}
 
@@ -246,6 +248,17 @@ public final class Live2DModelStore {
 
     public static ImportResult importZip(Context context, Uri uri, String displayName) throws Exception {
         if (context == null || uri == null) throw new IOException("无效模型文件");
+        if (!IMPORT_IN_FLIGHT.compareAndSet(false, true)) {
+            throw new IOException("已有 Live2D 模型正在导入，请等待当前导入完成");
+        }
+        try {
+            return importZipSingleFlight(context.getApplicationContext(), uri, displayName);
+        } finally {
+            IMPORT_IN_FLIGHT.set(false);
+        }
+    }
+
+    private static ImportResult importZipSingleFlight(Context context, Uri uri, String displayName) throws Exception {
         File base = baseDir(context);
         if (!base.exists() && !base.mkdirs()) throw new IOException("无法创建 Live2D 目录");
 

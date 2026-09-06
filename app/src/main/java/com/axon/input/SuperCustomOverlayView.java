@@ -12,6 +12,7 @@ import java.util.List;
 /** Runtime, touch-through renderer for the loaded super-custom key-display configuration. */
 final class SuperCustomOverlayView extends FrameLayout {
     private final List<RuntimeBinding> bindings = new ArrayList<>();
+    private final List<RuntimeBinding> stickBindings = new ArrayList<>();
 
     SuperCustomOverlayView(Context context) {
         super(context);
@@ -25,12 +26,16 @@ final class SuperCustomOverlayView extends FrameLayout {
     void setSpecs(List<SuperCustomControlSpec> specs) {
         clearPressed();
         bindings.clear();
+        stickBindings.clear();
         removeAllViews();
         if (specs == null) return;
 
         for (SuperCustomControlSpec source : specs) {
             if (source == null) continue;
             if (source.isKeyElement() && !InputBinding.isValid(source.keyCode)) continue;
+            if (source.isStickElement()
+                    && source.stickSide != SuperCustomControlSpec.STICK_LEFT
+                    && source.stickSide != SuperCustomControlSpec.STICK_RIGHT) continue;
             SuperCustomControlSpec spec = source.copy();
             SuperCustomControlView view = new SuperCustomControlView(getContext());
             view.setInteractivePreview(false);
@@ -40,7 +45,9 @@ final class SuperCustomOverlayView extends FrameLayout {
             view.setLayoutParams(params);
             view.applySpec(spec);
             addView(view);
-            bindings.add(new RuntimeBinding(spec, view));
+            RuntimeBinding binding = new RuntimeBinding(spec, view);
+            bindings.add(binding);
+            if (spec.isStickElement()) stickBindings.add(binding);
         }
         requestLayout();
     }
@@ -55,7 +62,24 @@ final class SuperCustomOverlayView extends FrameLayout {
     }
 
     void clearPressed() {
-        for (RuntimeBinding binding : bindings) binding.view.onBoundKeyEvent(false);
+        for (RuntimeBinding binding : bindings) {
+            binding.view.onBoundKeyEvent(false);
+            if (binding.spec.isStickElement()) binding.view.setStickState(0f, 0f);
+        }
+    }
+
+    void setGamepadAxes(int lx, int ly, int rx, int ry) {
+        float leftX = clampAxis(lx / 1000f);
+        float leftY = clampAxis(ly / 1000f);
+        float rightX = clampAxis(rx / 1000f);
+        float rightY = clampAxis(ry / 1000f);
+        for (RuntimeBinding binding : stickBindings) {
+            if (binding.spec.stickSide == SuperCustomControlSpec.STICK_RIGHT) {
+                binding.view.setStickState(rightX, rightY);
+            } else {
+                binding.view.setStickState(leftX, leftY);
+            }
+        }
     }
 
     @Override
@@ -83,6 +107,10 @@ final class SuperCustomOverlayView extends FrameLayout {
             binding.view.layout(centerX - halfW, centerY - halfH,
                     centerX - halfW + controlWidth, centerY - halfH + controlHeight);
         }
+    }
+
+    private static float clampAxis(float value) {
+        return Math.max(-1f, Math.min(1f, value));
     }
 
     private int dp(float value) {

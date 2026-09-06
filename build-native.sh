@@ -9,6 +9,7 @@ KEYHOLD_SRC="$ROOT/native/keyhold.cpp"
 KEYMAPPER_SRC="$ROOT/native/keymapper.cpp"
 SYNCMAPPER_SRC="$ROOT/native/syncmapper.cpp"
 CUSTOMMAPPER_SRC="$ROOT/native/custommapper.cpp"
+CLICKMULTIPLIER_SRC="$ROOT/native/clickmultiplier.cpp"
 TOUCH_MONITOR_SRC="$ROOT/native/touchmonitor.cpp"
 OUT_DIR="$ROOT/app/src/main/jniLibs/arm64-v8a"
 JNI_LIB="$OUT_DIR/libkeyengine.so"
@@ -18,6 +19,7 @@ KEYHOLD_BIN="$OUT_DIR/libkeyhold.so"
 KEYMAPPER_BIN="$OUT_DIR/libkeymapper.so"
 SYNCMAPPER_BIN="$OUT_DIR/libsyncmapper.so"
 CUSTOMMAPPER_BIN="$OUT_DIR/libcustommapper.so"
+CLICKMULTIPLIER_BIN="$OUT_DIR/libclickmultiplier.so"
 TOUCH_MONITOR_BIN="$OUT_DIR/libtouchmonitor.so"
 
 case "$(uname -m)" in
@@ -100,6 +102,14 @@ clang++ \
     "$CUSTOMMAPPER_SRC" -o "$CUSTOMMAPPER_BIN"
 chmod 755 "$CUSTOMMAPPER_BIN"
 
+echo "[Axon Input] C++20 click multiplier -> libclickmultiplier.so"
+clang++ \
+    -std=c++20 -fPIE -pie -O2 \
+    -fno-exceptions -fno-rtti -nostdlib++ \
+    -Wl,--no-undefined \
+    "$CLICKMULTIPLIER_SRC" -o "$CLICKMULTIPLIER_BIN"
+chmod 755 "$CLICKMULTIPLIER_BIN"
+
 if command -v readelf >/dev/null 2>&1; then
     echo "[Axon Input] JNI dependencies:"
     readelf -d "$JNI_LIB" | grep NEEDED || true
@@ -117,6 +127,8 @@ if command -v readelf >/dev/null 2>&1; then
     readelf -d "$SYNCMAPPER_BIN" | grep NEEDED || true
     echo "[Axon Input] Custom mapper dependencies:"
     readelf -d "$CUSTOMMAPPER_BIN" | grep NEEDED || true
+    echo "[Axon Input] Click multiplier dependencies:"
+    readelf -d "$CLICKMULTIPLIER_BIN" | grep NEEDED || true
 fi
 
 echo "[Axon Input] Native build complete"

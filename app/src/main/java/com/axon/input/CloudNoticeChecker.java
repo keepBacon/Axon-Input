@@ -1,64 +1,74 @@
 package com.axon.input;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.content.Context;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
-import android.widget.Button;
 
 import org.json.JSONObject;
 
+import java.lang.ref.WeakReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** 登录后读取云端公告。同一公告 ID 只显示一次。 */
 final class CloudNoticeChecker {
+    interface Completion {
+        void run(Activity activity);
+    }
+
     private static final String NOTICE_URL =
             "https://raw.githubusercontent.com/keepBacon/Axon-Input/main/notice.json";
     private static final String DEFAULT_JOIN_URL = "https://kook.vip/GYYrsE";
     private static final AtomicBoolean CHECKING = new AtomicBoolean(false);
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static volatile WeakReference<Activity> latestActivity = new WeakReference<>(null);
+    private static volatile Completion latestCompletion;
 
     private CloudNoticeChecker() {}
 
-    static void check(Activity activity, Runnable onComplete) {
-        if (!canUse(activity)) {
-            run(onComplete);
-            return;
-        }
-        if (!CHECKING.compareAndSet(false, true)) {
-            run(onComplete);
-            return;
-        }
+    static void check(Activity activity, Completion onComplete) {
+        if (!canUse(activity)) return;
+        latestActivity = new WeakReference<>(activity);
+        latestCompletion = onComplete;
+        if (!CHECKING.compareAndSet(false, true)) return;
 
+        final Context app = activity.getApplicationContext();
         Thread worker = new Thread(() -> {
-            NoticeInfo info = fetch(activity);
-            activity.runOnUiThread(() -> {
-                CHECKING.set(false);
-                if (!canUse(activity) || info == null || !info.enabled) {
-                    run(onComplete);
-                    return;
-                }
-                if (info.id.equals(OverlayState.getLastCloudNoticeId(activity))) {
-                    run(onComplete);
-                    return;
-                }
-                show(activity, info, onComplete);
-            });
+            NoticeInfo info = fetch(app);
+            MAIN.post(() -> finishCheck(info));
         }, "AxonCloudNotice");
         worker.setDaemon(true);
         worker.start();
     }
 
-    private static NoticeInfo fetch(Activity activity) {
-        JSONObject json = RemoteJson.get(activity, NOTICE_URL, true);
+    private static void finishCheck(NoticeInfo info) {
+        CHECKING.set(false);
+        Activity activity = latestActivity.get();
+        Completion completion = latestCompletion;
+        latestActivity = new WeakReference<>(null);
+        latestCompletion = null;
+        if (!canUse(activity)) return;
+        if (info == null || !info.enabled
+                || info.id.equals(OverlayState.getLastCloudNoticeId(activity))) {
+            complete(activity, completion);
+            return;
+        }
+        show(activity, info, completion);
+    }
+
+    private static NoticeInfo fetch(Context context) {
+        JSONObject json = RemoteJson.get(context, NOTICE_URL, true);
         if (json == null) return null;
 
         String id = json.optString("id", "").trim();
         String message = json.optString("message", "").trim();
         if (id.isEmpty() || message.isEmpty()) return null;
 
-        String title = nonEmpty(json.optString("title", ""), activity.getString(R.string.notice_default_title));
-        String joinText = nonEmpty(json.optString("joinText", ""), activity.getString(R.string.notice_join_default));
-        String confirmText = nonEmpty(json.optString("confirmText", ""), activity.getString(R.string.notice_confirm_default));
+        String title = nonEmpty(json.optString("title", ""), context.getString(R.string.notice_default_title));
+        String joinText = nonEmpty(json.optString("joinText", ""), context.getString(R.string.notice_join_default));
+        String confirmText = nonEmpty(json.optString("confirmText", ""), context.getString(R.string.notice_confirm_default));
         String joinUrl = nonEmpty(json.optString("joinUrl", ""), DEFAULT_JOIN_URL);
         int waitSeconds = Math.max(0, Math.min(30, json.optInt("waitSeconds", 3)));
         return new NoticeInfo(
@@ -72,57 +82,51 @@ final class CloudNoticeChecker {
                 waitSeconds);
     }
 
-    private static void show(Activity activity, NoticeInfo info, Runnable onComplete) {
-        if (!canUse(activity)) {
-            run(onComplete);
-            return;
-        }
+    private static void show(Activity activity, NoticeInfo info, Completion onComplete) {
+        if (!canUse(activity)) return;
 
-        AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle(info.title)
-                .setMessage(info.message)
-                .setNegativeButton(info.joinText, null)
-                .setPositiveButton(info.confirmText, null)
-                .create();
-        dialog.setCancelable(false);
-        dialog.setCanceledOnTouchOutside(false);
-        dialog.setOnShowListener(ignored -> {
-            OverlayState.setLastCloudNoticeId(activity, info.id);
-            Button join = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
-            Button confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            join.setOnClickListener(v -> MainActivity.openKookUrl(activity, info.joinUrl));
-            startConfirmDelay(activity, dialog, confirm, info.confirmText, info.waitSeconds);
-            confirm.setOnClickListener(v -> dialog.dismiss());
-        });
-        dialog.setOnDismissListener(ignored -> run(onComplete));
-        dialog.show();
+        OverlayState.setLastCloudNoticeId(activity, info.id);
+        DocumentModalDialog.Handle handle = DocumentModalDialog.show(
+                activity,
+                info.title,
+                info.message,
+                info.joinText,
+                info.confirmText,
+                ignored -> MainActivity.openKookUrl(activity, info.joinUrl),
+                DocumentModalDialog.Handle::dismiss,
+                false,
+                info.waitSeconds <= 0,
+                () -> complete(activity, onComplete));
+        startConfirmDelay(activity, handle, info.confirmText, info.waitSeconds);
     }
 
     private static void startConfirmDelay(
             Activity activity,
-            AlertDialog dialog,
-            Button confirm,
+            DocumentModalDialog.Handle handle,
             String text,
             int waitSeconds) {
         if (waitSeconds <= 0) {
-            confirm.setText(text);
-            confirm.setEnabled(true);
+            handle.setPrimaryText(text);
+            handle.setPrimaryEnabled(true);
+            handle.setCloseEnabled(true);
             return;
         }
 
-        confirm.setEnabled(false);
+        handle.setPrimaryEnabled(false);
+        handle.setCloseEnabled(false);
         long readyAt = SystemClock.uptimeMillis() + waitSeconds * 1000L;
         Runnable countdown = new Runnable() {
             @Override
             public void run() {
-                if (!dialog.isShowing()) return;
+                if (!canUse(activity) || !handle.isShowing()) return;
                 long remaining = readyAt - SystemClock.uptimeMillis();
                 if (remaining <= 0L) {
-                    confirm.setText(text);
-                    confirm.setEnabled(true);
+                    handle.setPrimaryText(text);
+                    handle.setPrimaryEnabled(true);
+                    handle.setCloseEnabled(true);
                     return;
                 }
-                confirm.setText(text + " (" + ((remaining + 999L) / 1000L) + ")");
+                handle.setPrimaryText(text + " (" + ((remaining + 999L) / 1000L) + ")");
                 activity.getWindow().getDecorView().postDelayed(this, Math.min(1000L, remaining));
             }
         };
@@ -140,8 +144,8 @@ final class CloudNoticeChecker {
         return text.isEmpty() ? fallback : text;
     }
 
-    private static void run(Runnable runnable) {
-        if (runnable != null) runnable.run();
+    private static void complete(Activity activity, Completion completion) {
+        if (completion != null && canUse(activity)) completion.run(activity);
     }
 
     private static final class NoticeInfo {

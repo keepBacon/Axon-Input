@@ -86,7 +86,6 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     private int gamepadRy;
     private int gamepadLt;
     private int gamepadRt;
-    private int gamepadDirectionalMask;
     private boolean gamepadLtPressed;
     private boolean gamepadRtPressed;
     private int mouseButtons;
@@ -446,7 +445,6 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         gamepadButtons = 0;
         gamepadLx = gamepadLy = gamepadRx = gamepadRy = 0;
         gamepadLt = gamepadRt = 0;
-        gamepadDirectionalMask = 0;
         gamepadLtPressed = false;
         gamepadRtPressed = false;
         try { webView.stopLoading(); } catch (Throwable ignored) {}
@@ -692,47 +690,42 @@ public final class KeyboardCatOverlayView extends FrameLayout {
 
     public void setGamepadState(int lx, int ly, int rx, int ry, int lt, int rt, int buttons) {
         if (!isGamepadStyle()) return;
+
+        // BTN_C/BTN_Z are Linux fallback aliases for X/B. The rest of Axon's gamepad HUD already
+        // treats them as the same physical groups; canonicalize them here too so Keyboard Cat
+        // never receives a second logical button for one physical face key.
+        int next = buttons;
+        if ((next & GamepadOverlayView.BTN_C) != 0) next |= GamepadOverlayView.BTN_WEST;
+        if ((next & GamepadOverlayView.BTN_Z) != 0) next |= GamepadOverlayView.BTN_EAST;
+        next &= ~(GamepadOverlayView.BTN_C | GamepadOverlayView.BTN_Z);
+
         int previousButtons = gamepadButtons;
+        boolean previousLt = gamepadLtPressed;
+        boolean previousRt = gamepadRtPressed;
         boolean axesChanged = lx != gamepadLx || ly != gamepadLy || rx != gamepadRx || ry != gamepadRy
-                || ((previousButtons ^ buttons) & (GamepadOverlayView.BTN_L3 | GamepadOverlayView.BTN_R3)) != 0;
+                || ((previousButtons ^ next) & (GamepadOverlayView.BTN_L3 | GamepadOverlayView.BTN_R3)) != 0;
+
         gamepadLx = lx;
         gamepadLy = ly;
         gamepadRx = rx;
         gamepadRy = ry;
         gamepadLt = lt;
         gamepadRt = rt;
-        int next = buttons;
-        dispatchGamepadTransition(GamepadOverlayView.BTN_SOUTH, "South", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_EAST, "East", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_NORTH, "North", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_WEST, "West", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_C, "C", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_Z, "Z", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_L1, "LeftTrigger", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_R1, "RightTrigger", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_SELECT, "Select", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_START, "Start", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_MODE, "Mode", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_L3, "L3", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_R3, "R3", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_BACK_1, "M1", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_BACK_2, "M2", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_BACK_3, "M3", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_BACK_4, "M4", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_UP, "DPadUp", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_DOWN, "DPadDown", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_LEFT, "DPadLeft", previousButtons, next);
-        dispatchGamepadTransition(GamepadOverlayView.BTN_DPAD_RIGHT, "DPadRight", previousButtons, next);
-
-        boolean nextLt = (next & GamepadOverlayView.BTN_L2) != 0 || lt >= 500;
-        boolean nextRt = (next & GamepadOverlayView.BTN_R2) != 0 || rt >= 500;
-        if (nextLt != gamepadLtPressed) dispatchGamepadButton("LeftTrigger2", nextLt);
-        if (nextRt != gamepadRtPressed) dispatchGamepadButton("RightTrigger2", nextRt);
-        gamepadLtPressed = nextLt;
-        gamepadRtPressed = nextRt;
         gamepadButtons = next;
+        gamepadLtPressed = (next & GamepadOverlayView.BTN_L2) != 0 || lt >= 500;
+        gamepadRtPressed = (next & GamepadOverlayView.BTN_R2) != 0 || rt >= 500;
 
+        // Send the complete digital snapshot in one JS bridge call. Releasing stale semantics and
+        // pressing new ones atomically prevents transient X/L1 overlap and multi-hand frames.
+        if (previousButtons != next || previousLt != gamepadLtPressed || previousRt != gamepadRtPressed) {
+            dispatchGamepadDigitalState();
+        }
         if (axesChanged) scheduleGamepadFrame();
+    }
+
+    private void dispatchGamepadDigitalState() {
+        dispatch("window.AxonBongoCat&&AxonBongoCat.gamepadState&&AxonBongoCat.gamepadState("
+                + gamepadButtons + "," + gamepadLtPressed + "," + gamepadRtPressed + ")");
     }
 
     private void scheduleGamepadFrame() {
@@ -761,39 +754,20 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     public void setGamepadDirectional(int keyCode, boolean pressed) {
         if (!isGamepadStyle()) return;
         int bit = switch (keyCode) {
-            case KeyEvent.KEYCODE_DPAD_UP -> 1;
-            case KeyEvent.KEYCODE_DPAD_DOWN -> 2;
-            case KeyEvent.KEYCODE_DPAD_LEFT -> 4;
-            case KeyEvent.KEYCODE_DPAD_RIGHT -> 8;
+            case KeyEvent.KEYCODE_DPAD_UP -> GamepadOverlayView.BTN_DPAD_UP;
+            case KeyEvent.KEYCODE_DPAD_DOWN -> GamepadOverlayView.BTN_DPAD_DOWN;
+            case KeyEvent.KEYCODE_DPAD_LEFT -> GamepadOverlayView.BTN_DPAD_LEFT;
+            case KeyEvent.KEYCODE_DPAD_RIGHT -> GamepadOverlayView.BTN_DPAD_RIGHT;
             default -> 0;
         };
         if (bit == 0) return;
-        boolean wasPressed = (gamepadDirectionalMask & bit) != 0;
-        if (wasPressed == pressed) return;
-        if (pressed) gamepadDirectionalMask |= bit;
-        else gamepadDirectionalMask &= ~bit;
-        dispatchGamepadButton(dpadName(bit), pressed);
+        boolean before = (gamepadButtons & bit) != 0;
+        if (before == pressed) return;
+        if (pressed) gamepadButtons |= bit;
+        else gamepadButtons &= ~bit;
+        dispatchGamepadDigitalState();
     }
 
-    private static String dpadName(int bit) {
-        return switch (bit) {
-            case 1 -> "DPadUp";
-            case 2 -> "DPadDown";
-            case 4 -> "DPadLeft";
-            case 8 -> "DPadRight";
-            default -> "";
-        };
-    }
-
-    private void dispatchGamepadTransition(int bit, String name, int previous, int current) {
-        boolean before = (previous & bit) != 0;
-        boolean after = (current & bit) != 0;
-        if (before != after) dispatchGamepadButton(name, after);
-    }
-
-    private void dispatchGamepadButton(String name, boolean pressed) {
-        dispatch("window.AxonBongoCat&&AxonBongoCat.gamepadButton(" + JSONObject.quote(name) + "," + pressed + ")");
-    }
 
     public void clearInput() {
         synchronized (inputBridgeLock) {
@@ -810,7 +784,6 @@ public final class KeyboardCatOverlayView extends FrameLayout {
         gamepadButtons = 0;
         gamepadLx = gamepadLy = gamepadRx = gamepadRy = 0;
         gamepadLt = gamepadRt = 0;
-        gamepadDirectionalMask = 0;
         gamepadLtPressed = false;
         gamepadRtPressed = false;
         removeCallbacks(mouseFrameDrain);
@@ -906,35 +879,8 @@ public final class KeyboardCatOverlayView extends FrameLayout {
     }
 
     private void flushGamepadState() {
-        int[] bits = {
-                GamepadOverlayView.BTN_SOUTH, GamepadOverlayView.BTN_EAST,
-                GamepadOverlayView.BTN_C, GamepadOverlayView.BTN_NORTH,
-                GamepadOverlayView.BTN_WEST, GamepadOverlayView.BTN_Z,
-                GamepadOverlayView.BTN_L1, GamepadOverlayView.BTN_R1,
-                GamepadOverlayView.BTN_SELECT, GamepadOverlayView.BTN_START,
-                GamepadOverlayView.BTN_MODE,
-                GamepadOverlayView.BTN_L3, GamepadOverlayView.BTN_R3,
-                GamepadOverlayView.BTN_BACK_1, GamepadOverlayView.BTN_BACK_2,
-                GamepadOverlayView.BTN_BACK_3, GamepadOverlayView.BTN_BACK_4,
-                GamepadOverlayView.BTN_DPAD_UP, GamepadOverlayView.BTN_DPAD_DOWN,
-                GamepadOverlayView.BTN_DPAD_LEFT, GamepadOverlayView.BTN_DPAD_RIGHT
-        };
-        String[] names = {
-                "South", "East", "C", "North", "West", "Z",
-                "LeftTrigger", "RightTrigger", "Select", "Start", "Mode",
-                "L3", "R3", "M1", "M2", "M3", "M4",
-                "DPadUp", "DPadDown", "DPadLeft", "DPadRight"
-        };
-        for (int i = 0; i < bits.length; i++) {
-            if ((gamepadButtons & bits[i]) != 0) dispatchGamepadButton(names[i], true);
-        }
-        boolean ltPressed = (gamepadButtons & GamepadOverlayView.BTN_L2) != 0 || gamepadLt >= 500;
-        boolean rtPressed = (gamepadButtons & GamepadOverlayView.BTN_R2) != 0 || gamepadRt >= 500;
-        if (ltPressed) dispatchGamepadButton("LeftTrigger2", true);
-        if (rtPressed) dispatchGamepadButton("RightTrigger2", true);
-        for (int bit = 1; bit <= 8; bit <<= 1) {
-            if ((gamepadDirectionalMask & bit) != 0) dispatchGamepadButton(dpadName(bit), true);
-        }
+        dispatchRaw("window.AxonBongoCat&&AxonBongoCat.gamepadState&&AxonBongoCat.gamepadState("
+                + gamepadButtons + "," + gamepadLtPressed + "," + gamepadRtPressed + ")");
         dispatchGamepadAxes();
     }
 

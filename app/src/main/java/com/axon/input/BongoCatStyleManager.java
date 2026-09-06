@@ -33,6 +33,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 
 /** BongoCat 自定义样式导入、校验、选择和删除。导入包永远作为数据读取，不执行其中的脚本。 */
@@ -52,7 +53,10 @@ public final class BongoCatStyleManager {
     private static final String MVER_SOURCE_CONFIG_FILE = "mver_source_config.json";
     /** Axon-owned normalized package description shared by every imported keyboard-cat format. */
     private static final String NORMALIZED_MANIFEST_FILE = "axon_package_manifest.json";
-    private static final int NORMALIZED_MANIFEST_VERSION = 2;
+    private static final int NORMALIZED_MANIFEST_VERSION = 5;
+    private static final String MVER_HAND_LAYOUT_NONE = "none";
+    private static final String MVER_HAND_LAYOUT_SINGLE = "single";
+    private static final String MVER_HAND_LAYOUT_SPLIT = "split";
     /** Community keyboard-cat packs can be very large because MOC3, 4K/8K atlases and media are bundled. */
     private static final long MAX_IMPORT_ZIP_BYTES = 512L * 1024L * 1024L;
     /** Separate expanded-data ceiling still protects against ZIP bombs. */
@@ -717,27 +721,34 @@ public final class BongoCatStyleManager {
 
         String resolved;
         try {
-            File resources = dirIgnoreCase(info.root, "resources");
-            if (resources == null || !resources.isDirectory()) resources = info.root;
-            List<String> left = keyNames(dirIgnoreCase(resources, "left-keys"));
-            List<String> right = keyNames(dirIgnoreCase(resources, "right-keys"));
-            String detected = detectMode(left, right);
-
-            if (MODE_GAMEPAD.equals(detected)) {
-                resolved = MODE_GAMEPAD;
-            } else if (MODE_KEYBOARD.equals(detected)) {
-                resolved = MODE_KEYBOARD;
-            } else if (modelHasKeyboardParameterHints(info)) {
-                // Parameter-only and hybrid models frequently have no right-keys directory. If
-                // authored keyboard parameters exist, keyboard is the safer default layout.
-                resolved = MODE_KEYBOARD;
-            } else if (modelHasGamepadParameterHints(info)) {
-                // Only use model hints as a last resort when the model is controller-only.
+            // Portable controller packages keep their hand compositor beside cat_model instead of
+            // resources/left-keys. That structure is explicit gamepad evidence and must win before
+            // the generic asset detector, otherwise Android never forwards controller snapshots.
+            if (hasPortableGamepadCompanionAssets(info.root)) {
                 resolved = MODE_GAMEPAD;
             } else {
-                // Never preserve a stale imported GAMEPAD label after its controller files have
-                // been deleted. Standard is the neutral fallback when no current evidence remains.
-                resolved = MODE_GAMEPAD.equals(info.mode) ? MODE_STANDARD : info.mode;
+                File resources = dirIgnoreCase(info.root, "resources");
+                if (resources == null || !resources.isDirectory()) resources = info.root;
+                List<String> left = keyNames(dirIgnoreCase(resources, "left-keys"));
+                List<String> right = keyNames(dirIgnoreCase(resources, "right-keys"));
+                String detected = detectMode(left, right);
+
+                if (MODE_GAMEPAD.equals(detected)) {
+                    resolved = MODE_GAMEPAD;
+                } else if (MODE_KEYBOARD.equals(detected)) {
+                    resolved = MODE_KEYBOARD;
+                } else if (modelHasKeyboardParameterHints(info)) {
+                    // Parameter-only and hybrid models frequently have no right-keys directory. If
+                    // authored keyboard parameters exist, keyboard is the safer default layout.
+                    resolved = MODE_KEYBOARD;
+                } else if (modelHasGamepadParameterHints(info)) {
+                    // Only use model hints as a last resort when the model is controller-only.
+                    resolved = MODE_GAMEPAD;
+                } else {
+                    // Never preserve a stale imported GAMEPAD label after its controller files have
+                    // been deleted. Standard is the neutral fallback when no current evidence remains.
+                    resolved = MODE_GAMEPAD.equals(info.mode) ? MODE_STANDARD : info.mode;
+                }
             }
         } catch (Throwable ignored) {
             resolved = MODE_GAMEPAD.equals(info.mode) ? MODE_STANDARD : info.mode;
@@ -762,6 +773,14 @@ public final class BongoCatStyleManager {
             for (String name : keyNames(rightDir)) hash = mixModeFingerprint(hash, "R:" + normalizeAssetToken(name));
             if (leftDir != null) hash ^= leftDir.lastModified();
             if (rightDir != null) hash ^= Long.rotateLeft(rightDir.lastModified(), 13);
+            File portableLeft = dirIgnoreCase(info.root, "lefthand");
+            File portableRight = dirIgnoreCase(info.root, "righthand");
+            if (portableLeft != null && portableLeft.isDirectory()) {
+                hash = mixModeFingerprint(hash, "PL:" + portableLeft.lastModified());
+            }
+            if (portableRight != null && portableRight.isDirectory()) {
+                hash = mixModeFingerprint(hash, "PR:" + portableRight.lastModified());
+            }
             File model = info.modelFile == null || info.modelFile.isEmpty() ? null : new File(info.root, info.modelFile);
             if (model != null && model.isFile()) {
                 hash ^= Long.rotateLeft(model.lastModified(), 27);
@@ -980,7 +999,8 @@ public final class BongoCatStyleManager {
         if (resources == null || !resources.isDirectory()) resources = sourceRoot;
         List<String> left = keyNames(dirIgnoreCase(resources, "left-keys"));
         List<String> right = keyNames(dirIgnoreCase(resources, "right-keys"));
-        String mode = detectMode(left, right);
+        boolean portableGamepad = hasPortableGamepadCompanionAssets(sourceRoot);
+        String mode = portableGamepad ? MODE_GAMEPAD : detectMode(left, right);
         String id = newStyleId();
         File target = new File(base, id);
         try {
@@ -995,7 +1015,8 @@ public final class BongoCatStyleManager {
             meta.put("renderer", RENDERER_LIVE2D);
             meta.put("modelFile", relativePath(sourceRoot, model));
             meta.put("adaptedTextures", adaptedTextures);
-            int[] designSize = detectDesignSize(target);
+            meta.put("portableGamepadHandCompositor", portableGamepad);
+            int[] designSize = portableGamepad ? detectPortableGamepadDesignSize(target) : detectDesignSize(target);
             meta.put("designWidth", designSize[0]);
             meta.put("designHeight", designSize[1]);
             return finalizeImportedStyle(target, meta, "导入后校验失败");
@@ -1036,6 +1057,13 @@ public final class BongoCatStyleManager {
         File current = modelRoot;
         File best = modelRoot;
         for (int depth = 0; depth < 5 && current != null && isInside(extractedRoot, current); depth++) {
+            // Legacy/portable gamepad exports keep the Live2D model in cat_model/ and put the
+            // authored full-canvas hand/stick assets one directory above it. Treat that parent as
+            // the package root; copying only cat_model/ permanently loses the hand compositor.
+            if (hasPortableGamepadCompanionAssets(current)) {
+                best = current;
+                break;
+            }
             File resources = dirIgnoreCase(current, "resources");
             if (resources != null && resources.isDirectory()) {
                 best = current;
@@ -1210,7 +1238,11 @@ public final class BongoCatStyleManager {
         List<String> right = keyNames(rightDir);
         JSONObject leftAssets = keyAssetMap(leftDir);
         JSONObject rightAssets = keyAssetMap(rightDir);
-        String runtimeMode = effectiveMode(info);
+        boolean portableGamepad = hasPortableGamepadCompanionAssets(info.root);
+        String runtimeMode = portableGamepad ? MODE_GAMEPAD : effectiveMode(info);
+        if (portableGamepad) {
+            appendPortableGamepadHandAssets(info.root, left, leftAssets, right, rightAssets);
+        }
         if (MODE_GAMEPAD.equals(runtimeMode)) {
             appendCanonicalGamepadAliases(left, leftAssets);
             appendCanonicalGamepadAliases(right, rightAssets);
@@ -1222,6 +1254,7 @@ public final class BongoCatStyleManager {
         config.put("mode", runtimeMode);
         config.put("format", FORMAT_MODERN);
         config.put("spriteMode", false);
+        config.put("portableGamepadHandCompositor", portableGamepad);
         config.put("background", fileUri(background));
         config.put("cover", fileUri(cover));
         config.put("leftKeys", new JSONArray(left));
@@ -1283,6 +1316,10 @@ public final class BongoCatStyleManager {
         JSONArray rightHandMatrix = mverBindingMatrix(modeConfig, "righthand", "rightHand");
         JSONArray handMatrix = mverBindingMatrix(modeConfig, "hand", "hands");
         JSONArray faceMatrix = mverBindingMatrix(modeConfig, "face", "emoticon", "emoticons");
+        // Mver standard 的原始语义是单 hand 合成器；keyboard 模式才是 lefthand/righthand。
+        // 部分二次打包会把其它模式目录一并塞进 standard，不能再仅凭目录存在就推断 split，
+        // 否则同时按键会把两套手层一起画出来，形成“分身手”。
+        String handLayout = detectMverHandLayout(info.root, handMatrix, leftHandMatrix, rightHandMatrix);
         JSONArray keyBindings = mverSpriteBindings(
                 dirIgnoreCase(info.root, "keyboard"), keyboardMatrix, info.mode, false);
         JSONArray leftHandBindings = mverSpriteBindings(
@@ -1294,10 +1331,15 @@ public final class BongoCatStyleManager {
         JSONArray faceBindings = mverSpriteBindings(
                 dirIgnoreCase(info.root, "face"), faceMatrix, info.mode, true);
 
+        // 导入阶段完整保留原始 hand family，便于诊断/兼容旧包；但运行时绝不跨 family 自动
+        // 切换。历史回归证明“首选 hand 加载失败 -> 改用另一个残留 lefthand/righthand”会把
+        // 其它模式的原始白色手掌混进当前 Live2D，造成分身/异常原始手部。
         config.put("mverKeyBindings", keyBindings);
         config.put("mverLeftHandBindings", leftHandBindings);
         config.put("mverRightHandBindings", rightHandBindings);
         config.put("mverHandBindings", handBindings);
+        config.put("mverHandLayout", handLayout);
+        config.put("mverStrictHandLayout", true);
         config.put("mverFaceBindings", faceBindings);
         config.put("mverFaceAssets", mverIndexedAssets(dirIgnoreCase(info.root, "face")));
 
@@ -1314,23 +1356,39 @@ public final class BongoCatStyleManager {
         config.put("mverLeftHandSprites", leftHandSprites);
         config.put("mverRightHandSprites", rightHandSprites);
         config.put("mverHandSprites", handSprites);
-        // Live2D-standard already contains the character, so its legacy white idle paw / pointer /
-        // generated arm remain hidden. Sprite-only standard relies on those layers for the actual
-        // animation, therefore restore them there. This keeps the user's Live2D preference while
-        // remaining compatible with non-Live2D Mver standard packs.
+
+        // 综合回退到出现问题前的稳定策略：Live2D 模型本身拥有静止手，因此绝不能把 Mver
+        // legacy up.png/leftup/rightup 当作 idle 再盖一层；这正是截图里“异常原始手部”的根因。
+        // Sprite-only Mver 没有模型手，才继续使用 legacy idle。
         boolean renderLegacyPointer = !useLive2d;
         config.put("mverLeftIdle", renderLegacyPointer ? fileUri(assetImageIgnoreCase(info.root, "leftup")) : "");
         config.put("mverRightIdle", renderLegacyPointer ? fileUri(assetImageIgnoreCase(info.root, "rightup")) : "");
         config.put("mverUp", renderLegacyPointer ? fileUri(assetImageIgnoreCase(info.root, "up")) : "");
-        config.put("mverRenderHandOverlays", true);
-        // Mver standard packages normally author keyboard hands as full-canvas PNG layers. When
-        // those layers exist they are the source of truth for keyboard-hand placement. Driving the
-        // model's CatParam*HandDown parameters at the same time creates a second hand animation;
-        // mirrored/swapped layouts can then send the pointer hand to the keyboard. Keep the model
-        // hand parameters only as a fallback for Live2D packages that do not provide authored
-        // full-frame hand layers.
-        config.put("mverSpriteHandsAuthoritative",
-                useLive2d && hasFullFrameMverHandOverlay(info.root, info.designWidth, info.designHeight));
+
+        boolean selectedActiveHandOverlay;
+        if (MVER_HAND_LAYOUT_SINGLE.equals(handLayout)) {
+            selectedActiveHandOverlay = handBindings.length() > 0 || handSprites.length() > 0;
+        } else if (MVER_HAND_LAYOUT_SPLIT.equals(handLayout)) {
+            selectedActiveHandOverlay = leftHandBindings.length() > 0 || rightHandBindings.length() > 0
+                    || leftHandSprites.length() > 0 || rightHandSprites.length() > 0;
+        } else {
+            selectedActiveHandOverlay = false;
+        }
+        boolean selectedFullFrame = selectedActiveHandOverlay && hasFullFrameMverHandOverlay(
+                info.root, info.designWidth, info.designHeight, handLayout);
+        boolean hasSpriteIdle = !fileUri(assetImageIgnoreCase(info.root, "up")).isEmpty()
+                || !fileUri(assetImageIgnoreCase(info.root, "leftup")).isEmpty()
+                || !fileUri(assetImageIgnoreCase(info.root, "rightup")).isEmpty();
+        // Live2D 只允许“当前 hand family 的按下动作层”参与合成；idle 永远交回模型。
+        // Sprite-only 则保留完整 raster hand container。
+        boolean renderHandOverlays = useLive2d ? selectedActiveHandOverlay
+                : (selectedActiveHandOverlay || hasSpriteIdle);
+        config.put("mverRenderHandOverlays", renderHandOverlays);
+        config.put("mverRasterIdleEnabled", !useLive2d);
+        config.put("mverHandCompositorVersion", 8);
+        config.put("mverHandModelFallback", useLive2d);
+        config.put("mverHandRenderPolicy", useLive2d ? "single-writer-raster-hide-gate-model-fallback" : "raster-container");
+        config.put("mverSpriteHandsAuthoritative", useLive2d && selectedFullFrame);
 
         config.put("leftKeys", new JSONArray(jsonKeys(leftHandSprites)));
         config.put("rightKeys", new JSONArray(jsonKeys(rightHandSprites)));
@@ -1359,8 +1417,11 @@ public final class BongoCatStyleManager {
         config.put("mverMouseBg", fileUri(mverBaseBackground));
         config.put("mverBaseLayerRole", authoredLive2dBase ? "foreground" : "background");
         config.put("mverBaseLayerZ", authoredLive2dBase ? 4 : 1);
-        // Keep the current Android calibration as a fallback only for plain legacy raster bases.
+        // Keep the current Android calibration as a fallback only for plain legacy raster Mver canvases.
         // Dedicated l2d*bg assets use their authored coordinates without this correction.
+        // 这组 offset 是“整张 Mver 设计画布”的全局变换，不是 base 私有偏移：runtime 必须
+        // 同步应用到 base / keyboard / hand / face；手部再额外叠加作者的 hand_offset。
+        // 若只移动 base，就会出现按键高亮与键盘错位、手部与模型连接点错位。
         double legacyRasterOffsetX = useLive2d && !authoredLive2dBase
                 ? info.designWidth * (8.0 / 612.0) : 0.0;
         config.put("mverFullFrameOffsetX", legacyRasterOffsetX);
@@ -2129,7 +2190,7 @@ public final class BongoCatStyleManager {
 
     private static JSONArray mverMediaBindings(File dir, JSONArray bindings) throws Exception {
         JSONArray result = new JSONArray();
-        if (bindings == null || !dir.isDirectory()) return result;
+        if (bindings == null || dir == null || !dir.isDirectory()) return result;
         for (int index = 0; index < bindings.length(); index++) {
             File media = firstAssetIgnoreCase(dir,
                     index + ".flac", index + ".wav", index + ".ogg",
@@ -2221,7 +2282,7 @@ public final class BongoCatStyleManager {
 
     private static JSONArray mverSpriteBindings(File dir, JSONArray bindings, String mode, boolean forceVk) throws Exception {
         JSONArray result = new JSONArray();
-        if (bindings == null || !dir.isDirectory()) return result;
+        if (bindings == null || dir == null || !dir.isDirectory()) return result;
         for (int index = 0; index < bindings.length(); index++) {
             File image = firstAssetIgnoreCase(dir,
                     index + ".png", index + ".webp", index + ".jpg", index + ".jpeg");
@@ -2292,7 +2353,7 @@ public final class BongoCatStyleManager {
 
     private static JSONObject mverSpriteMap(File dir, JSONArray bindings, String mode) throws Exception {
         JSONObject map = new JSONObject();
-        if (bindings == null || !dir.isDirectory()) return map;
+        if (bindings == null || dir == null || !dir.isDirectory()) return map;
         for (int index = 0; index < bindings.length(); index++) {
             File image = firstAssetIgnoreCase(dir,
                     index + ".png", index + ".webp", index + ".jpg", index + ".jpeg");
@@ -2402,10 +2463,12 @@ public final class BongoCatStyleManager {
             case 7 -> "RightTrigger2";
             case 8 -> "L3";
             case 9 -> "R3";
-            case 10 -> "DPadUp";
-            case 11 -> "DPadDown";
-            case 12 -> "DPadLeft";
-            case 13 -> "DPadRight";
+            case 10 -> "DPadLeft";
+            case 11 -> "DPadRight";
+            case 12 -> "DPadUp";
+            case 13 -> "DPadDown";
+            case 14 -> "Start";
+            case 15 -> "Select";
             default -> null;
         };
     }
@@ -2414,15 +2477,58 @@ public final class BongoCatStyleManager {
         return file != null && file.isFile() ? Uri.fromFile(file).toString() : "";
     }
 
+    private static String detectMverHandLayout(
+            File modeRoot, JSONArray handMatrix, JSONArray leftHandMatrix, JSONArray rightHandMatrix) {
+        // 配置语义优先于目录结构。上游 Mver standard 用 `hand`，而 keyboard 模式才拆成
+        // `lefthand` / `righthand`。这样可兼容把多个模式资源混装进一个目录的分享包。
+        if (hasMverBindingRows(handMatrix)) return MVER_HAND_LAYOUT_SINGLE;
+        if (hasMverBindingRows(leftHandMatrix) || hasMverBindingRows(rightHandMatrix)) {
+            return MVER_HAND_LAYOUT_SPLIT;
+        }
+
+        // 极老/不完整 config 的包才退回资源探测；generic hand 仍优先，避免误判 split。
+        if (hasImageAssets(dirIgnoreCase(modeRoot, "hand"))) return MVER_HAND_LAYOUT_SINGLE;
+        if (hasImageAssets(dirIgnoreCase(modeRoot, "lefthand"))
+                || hasImageAssets(dirIgnoreCase(modeRoot, "righthand"))) {
+            return MVER_HAND_LAYOUT_SPLIT;
+        }
+        return MVER_HAND_LAYOUT_NONE;
+    }
+
+    private static boolean hasMverBindingRows(JSONArray matrix) {
+        if (matrix == null) return false;
+        for (int i = 0; i < matrix.length(); i++) {
+            JSONArray row = matrix.optJSONArray(i);
+            if (row != null && row.length() > 0) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasImageAssets(File dir) {
+        if (dir == null || !dir.isDirectory()) return false;
+        File[] files = dir.listFiles(File::isFile);
+        if (files == null) return false;
+        for (File file : files) {
+            String lower = file.getName().toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".png") || lower.endsWith(".webp")
+                    || lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return true;
+        }
+        return false;
+    }
+
     /**
      * Detect whether an Mver standard package supplies authored full-canvas keyboard-hand layers.
      * Those layers already contain the exact device/hand placement chosen by the skin author and
      * must not be combined with Live2D CatParam*HandDown animation.
      */
-    private static boolean hasFullFrameMverHandOverlay(File modeRoot, int designWidth, int designHeight) {
+    private static boolean hasFullFrameMverHandOverlay(
+            File modeRoot, int designWidth, int designHeight, String handLayout) {
         if (modeRoot == null || designWidth <= 0 || designHeight <= 0) return false;
         final double minimumCoverage = 0.72;
-        for (String group : new String[]{"hand", "lefthand", "righthand"}) {
+        String[] groups = MVER_HAND_LAYOUT_SPLIT.equals(handLayout)
+                ? new String[]{"lefthand", "righthand"}
+                : (MVER_HAND_LAYOUT_SINGLE.equals(handLayout) ? new String[]{"hand"} : new String[0]);
+        for (String group : groups) {
             File dir = dirIgnoreCase(modeRoot, group);
             if (dir == null || !dir.isDirectory()) continue;
             File[] files = dir.listFiles(File::isFile);
@@ -2438,6 +2544,100 @@ public final class BongoCatStyleManager {
             }
         }
         return false;
+    }
+
+    /**
+     * Detect the portable/Mver-derived gamepad layout used by community controller cats. The
+     * defining feature is a split lefthand/righthand compositor next to cat_model plus stick/arm
+     * assets. Keeping this structural test narrow avoids misclassifying ordinary Live2D packages.
+     */
+    private static boolean hasPortableGamepadCompanionAssets(File root) {
+        if (root == null || !root.isDirectory()) return false;
+        File left = dirIgnoreCase(root, "lefthand");
+        File right = dirIgnoreCase(root, "righthand");
+        if (left == null || right == null || !left.isDirectory() || !right.isDirectory()) return false;
+        File left0 = firstAssetIgnoreCase(left, "0.png", "0.webp", "0.jpg", "0.jpeg");
+        File right0 = firstAssetIgnoreCase(right, "0.png", "0.webp", "0.jpg", "0.jpeg");
+        if (left0 == null || right0 == null) return false;
+        return assetImageIgnoreCase(root, "left_stick") != null
+                || assetImageIgnoreCase(root, "right_stick") != null
+                || assetImageIgnoreCase(root, "arm_L") != null
+                || assetImageIgnoreCase(root, "arm_R") != null;
+    }
+
+    /**
+     * Convert the indexed legacy gamepad hand sheets to Axon's canonical controller semantics.
+     * This ordering is the portable Mver gamepad layout: d-pad/face directions are indexed by
+     * their authored visual position, followed by trigger then bumper. Only existing image files
+     * are registered, so partial packs degrade cleanly instead of creating broken overlay URIs.
+     */
+    private static void appendPortableGamepadHandAssets(
+            File root, List<String> left, JSONObject leftAssets,
+            List<String> right, JSONObject rightAssets) {
+        if (!hasPortableGamepadCompanionAssets(root)) return;
+        File leftDir = dirIgnoreCase(root, "lefthand");
+        File rightDir = dirIgnoreCase(root, "righthand");
+        String[] leftSemantics = {
+                "DPadRight", "DPadLeft", "DPadDown", "DPadUp", "LeftTrigger2", "LeftTrigger"
+        };
+        String[] rightSemantics = {
+                "East", "West", "South", "North", "RightTrigger2", "RightTrigger"
+        };
+        appendIndexedPortableHandAssets(leftDir, leftSemantics, left, leftAssets);
+        appendIndexedPortableHandAssets(rightDir, rightSemantics, right, rightAssets);
+    }
+
+    private static void appendIndexedPortableHandAssets(
+            File dir, String[] semantics, List<String> keys, JSONObject assets) {
+        if (dir == null || semantics == null || keys == null || assets == null) return;
+        java.util.HashSet<String> existing = new java.util.HashSet<>(keys);
+        for (int index = 0; index < semantics.length; index++) {
+            File image = firstAssetIgnoreCase(dir,
+                    index + ".png", index + ".webp", index + ".jpg", index + ".jpeg");
+            if (image == null || !image.isFile()) continue;
+            String semantic = semantics[index];
+            if (existing.add(semantic)) keys.add(semantic);
+            try { assets.put(semantic, fileUri(image)); }
+            catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * Portable controller hand sheets are full-canvas overlays and are often larger than bg.png.
+     * Use the dominant indexed hand-sheet size as the compositor coordinate system; otherwise a
+     * 1200x1040 hand exported beside a 612x354 transparent preview gets stretched and looks broken.
+     */
+    private static int[] detectPortableGamepadDesignSize(File root) {
+        HashMap<String, Integer> counts = new HashMap<>();
+        HashMap<String, int[]> values = new HashMap<>();
+        for (String group : new String[]{"lefthand", "righthand"}) {
+            File dir = dirIgnoreCase(root, group);
+            if (dir == null || !dir.isDirectory()) continue;
+            File[] files = dir.listFiles(File::isFile);
+            if (files == null) continue;
+            for (File file : files) {
+                if (numericAssetIndex(file.getName()) < 0) continue;
+                int[] size = imageSize(file);
+                if (size == null) continue;
+                String key = size[0] + "x" + size[1];
+                counts.put(key, counts.getOrDefault(key, 0) + 1);
+                values.put(key, size);
+            }
+        }
+        String bestKey = null;
+        int bestCount = 0;
+        long bestArea = 0L;
+        for (java.util.Map.Entry<String, Integer> entry : counts.entrySet()) {
+            int[] size = values.get(entry.getKey());
+            long area = size == null ? 0L : (long) size[0] * size[1];
+            if (entry.getValue() > bestCount || (entry.getValue() == bestCount && area > bestArea)) {
+                bestKey = entry.getKey();
+                bestCount = entry.getValue();
+                bestArea = area;
+            }
+        }
+        int[] best = bestKey == null ? null : values.get(bestKey);
+        return best != null ? best : detectDesignSize(root);
     }
 
     /**
@@ -2740,10 +2940,56 @@ public final class BongoCatStyleManager {
         assets.put("rightKeyCount", keyNames(right).size());
         manifest.put("assets", assets);
 
+        if (FORMAT_MVER_016.equals(info.format)) {
+            manifest.put("handCompositor", mverHandCompositorManifest(info));
+        }
+
         TextureProfile profile = textureProfile(info);
         manifest.put("textures", profile.toJson());
         manifest.put("runtime", runtimeProfileJson(profile, physicsSettingCount(info)));
         writeText(new File(info.root, NORMALIZED_MANIFEST_FILE), manifest.toString());
+    }
+
+    private static JSONObject mverHandCompositorManifest(StyleInfo info) {
+        JSONObject result = new JSONObject();
+        try {
+            JSONObject sourceConfig = null;
+            File sourceConfigFile = new File(info.root, MVER_SOURCE_CONFIG_FILE);
+            if (sourceConfigFile.isFile()) sourceConfig = parseMverJson(readText(sourceConfigFile));
+            JSONObject modeConfig = sourceConfig == null ? null : objectIgnoreCase(sourceConfig, MODE_STANDARD);
+            if (modeConfig == null) modeConfig = new JSONObject();
+            JSONArray hand = mverBindingMatrix(modeConfig, "hand", "hands");
+            JSONArray left = mverBindingMatrix(modeConfig, "lefthand", "leftHand");
+            JSONArray right = mverBindingMatrix(modeConfig, "righthand", "rightHand");
+            String layout = detectMverHandLayout(info.root, hand, left, right);
+            boolean live2d = RENDERER_LIVE2D.equals(info.renderer);
+            boolean fullFrame = hasFullFrameMverHandOverlay(info.root, info.designWidth, info.designHeight, layout);
+            result.put("version", 3);
+            result.put("layout", layout);
+            result.put("strictLayout", true);
+            result.put("genericBindingRows", countMverBindingRows(hand));
+            result.put("leftBindingRows", countMverBindingRows(left));
+            result.put("rightBindingRows", countMverBindingRows(right));
+            result.put("preserveAllLayouts", true);
+            result.put("fallbackAcrossLayouts", false);
+            result.put("modelFallback", live2d);
+            result.put("idleOwner", live2d ? "model" : "raster");
+            result.put("renderPolicy", live2d ? "active-raster-model-idle" : "raster-container");
+            result.put("fullFrameAuthoritative", live2d && fullFrame);
+        } catch (Throwable ignored) {
+            try { result.put("layout", MVER_HAND_LAYOUT_NONE); } catch (Exception ignoredAgain) {}
+        }
+        return result;
+    }
+
+    private static int countMverBindingRows(JSONArray matrix) {
+        if (matrix == null) return 0;
+        int count = 0;
+        for (int i = 0; i < matrix.length(); i++) {
+            JSONArray row = matrix.optJSONArray(i);
+            if (row != null && row.length() > 0) count++;
+        }
+        return count;
     }
 
     private static String relativePathOrEmpty(File root, File file) {
@@ -3344,12 +3590,31 @@ public final class BongoCatStyleManager {
                 extractZipFile(archive, target, charset);
                 return;
             } catch (IOException | IllegalArgumentException error) {
+                if (!isZipFilenameDecodeFailure(error)) {
+                    deleteTree(target);
+                    if (error instanceof IOException) throw (IOException) error;
+                    throw new IOException("Cannot extract style archive", error);
+                }
                 last = error instanceof IOException ? (IOException) error
                         : new IOException("ZIP filename decode failed: " + charset.name(), error);
             }
         }
         deleteTree(target);
         throw last == null ? new IOException("Cannot extract style archive") : last;
+    }
+
+
+    private static boolean isZipFilenameDecodeFailure(Throwable error) {
+        if (!(error instanceof IllegalArgumentException) && !(error instanceof ZipException)) return false;
+        String message = error.getMessage();
+        if (message == null) return false;
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.contains("bad entry name")
+                || lower.contains("invalid entry name")
+                || lower.contains("malformed")
+                || lower.contains("input length")
+                || lower.contains("utf") && lower.contains("name")
+                || lower.contains("entry") && lower.contains("charset");
     }
 
     private static void extractZipFile(File archive, File target, Charset charset) throws IOException {

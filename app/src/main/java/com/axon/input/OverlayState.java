@@ -107,6 +107,7 @@ public final class OverlayState {
     private static final String KEY_KEYBOARD_SPACE_DASH_ENABLED = "keyboard_space_dash_enabled";
     private static final String KEY_KEYBOARD_MOUSE_BUTTONS_ENABLED = "keyboard_mouse_buttons_enabled";
     private static final String KEY_KEYBOARD_MOUSE_CPS_ENABLED = "keyboard_mouse_cps_enabled";
+    private static final String KEY_KEYBOARD_MOUSE_SPACE_SWAP_ENABLED = "keyboard_mouse_space_swap_enabled";
     private static final String KEY_CUSTOM_SIZE = "custom_size";
     private static final String KEY_CUSTOM_SPACING = "custom_spacing";
     private static final String KEY_MOUSE_SIZE = "mouse_size";
@@ -564,7 +565,7 @@ public final class OverlayState {
             case HIDE_DISPLAY_MOUSE_TRAJECTORY: return isMouseTrajectoryEnabled(context);
             case HIDE_DISPLAY_CUSTOM: return isCustomEnabled(context);
             case HIDE_DISPLAY_SUPER_CUSTOM: return isSuperCustomEnabled(context);
-            case HIDE_DISPLAY_TOUCH: return TouchDisplayStore.isEnabled(context);
+            case HIDE_DISPLAY_TOUCH: return false; // merged into HIDE_DISPLAY_KEYBOARD / 常规按显
             case HIDE_DISPLAY_DPS: return isDpsEnabled(context);
             case HIDE_DISPLAY_GAMEPAD_LEFT_STICK: return isGamepadLeftStickEnabled(context);
             case HIDE_DISPLAY_GAMEPAD_RIGHT_STICK: return isGamepadRightStickEnabled(context);
@@ -958,7 +959,7 @@ public final class OverlayState {
     public static boolean isAnyDisplayEnabled(Context context) {
         return isEnabled(context) || isInputFullKeyboardEnabled(context) || isMouseEnabled(context)
                 || isKeyboardCatEnabled(context) || isLive2DEnabled(context) || isKeyPromptEnabled(context)
-                || isCustomEnabled(context) || isSuperCustomEnabled(context) || TouchDisplayStore.isEnabled(context)
+                || isCustomEnabled(context) || isSuperCustomEnabled(context)
                 || isMouseTrajectoryEnabled(context)
                 || isDpsEnabled(context) || isAnyGamepadDisplayEnabled(context);
     }
@@ -1192,6 +1193,15 @@ public final class OverlayState {
 
     public static void setKeyboardMouseCpsEnabled(Context context, boolean enabled) {
         setBooleanAndRefresh(context, KEY_KEYBOARD_MOUSE_CPS_ENABLED, enabled);
+    }
+
+    /** Debug layout option: swap the optional LMB/RMB row with the Space row. */
+    public static boolean isKeyboardMouseSpaceSwapEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_KEYBOARD_MOUSE_SPACE_SWAP_ENABLED, false);
+    }
+
+    public static void setKeyboardMouseSpaceSwapEnabled(Context context, boolean enabled) {
+        setBooleanAndRefresh(context, KEY_KEYBOARD_MOUSE_SPACE_SWAP_ENABLED, enabled);
     }
 
     public static int getCustomSize(Context context) {
@@ -1997,9 +2007,12 @@ public final class OverlayState {
     }
 
 
-    /** 拖动位置可超出屏幕。仅限制异常坐标。 */
+    /**
+     * 悬浮组件必须始终能被找回。0..100 表示组件左上角在其可移动范围内，
+     * 旧版本保存的负值/超 100% 坐标会在读取时自动迁回屏幕，而不是永久丢失在屏外。
+     */
     private static int clampFreePositionPercent(int value) {
-        return Math.max(-1000, Math.min(1000, value));
+        return Math.max(0, Math.min(100, value));
     }
 
     private static int clampColumns(int value) {

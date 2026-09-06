@@ -389,7 +389,7 @@ KeyDisplay.onState(s=>{
         view.setText(text);
         view.setTextColor(UiPalette.textPrimary(this));
         view.setTextSize(22f);
-        view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        view.setTypeface(AppTypeface.heavy(this));
         view.setPadding(0, 0, 0, dp(12));
         root.addView(view, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -400,7 +400,7 @@ KeyDisplay.onState(s=>{
         view.setText(text);
         view.setTextColor(UiPalette.textPrimary(this));
         view.setTextSize(16f);
-        view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        view.setTypeface(AppTypeface.heavy(this));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         params.topMargin = dp(18);

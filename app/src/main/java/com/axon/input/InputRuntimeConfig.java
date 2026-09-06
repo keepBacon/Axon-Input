@@ -145,6 +145,16 @@ final class InputRuntimeConfig {
                 if (InputBinding.isKeyboard(rule.triggerInputCode)) actionUsesKeyboard = true;
             }
         }
+        if (ClickMultiplierStore.isEnabled(context)) {
+            int toggle = ClickMultiplierStore.getToggleInputCode(context);
+            int target = ClickMultiplierStore.getTargetInputCode(context);
+            int[] inputs = new int[]{toggle, target};
+            for (int input : inputs) {
+                if (InputBinding.isMouse(input)) actionUsesMouse = true;
+                else if (InputBinding.isGamepad(input)) actionUsesGamepad = true;
+                else if (InputBinding.isKeyboard(input)) actionUsesKeyboard = true;
+            }
+        }
         if (SimultaneousClickStore.isEnabled(context)) {
             for (SimultaneousClickStore.Binding binding : SimultaneousClickStore.load(context)) {
                 int source = binding.sourceInputCode;
@@ -156,6 +166,12 @@ final class InputRuntimeConfig {
         if (MainActivity.isCustomMappingCaptureActive()) {
             // During the five-second target window any keyboard, mouse or gamepad button may be
             // recorded, even if its normal display is disabled.
+            actionUsesKeyboard = true;
+            actionUsesMouse = true;
+            actionUsesGamepad = true;
+        }
+        if (MainActivity.isClickMultiplierCaptureActive()) {
+            // 两个录入位都允许键盘、鼠标和手柄按键。
             actionUsesKeyboard = true;
             actionUsesMouse = true;
             actionUsesGamepad = true;
@@ -177,6 +193,11 @@ final class InputRuntimeConfig {
                 else if (InputBinding.isKeyboard(binding.inputCode)) actionUsesKeyboard = true;
             }
         }
+        int featureShortcutMask = FeatureShortcutStore.inputMask(context);
+        if ((featureShortcutMask & FeatureShortcutStore.INPUT_KEYBOARD) != 0) actionUsesKeyboard = true;
+        if ((featureShortcutMask & FeatureShortcutStore.INPUT_MOUSE) != 0) actionUsesMouse = true;
+        if ((featureShortcutMask & FeatureShortcutStore.INPUT_GAMEPAD) != 0) actionUsesGamepad = true;
+
         if (keyboardCat) {
             String styleId = OverlayState.getKeyboardCatStyleId(context);
             String physicsTarget = Live2DPhysicsSettingsStore.keyboardCatTarget(styleId);
@@ -205,12 +226,16 @@ final class InputRuntimeConfig {
                 || InputBinding.isGamepad(forceTrigger) || customUsesGamepad || superCustomUsesGamepad || mediaUsesGamepad
                 || actionUsesGamepad;
 
-        boolean keyboardMouseButtons = keyboard && OverlayState.isKeyboardMouseButtonsEnabled(context);
+        boolean touchGamepadDisplay = keyboard
+                && TouchDisplayStore.isGamepadMode(context)
+                && TouchDisplayStore.isGamepadConfigComplete(context);
+        boolean keyboardMouseButtons = keyboard && TouchDisplayStore.isKeyboardMouseMode(context)
+                && OverlayState.isKeyboardMouseButtonsEnabled(context);
         boolean keyboardMouseCps = keyboardMouseButtons && OverlayState.isKeyboardMouseCpsEnabled(context);
         boolean mouseMonitor = !sensitivity && (mouse || trajectory || keyPrompt || keyboardCatUsesMouse
                 || keyboardMouseButtons || dpsNeedsMouse || boundMouse);
         boolean gamepadMonitor = !sensitivity && (OverlayState.isAnyGamepadDisplayEnabled(context)
-                || keyboardCatUsesGamepad || dpsNeedsGamepad || boundGamepad);
+                || touchGamepadDisplay || keyboardCatUsesGamepad || dpsNeedsGamepad || boundGamepad);
 
         return new InputRuntimeConfig(
                 keyboard,

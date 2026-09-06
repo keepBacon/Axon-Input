@@ -21,10 +21,10 @@ import android.widget.SpinnerAdapter;
  * scales around that same geometric centre.
  */
 final class AnimatedChoiceSpinner extends Spinner {
-    private static final float ENTER_SCALE = 0.78f;
-    private static final float EXIT_SCALE = 0.94f;
-    private static final long ENTER_MS = 320L;
-    private static final long EXIT_MS = 220L;
+    private static final float ENTER_SCALE = 0.95f;
+    private static final float EXIT_SCALE = 0.98f;
+    private static final long ENTER_MS = 180L;
+    private static final long EXIT_MS = 140L;
     private static final int MAX_VISIBLE_ROWS = 6;
 
     private PopupWindow popup;

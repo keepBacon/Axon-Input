@@ -15,7 +15,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /** Persistent global HTML library plus its lightweight runtime cache. */
@@ -31,6 +33,19 @@ final class GlobalHtmlStore {
         HtmlInfo(String id, String name) {
             this.id = id == null ? "" : id;
             this.name = name == null ? "" : name;
+        }
+    }
+
+    /** ConfigManager 事务导入使用的 HTML 库快照；只暴露给同包代码。 */
+    static final class ConfigSnapshot {
+        final String libraryRaw;
+        final String selectedId;
+        final Set<String> documentIds;
+
+        ConfigSnapshot(String libraryRaw, String selectedId, Set<String> documentIds) {
+            this.libraryRaw = libraryRaw == null ? "" : libraryRaw;
+            this.selectedId = selectedId == null ? "" : selectedId;
+            this.documentIds = documentIds;
         }
     }
 
@@ -210,6 +225,52 @@ final class GlobalHtmlStore {
     static void clearFromConfig(Context context) {
         PreferenceWriter.putBooleanIfChanged(preferences(context), KEY_ENABLED, false);
         invalidateCache();
+    }
+
+
+    static ConfigSnapshot snapshotForConfig(Context context) {
+        SharedPreferences prefs = libraryPreferences(context);
+        String raw = prefs.getString(KEY_LIBRARY, "");
+        String selected = prefs.getString(KEY_SELECTED_ID, "");
+        return new ConfigSnapshot(raw, selected, parseDocumentIds(raw));
+    }
+
+    static void rollbackConfigMutation(Context context, ConfigSnapshot snapshot) throws IOException {
+        if (snapshot == null) return;
+        Context app = context.getApplicationContext();
+        SharedPreferences prefs = libraryPreferences(app);
+        String currentRaw = prefs.getString(KEY_LIBRARY, "");
+        Set<String> currentIds = parseDocumentIds(currentRaw);
+        for (String id : currentIds) {
+            if (id == null || id.isEmpty() || snapshot.documentIds.contains(id)) continue;
+            File file = libraryFile(app, id);
+            if (file.exists() && !file.delete()) {
+                throw new IOException("Cannot rollback imported HTML file");
+            }
+        }
+
+        SharedPreferences.Editor editor = prefs.edit();
+        if (snapshot.libraryRaw.isEmpty()) editor.remove(KEY_LIBRARY);
+        else editor.putString(KEY_LIBRARY, snapshot.libraryRaw);
+        if (snapshot.selectedId.isEmpty()) editor.remove(KEY_SELECTED_ID);
+        else editor.putString(KEY_SELECTED_ID, snapshot.selectedId);
+        if (!editor.commit()) throw new IOException("Cannot rollback HTML metadata");
+        invalidateCache();
+    }
+
+    private static Set<String> parseDocumentIds(String raw) {
+        HashSet<String> result = new HashSet<>();
+        if (raw == null || raw.isEmpty()) return result;
+        try {
+            JSONArray array = new JSONArray(raw);
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
+                if (item == null) continue;
+                String id = item.optString("id", "").trim();
+                if (!id.isEmpty() && !LEGACY_ID.equals(id)) result.add(id);
+            }
+        } catch (Throwable ignored) { }
+        return result;
     }
 
     static void invalidateCache() {

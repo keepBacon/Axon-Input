@@ -14,7 +14,7 @@ final class SuperCustomConfigStore {
     static final int SLOT_COUNT = 5;
     static final int MAX_CONFIG_BYTES = 512 * 1024;
 
-    private static final int SCHEMA_VERSION = 3;
+    private static final int SCHEMA_VERSION = 7;
     private static final String PREFS = "super_custom_configs";
     private static final String ACTIVE = "active_workspace";
     private static final String SLOT_PREFIX = "slot_";
@@ -60,7 +60,9 @@ final class SuperCustomConfigStore {
 
     static boolean activeContainsGamepad(Context context) {
         for (SuperCustomControlSpec spec : loadActive(context)) {
-            if (spec != null && spec.isKeyElement() && InputBinding.isGamepad(spec.keyCode)) return true;
+            if (spec == null) continue;
+            if (spec.isStickElement()) return true;
+            if (spec.isKeyElement() && InputBinding.isGamepad(spec.keyCode)) return true;
         }
         return false;
     }
@@ -109,6 +111,10 @@ final class SuperCustomConfigStore {
                 if (spec == null) continue;
                 JSONObject item = new JSONObject();
                 item.put("controlType", spec.controlType);
+                item.put("controlId", spec.controlId);
+                item.put("bindingGroupId", spec.bindingGroupId);
+                item.put("bindingGroupIndex", spec.bindingGroupIndex);
+                item.put("bindingAnchor", spec.bindingAnchor);
                 item.put("keyCode", spec.keyCode);
                 item.put("labelText", spec.labelText == null ? "" : spec.labelText);
                 item.put("widthDp", spec.widthDp);
@@ -116,6 +122,12 @@ final class SuperCustomConfigStore {
                 item.put("cornerDp", spec.cornerDp);
                 item.put("opacityPercent", spec.opacityPercent);
                 item.put("diffusionOpacityPercent", spec.diffusionOpacityPercent);
+                item.put("backgroundOpacityPercent", spec.backgroundOpacityPercent);
+                item.put("borderOpacityPercent", spec.borderOpacityPercent);
+                item.put("textOpacityPercent", spec.textOpacityPercent);
+                item.put("borderWidthDp", spec.borderWidthDp);
+                item.put("baseColor", spec.baseColor);
+                item.put("baseColors", spec.baseColors == null ? "" : spec.baseColors);
                 item.put("pressColor", spec.pressColor);
                 item.put("pressColors", spec.pressColors == null ? "" : spec.pressColors);
                 item.put("borderColor", spec.borderColor);
@@ -124,6 +136,9 @@ final class SuperCustomConfigStore {
                 item.put("textColors", spec.textColors == null ? "" : spec.textColors);
                 item.put("textSizeSp", spec.textSizeSp);
                 item.put("motionMode", spec.motionMode);
+                item.put("stickSide", spec.stickSide);
+                item.put("stickDotSizePercent", spec.stickDotSizePercent);
+                item.put("stickDotCornerPercent", spec.stickDotCornerPercent);
                 item.put("cpsEnabled", spec.cpsEnabled);
                 item.put("cpsTemplate", spec.cpsTemplate == null ? SuperCustomControlSpec.CPS_TEMPLATE : spec.cpsTemplate);
                 item.put("textStrokeEnabled", spec.textStrokeEnabled);
@@ -146,7 +161,7 @@ final class SuperCustomConfigStore {
             throw new IllegalArgumentException("unsupported config");
         }
         int version = root.optInt("version", -1);
-        if (version != 1 && version != 2 && version != SCHEMA_VERSION) {
+        if (version < 1 || version > SCHEMA_VERSION) {
             throw new IllegalArgumentException("unsupported version");
         }
         JSONArray controls = root.optJSONArray("controls");
@@ -160,7 +175,8 @@ final class SuperCustomConfigStore {
                     ? item.optInt("controlType", SuperCustomControlSpec.TYPE_KEY)
                     : SuperCustomControlSpec.TYPE_KEY;
             if (controlType != SuperCustomControlSpec.TYPE_KEY
-                    && controlType != SuperCustomControlSpec.TYPE_TEXT) {
+                    && controlType != SuperCustomControlSpec.TYPE_TEXT
+                    && controlType != SuperCustomControlSpec.TYPE_STICK) {
                 throw new IllegalArgumentException("invalid control type");
             }
 
@@ -168,22 +184,42 @@ final class SuperCustomConfigStore {
             if (controlType == SuperCustomControlSpec.TYPE_KEY && !InputBinding.isValid(keyCode)) {
                 throw new IllegalArgumentException("invalid binding");
             }
+            int stickSide = item.optInt("stickSide", SuperCustomControlSpec.STICK_LEFT);
+            if (stickSide != SuperCustomControlSpec.STICK_LEFT
+                    && stickSide != SuperCustomControlSpec.STICK_RIGHT) {
+                stickSide = SuperCustomControlSpec.STICK_LEFT;
+            }
             String fallbackLabel = controlType == SuperCustomControlSpec.TYPE_TEXT
-                    ? "文本" : InputBinding.label(keyCode);
+                    ? "文本" : controlType == SuperCustomControlSpec.TYPE_STICK
+                    ? (stickSide == SuperCustomControlSpec.STICK_RIGHT ? "右摇杆" : "左摇杆")
+                    : InputBinding.label(keyCode);
             String label = item.optString("labelText", fallbackLabel);
             SuperCustomControlSpec spec = controlType == SuperCustomControlSpec.TYPE_TEXT
                     ? SuperCustomControlSpec.createText(false)
+                    : controlType == SuperCustomControlSpec.TYPE_STICK
+                    ? SuperCustomControlSpec.createStick(stickSide, false)
                     : new SuperCustomControlSpec(keyCode, label, false);
             spec.controlType = controlType;
+            spec.controlId = version >= 7 ? item.optLong("controlId", 0L) : 0L;
+            spec.bindingGroupId = version >= 7 ? item.optLong("bindingGroupId", 0L) : 0L;
+            spec.bindingGroupIndex = version >= 7 ? item.optInt("bindingGroupIndex", 0) : 0;
+            spec.bindingAnchor = version >= 7 && item.optBoolean("bindingAnchor", false);
             spec.keyCode = keyCode;
             spec.labelText = label;
             int maxWidthDp = controlType == SuperCustomControlSpec.TYPE_TEXT ? 560 : 420;
             spec.widthDp = clamp(item.optInt("widthDp", spec.widthDp), 28, maxWidthDp);
             spec.heightDp = clamp(item.optInt("heightDp", spec.heightDp), 24, 300);
-            spec.cornerDp = clamp(item.optInt("cornerDp", spec.cornerDp), 0, 80);
+            spec.cornerDp = clamp(item.optInt("cornerDp", spec.cornerDp), 0,
+                    controlType == SuperCustomControlSpec.TYPE_STICK ? 100 : 80);
             spec.opacityPercent = clamp(item.optInt("opacityPercent", spec.opacityPercent), 0, 100);
             spec.diffusionOpacityPercent = clamp(
                     item.optInt("diffusionOpacityPercent", spec.diffusionOpacityPercent), 0, 100);
+            spec.backgroundOpacityPercent = clamp(item.optInt("backgroundOpacityPercent", 100), 0, 100);
+            spec.borderOpacityPercent = clamp(item.optInt("borderOpacityPercent", 100), 0, 100);
+            spec.textOpacityPercent = clamp(item.optInt("textOpacityPercent", 100), 0, 100);
+            spec.borderWidthDp = clamp(item.optInt("borderWidthDp", 1), 1, 8);
+            spec.baseColor = item.optInt("baseColor", 0);
+            spec.baseColors = item.optString("baseColors", "");
             spec.pressColor = item.optInt("pressColor", spec.pressColor);
             spec.pressColors = item.optString("pressColors", "");
             spec.borderColor = item.optInt("borderColor", spec.borderColor);
@@ -191,7 +227,14 @@ final class SuperCustomConfigStore {
             spec.textColor = item.optInt("textColor", spec.textColor);
             spec.textColors = item.optString("textColors", "");
             spec.textSizeSp = clamp(item.optInt("textSizeSp", spec.textSizeSp), 8, 96);
-            spec.motionMode = OverlayState.clampMotionMode(item.optInt("motionMode", spec.motionMode));
+            spec.motionMode = controlType == SuperCustomControlSpec.TYPE_STICK
+                    ? OverlayState.MOTION_NONE
+                    : OverlayState.clampMotionMode(item.optInt("motionMode", spec.motionMode));
+            spec.stickSide = stickSide;
+            spec.stickDotSizePercent = clamp(
+                    item.optInt("stickDotSizePercent", spec.stickDotSizePercent), 12, 70);
+            spec.stickDotCornerPercent = clamp(
+                    item.optInt("stickDotCornerPercent", 100), 0, 100);
             spec.cpsEnabled = controlType == SuperCustomControlSpec.TYPE_KEY
                     && item.optBoolean("cpsEnabled", false);
             spec.cpsTemplate = item.optString("cpsTemplate", SuperCustomControlSpec.CPS_TEMPLATE);
@@ -212,7 +255,135 @@ final class SuperCustomConfigStore {
                     : (spec.centerXPx >= 0 && spec.centerYPx >= 0);
             specs.add(spec);
         }
+        sanitizeBindings(specs);
         return specs;
+    }
+
+    /**
+     * 绑定信息属于编辑器关系数据。加载时集中修复旧配置、重复 ID、孤立组和多 Anchor，
+     * 避免坏配置把拖动传播成环或留下不可恢复的幽灵成员。
+     */
+    private static void sanitizeBindings(List<SuperCustomControlSpec> specs) {
+        if (specs == null || specs.isEmpty()) return;
+
+        long nextControlId = 1L;
+        for (SuperCustomControlSpec spec : specs) {
+            if (spec != null && spec.controlId >= nextControlId) nextControlId = spec.controlId + 1L;
+        }
+        for (int i = 0; i < specs.size(); i++) {
+            SuperCustomControlSpec spec = specs.get(i);
+            if (spec == null) continue;
+            boolean duplicate = spec.controlId <= 0L;
+            if (!duplicate) {
+                for (int j = 0; j < i; j++) {
+                    SuperCustomControlSpec previous = specs.get(j);
+                    if (previous != null && previous.controlId == spec.controlId) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+            }
+            if (duplicate) spec.controlId = nextControlId++;
+            if (spec.bindingGroupId <= 0L) clearBinding(spec);
+        }
+
+        // 每个有效组必须恰好有一个 Anchor 且至少两个控件。
+        for (int i = 0; i < specs.size(); i++) {
+            SuperCustomControlSpec seed = specs.get(i);
+            if (seed == null || seed.bindingGroupId <= 0L) continue;
+            long groupId = seed.bindingGroupId;
+            boolean alreadyChecked = false;
+            for (int j = 0; j < i; j++) {
+                SuperCustomControlSpec previous = specs.get(j);
+                if (previous != null && previous.bindingGroupId == groupId) {
+                    alreadyChecked = true;
+                    break;
+                }
+            }
+            if (alreadyChecked) continue;
+
+            int count = 0;
+            int anchors = 0;
+            int groupIndex = 0;
+            for (SuperCustomControlSpec candidate : specs) {
+                if (candidate == null || candidate.bindingGroupId != groupId) continue;
+                count++;
+                if (candidate.bindingAnchor) anchors++;
+                if (groupIndex == 0 && candidate.bindingGroupIndex > 0) {
+                    groupIndex = candidate.bindingGroupIndex;
+                }
+            }
+            if (count < 2 || anchors != 1) {
+                for (SuperCustomControlSpec candidate : specs) {
+                    if (candidate != null && candidate.bindingGroupId == groupId) clearBinding(candidate);
+                }
+                continue;
+            }
+            if (groupIndex <= 0) groupIndex = nextFreeGroupIndex(specs, groupId);
+            for (SuperCustomControlSpec candidate : specs) {
+                if (candidate != null && candidate.bindingGroupId == groupId) {
+                    candidate.bindingGroupIndex = groupIndex;
+                }
+            }
+        }
+
+        // 不同组不允许复用同一显示编号；发生冲突时只重编号后出现的组，不改稳定 groupId。
+        for (int i = 0; i < specs.size(); i++) {
+            SuperCustomControlSpec seed = specs.get(i);
+            if (seed == null || seed.bindingGroupId <= 0L) continue;
+            long groupId = seed.bindingGroupId;
+            boolean firstOfGroup = true;
+            for (int j = 0; j < i; j++) {
+                SuperCustomControlSpec previous = specs.get(j);
+                if (previous != null && previous.bindingGroupId == groupId) {
+                    firstOfGroup = false;
+                    break;
+                }
+            }
+            if (!firstOfGroup) continue;
+            int desired = seed.bindingGroupIndex;
+            boolean conflict = false;
+            for (int j = 0; j < i; j++) {
+                SuperCustomControlSpec previous = specs.get(j);
+                if (previous != null && previous.bindingGroupId > 0L
+                        && previous.bindingGroupId != groupId
+                        && previous.bindingGroupIndex == desired) {
+                    conflict = true;
+                    break;
+                }
+            }
+            if (conflict) {
+                int replacement = nextFreeGroupIndex(specs, groupId);
+                for (SuperCustomControlSpec candidate : specs) {
+                    if (candidate != null && candidate.bindingGroupId == groupId) {
+                        candidate.bindingGroupIndex = replacement;
+                    }
+                }
+            }
+        }
+    }
+
+    private static int nextFreeGroupIndex(List<SuperCustomControlSpec> specs, long ignoreGroupId) {
+        for (int index = 1; index <= 4096; index++) {
+            boolean used = false;
+            for (SuperCustomControlSpec spec : specs) {
+                if (spec != null && spec.bindingGroupId > 0L
+                        && spec.bindingGroupId != ignoreGroupId
+                        && spec.bindingGroupIndex == index) {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used) return index;
+        }
+        return 4096;
+    }
+
+    private static void clearBinding(SuperCustomControlSpec spec) {
+        if (spec == null) return;
+        spec.bindingGroupId = 0L;
+        spec.bindingGroupIndex = 0;
+        spec.bindingAnchor = false;
     }
 
     private static int clamp(int value, int min, int max) {

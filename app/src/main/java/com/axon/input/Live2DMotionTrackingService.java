@@ -59,6 +59,8 @@ public final class Live2DMotionTrackingService extends Service {
     private HandlerThread analysisThread;
     private Handler analysisHandler;
     private final AtomicBoolean motionAnalysisBusy = new AtomicBoolean(false);
+    private final AtomicBoolean cameraOpening = new AtomicBoolean(false);
+    private volatile boolean serviceDestroying;
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private ImageReader imageReader;
@@ -122,7 +124,7 @@ public final class Live2DMotionTrackingService extends Service {
             stopSelfSafely();
             return START_NOT_STICKY;
         }
-        if (cameraDevice == null) openFrontCamera();
+        requestOpenFrontCamera();
         return START_NOT_STICKY;
     }
 
@@ -137,7 +139,7 @@ public final class Live2DMotionTrackingService extends Service {
         if (keepTracking) {
             ensureForeground();
             motionTrackingEnabled = OverlayState.isLive2DMotionTrackingEnabled(this);
-            if (cameraDevice == null) openFrontCamera();
+            requestOpenFrontCamera();
         } else {
             Live2DMotionTracker.clear();
             stopSelf();
@@ -147,6 +149,8 @@ public final class Live2DMotionTrackingService extends Service {
 
     @Override
     public void onDestroy() {
+        serviceDestroying = true;
+        cameraOpening.set(false);
         closeCamera();
         latestFaceGeometry = null;
         Handler analyzer = analysisHandler;
@@ -192,11 +196,22 @@ public final class Live2DMotionTrackingService extends Service {
         startForeground(NOTIFICATION_ID, notification);
     }
 
+    private void requestOpenFrontCamera() {
+        if (serviceDestroying || cameraDevice != null || cameraHandler == null) return;
+        if (!cameraOpening.compareAndSet(false, true)) return;
+        Handler handler = cameraHandler;
+        if (handler == null || !handler.post(this::openFrontCamera)) cameraOpening.set(false);
+    }
+
     @SuppressLint("MissingPermission")
     private void openFrontCamera() {
-        if (cameraHandler == null) return;
+        if (serviceDestroying || cameraHandler == null) {
+            cameraOpening.set(false);
+            return;
+        }
         CameraManager manager = (CameraManager) getSystemService(CAMERA_SERVICE);
         if (manager == null) {
+            cameraOpening.set(false);
             stopSelfSafely();
             return;
         }
@@ -220,6 +235,7 @@ public final class Live2DMotionTrackingService extends Service {
                 }
             }
             if (selectedId == null || selected == null) {
+                cameraOpening.set(false);
                 Log.w(TAG, "No camera available for Live2D tracking");
                 stopSelfSafely();
                 return;
@@ -284,15 +300,22 @@ public final class Live2DMotionTrackingService extends Service {
 
             manager.openCamera(selectedId, new CameraDevice.StateCallback() {
                 @Override public void onOpened(CameraDevice camera) {
+                    cameraOpening.set(false);
+                    if (serviceDestroying || !motionTrackingEnabled) {
+                        try { camera.close(); } catch (Throwable ignored) {}
+                        return;
+                    }
                     cameraDevice = camera;
                     createSession();
                 }
                 @Override public void onDisconnected(CameraDevice camera) {
+                    cameraOpening.set(false);
                     try { camera.close(); } catch (Throwable ignored) {}
                     if (cameraDevice == camera) cameraDevice = null;
                     stopSelfSafely();
                 }
                 @Override public void onError(CameraDevice camera, int error) {
+                    cameraOpening.set(false);
                     try { camera.close(); } catch (Throwable ignored) {}
                     if (cameraDevice == camera) cameraDevice = null;
                     Log.w(TAG, "Camera error: " + error);
@@ -300,6 +323,11 @@ public final class Live2DMotionTrackingService extends Service {
                 }
             }, cameraHandler);
         } catch (Throwable error) {
+            cameraOpening.set(false);
+            if (imageReader != null && cameraDevice == null) {
+                try { imageReader.close(); } catch (Throwable ignored) {}
+                imageReader = null;
+            }
             Log.w(TAG, "Opening front camera failed", error);
             stopSelfSafely();
         }
@@ -566,6 +594,7 @@ public final class Live2DMotionTrackingService extends Service {
     }
 
     private void closeCamera() {
+        cameraOpening.set(false);
         if (captureSession != null) {
             try { captureSession.close(); } catch (Throwable ignored) {}
             captureSession = null;

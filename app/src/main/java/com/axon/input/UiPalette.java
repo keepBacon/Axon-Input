@@ -13,12 +13,12 @@ public final class UiPalette {
     }
 
     public static int surface(Context context) {
-        return dark(context) ? Color.rgb(17, 17, 19) : Color.WHITE;
+        return dark(context) ? Color.rgb(13, 13, 15) : Color.rgb(250, 250, 251);
     }
 
     /** Slightly raised surface for nested controls, without a visible border. */
     public static int surfaceRaised(Context context) {
-        return dark(context) ? Color.rgb(22, 22, 24) : Color.rgb(250, 250, 251);
+        return dark(context) ? Color.rgb(17, 17, 19) : Color.rgb(248, 248, 249);
     }
 
     /** Quiet control background for buttons, selectors and detail rows. */
@@ -50,20 +50,41 @@ public final class UiPalette {
         return dark(context) ? Color.rgb(244, 244, 245) : Color.rgb(23, 23, 25);
     }
 
+    /** UI 库里的交互蓝，只用于设置控件，不改变按显/Overlay 本身的主题色语义。 */
+    public static int controlAccent(Context context) {
+        return Color.rgb(10, 132, 255);
+    }
+
     public static int switchTrackOff(Context context) {
-        return dark(context) ? Color.rgb(64, 64, 69) : Color.rgb(205, 205, 211);
+        return dark(context) ? Color.rgb(34, 34, 38) : Color.WHITE;
     }
 
     public static int switchThumbOff(Context context) {
-        return dark(context) ? Color.rgb(190, 190, 196) : Color.WHITE;
+        return Color.rgb(173, 181, 189);
     }
 
     public static int switchTrackOn(Context context) {
-        return dark(context) ? Color.rgb(235, 235, 238) : Color.rgb(31, 31, 34);
+        return controlAccent(context);
     }
 
     public static int switchThumbOn(Context context) {
-        return dark(context) ? Color.rgb(20, 20, 22) : Color.WHITE;
+        return Color.WHITE;
+    }
+
+    public static int glassPanel(Context context) {
+        return dark(context) ? Color.argb(196, 36, 36, 38) : Color.argb(210, 255, 255, 255);
+    }
+
+    public static int glassControl(Context context) {
+        return dark(context) ? Color.argb(22, 255, 255, 255) : Color.argb(148, 217, 217, 217);
+    }
+
+    public static int glassControlRaised(Context context) {
+        return dark(context) ? Color.argb(36, 255, 255, 255) : Color.argb(186, 224, 224, 226);
+    }
+
+    public static int glassBorder(Context context) {
+        return dark(context) ? Color.argb(24, 255, 255, 255) : Color.argb(158, 255, 255, 255);
     }
 
     public static int ripple(Context context) {

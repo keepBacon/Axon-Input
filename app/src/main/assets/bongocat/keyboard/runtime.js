@@ -3,7 +3,8 @@
 
   const DESIGN_WIDTH = 612;
   const DESIGN_HEIGHT = 354;
-  const FRAME_INTERVAL = 1000 / 60;
+  // Follow requestAnimationFrame / display VSync directly; this fallback is used only for the first delta.
+  const FRAME_TIME_FALLBACK = 1000 / 60;
   const DAMPING_DECAY = 0.75;
   let renderQuality = 'normal';
   let renderDprCap = 2;
@@ -347,9 +348,7 @@
     if (runtimeDisposed || runtimePaused) return;
     scheduleAnimation();
     if (!renderer) return;
-    if (lastFrameTime && now - lastFrameTime < FRAME_INTERVAL - 0.5) return;
-
-    const deltaMs = Math.min(100, Math.max(0.1, lastFrameTime ? now - lastFrameTime : FRAME_INTERVAL));
+    const deltaMs = Math.min(100, Math.max(0.1, lastFrameTime ? now - lastFrameTime : FRAME_TIME_FALLBACK));
     lastFrameTime = now;
     updatePointer(deltaMs);
     renderer.setEyeBlink(eyeBlinkValue(now));

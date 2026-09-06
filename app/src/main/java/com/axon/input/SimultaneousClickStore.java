@@ -199,8 +199,12 @@ public final class SimultaneousClickStore {
     }
 
     private static boolean isValid(int source, int target, int targetEvdev) {
-        return InputBinding.isValid(source) && InputBinding.isValid(target)
-                && source != target && targetEvdev > 0;
+        if (!InputBinding.isValid(source) || !InputBinding.isValid(target) || targetEvdev <= 0) {
+            return false;
+        }
+        // 同键只允许键盘。鼠标同键会与 InputReader 原始状态合并；手柄同键则会让
+        // 物理设备与镜像 uinput 同时产生同一语义，容易形成重复边沿，因此都禁止。
+        return source != target || InputBinding.isKeyboard(source);
     }
 
     private static long nextId(List<Binding> bindings) {

@@ -2,6 +2,7 @@ package com.axon.input;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.view.KeyEvent;
 
 /** Persistent state for touch-to-key display regions and overlay position. */
 final class TouchDisplayStore {
@@ -12,22 +13,140 @@ final class TouchDisplayStore {
     static final int REGION_COUNT = 4;
     static final int COORD_FULL_DISPLAY = 2;
 
+    static final int MODE_KEYBOARD_MOUSE = 0;
+    static final int MODE_GAMEPAD = 1;
+    static final int MODE_TOUCH = 2;
+
+    static final int STICK_UNSET = -1;
+    static final int STICK_LEFT = 0;
+    static final int STICK_RIGHT = 1;
+
+    static final int TARGET_RMB = 0;
+    static final int TARGET_LMB = 1;
+    static final int TARGET_SPACE = 2;
+
     private static final String KEY_ENABLED = "touch_display_enabled";
     private static final String KEY_POSITION_X = "touch_display_position_x";
     private static final String KEY_POSITION_Y = "touch_display_position_y";
     private static final String KEY_REGION_PREFIX = "touch_region_";
     private static final String KEY_COORD_VERSION = "touch_region_coord_version";
+    private static final String KEY_MODE = "touch_display_mode"; // legacy: 0=gamepad, 1=touch
+    private static final String KEY_REGULAR_MODE = "regular_display_mode";
+    private static final String KEY_GAMEPAD_STICK = "touch_display_gamepad_stick";
+    private static final String KEY_GAMEPAD_BINDING_PREFIX = "touch_display_gamepad_binding_";
 
     private TouchDisplayStore() {}
 
+    /**
+     * 兼容旧“触屏按显”开关。现在唯一的启用状态由“常规按显”主开关负责，
+     * 这里仅保留旧 API 以免旧配置/调用链出现双状态。
+     */
     static boolean isEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_ENABLED, false);
+        return OverlayState.isEnabled(context);
     }
 
     static void setEnabled(Context context, boolean enabled) {
-        if (!PreferenceWriter.putBooleanIfChanged(prefs(context), KEY_ENABLED, enabled)) return;
-        if (enabled) AxonInputAccessibilityService.refreshActiveService();
-        else AxonInputAccessibilityService.refreshDisplayVisibilityImmediate();
+        OverlayState.setEnabled(context, enabled);
+    }
+
+    static int getMode(Context context) {
+        SharedPreferences values = prefs(context);
+        if (values.contains(KEY_REGULAR_MODE)) {
+            int mode = values.getInt(KEY_REGULAR_MODE, MODE_KEYBOARD_MOUSE);
+            return mode == MODE_GAMEPAD || mode == MODE_TOUCH ? mode : MODE_KEYBOARD_MOUSE;
+        }
+
+        // 一次性迁移旧独立“触屏按显”：旧功能启用时保留其 gamepad/touch 模式，
+        // 否则新“常规按显”默认继续使用键鼠输入，避免升级后行为突变。
+        boolean legacyEnabled = values.getBoolean(KEY_ENABLED, false);
+        int migrated = MODE_KEYBOARD_MOUSE;
+        if (legacyEnabled) {
+            int legacy = values.getInt(KEY_MODE, 1);
+            migrated = legacy == 0 ? MODE_GAMEPAD : MODE_TOUCH;
+        }
+        // 迁移完成后移除旧双状态键，避免后续代码再次把“触屏按显”当成第二个主开关。
+        values.edit()
+                .putInt(KEY_REGULAR_MODE, migrated)
+                .remove(KEY_ENABLED)
+                .remove(KEY_MODE)
+                .apply();
+        // 旧触屏按显如果原本开启，升级后应继续保持“常规按显”开启。这里先写入新模式，
+        // 再触发一次主开关迁移，refresh 回调进入下一轮时不会重复执行。
+        if (legacyEnabled && !OverlayState.isEnabled(context)) {
+            OverlayState.setEnabled(context, true);
+        }
+        return migrated;
+    }
+
+    static boolean isKeyboardMouseMode(Context context) {
+        return getMode(context) == MODE_KEYBOARD_MOUSE;
+    }
+
+    static boolean isTouchMode(Context context) {
+        return getMode(context) == MODE_TOUCH;
+    }
+
+    static boolean isGamepadMode(Context context) {
+        return getMode(context) == MODE_GAMEPAD;
+    }
+
+    static boolean isTouchCaptureEnabled(Context context) {
+        return OverlayState.isEnabled(context) && isTouchMode(context);
+    }
+
+    static void setMode(Context context, int mode) {
+        int normalized = mode == MODE_GAMEPAD ? MODE_GAMEPAD
+                : mode == MODE_TOUCH ? MODE_TOUCH : MODE_KEYBOARD_MOUSE;
+        if (!PreferenceWriter.putIntIfChanged(prefs(context), KEY_REGULAR_MODE, normalized)) return;
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    static int getGamepadStick(Context context) {
+        int stick = prefs(context).getInt(KEY_GAMEPAD_STICK, STICK_UNSET);
+        return stick == STICK_LEFT || stick == STICK_RIGHT ? stick : STICK_UNSET;
+    }
+
+    static int getGamepadBindingKeyCode(Context context, int target) {
+        validateGamepadTarget(target);
+        return prefs(context).getInt(KEY_GAMEPAD_BINDING_PREFIX + target + "_key", KeyEvent.KEYCODE_UNKNOWN);
+    }
+
+    static int getGamepadBindingScanCode(Context context, int target) {
+        validateGamepadTarget(target);
+        return prefs(context).getInt(KEY_GAMEPAD_BINDING_PREFIX + target + "_scan", 0);
+    }
+
+    static void saveGamepadConfig(Context context, int stick, int[] keyCodes, int[] scanCodes) {
+        int normalizedStick = stick == STICK_LEFT || stick == STICK_RIGHT ? stick : STICK_UNSET;
+        if (normalizedStick == STICK_UNSET || keyCodes == null || keyCodes.length < 3) {
+            throw new IllegalArgumentException("incomplete gamepad config");
+        }
+        SharedPreferences.Editor editor = prefs(context).edit().putInt(KEY_GAMEPAD_STICK, normalizedStick);
+        for (int target = TARGET_RMB; target <= TARGET_SPACE; target++) {
+            int keyCode = Math.max(KeyEvent.KEYCODE_UNKNOWN, keyCodes[target]);
+            int scanCode = scanCodes != null && target < scanCodes.length ? Math.max(0, scanCodes[target]) : 0;
+            if (keyCode == KeyEvent.KEYCODE_UNKNOWN
+                    || GamepadButtons.fromStoredKey(keyCode, scanCode) == 0) {
+                throw new IllegalArgumentException("incomplete gamepad config");
+            }
+            editor.putInt(KEY_GAMEPAD_BINDING_PREFIX + target + "_key", keyCode);
+            editor.putInt(KEY_GAMEPAD_BINDING_PREFIX + target + "_scan", scanCode);
+        }
+        editor.apply();
+        AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    static int getGamepadBindingButtonBit(Context context, int target) {
+        int keyCode = getGamepadBindingKeyCode(context, target);
+        int scanCode = getGamepadBindingScanCode(context, target);
+        return GamepadButtons.fromStoredKey(keyCode, scanCode);
+    }
+
+    static boolean isGamepadConfigComplete(Context context) {
+        if (getGamepadStick(context) == STICK_UNSET) return false;
+        return getGamepadBindingButtonBit(context, TARGET_RMB) != 0
+                && getGamepadBindingButtonBit(context, TARGET_LMB) != 0
+                && getGamepadBindingButtonBit(context, TARGET_SPACE) != 0;
     }
 
     static float[] getRegion(Context context, int region) {
@@ -78,13 +197,12 @@ final class TouchDisplayStore {
     }
 
     static int getPositionX(Context context) {
-        int fallback = OverlayState.getPositionX(context, KeyOverlayView.DISPLAY_KEYBOARD);
-        return clampFreePosition(prefs(context).getInt(KEY_POSITION_X, fallback));
+        // 触屏/手柄按显复用键盘按显配置，位置也只有一个权威来源。旧独立位置值仅保留兼容，不再读取。
+        return clampFreePosition(OverlayState.getPositionX(context, KeyOverlayView.DISPLAY_KEYBOARD));
     }
 
     static int getPositionY(Context context) {
-        int fallback = OverlayState.getPositionY(context, KeyOverlayView.DISPLAY_KEYBOARD);
-        return clampFreePosition(prefs(context).getInt(KEY_POSITION_Y, fallback));
+        return clampFreePosition(OverlayState.getPositionY(context, KeyOverlayView.DISPLAY_KEYBOARD));
     }
 
 
@@ -102,6 +220,12 @@ final class TouchDisplayStore {
         if (region < 0 || region >= REGION_COUNT) throw new IllegalArgumentException("touch region");
     }
 
+    private static void validateGamepadTarget(int target) {
+        if (target < TARGET_RMB || target > TARGET_SPACE) {
+            throw new IllegalArgumentException("gamepad target");
+        }
+    }
+
     private static float normalized(int value) {
         return clamp01(value / 10000f);
     }
@@ -111,7 +235,7 @@ final class TouchDisplayStore {
     }
 
     private static int clampFreePosition(int value) {
-        return Math.max(-1000, Math.min(1000, value));
+        return Math.max(0, Math.min(100, value));
     }
 
     private static SharedPreferences prefs(Context context) {

@@ -6,7 +6,6 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
-import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
@@ -44,12 +43,26 @@ final class UiChrome {
         return UiPalette.rounded(context, UiPalette.surface(context), CARD_RADIUS_DP);
     }
 
+    /** 主页应用卡固定使用深色背景，和普通功能层形成更清楚但克制的层级。 */
+    static GradientDrawable homePrimaryCard(Context context) {
+        return UiPalette.rounded(context, Color.rgb(24, 25, 28), 14f);
+    }
+
+    /** 两个主页方块仍跟随当前主题，不额外加描边或阴影。 */
+    static GradientDrawable homeSecondaryCard(Context context) {
+        return UiPalette.rounded(context, UiPalette.controlSurface(context), 14f);
+    }
+
     static GradientDrawable nestedSurface(Context context) {
-        return UiPalette.rounded(context, UiPalette.debugSurface(context), CONTROL_RADIUS_DP);
+        GradientDrawable drawable = UiPalette.rounded(context, UiPalette.glassPanel(context), 14f);
+        drawable.setStroke(dp(context, 1f), UiPalette.glassBorder(context));
+        return drawable;
     }
 
     static GradientDrawable popupSurface(Context context) {
-        return surface(context, UiPalette.surfaceRaised(context), 12f);
+        GradientDrawable drawable = UiPalette.rounded(context, UiPalette.glassPanel(context), 10f);
+        drawable.setStroke(dp(context, 1f), UiPalette.glassBorder(context));
+        return drawable;
     }
 
     /**
@@ -61,25 +74,35 @@ final class UiChrome {
     }
 
     static Drawable controlRipple(Context context) {
-        int fill = UiPalette.controlSurface(context);
         StateListDrawable content = new StateListDrawable();
-        GradientDrawable focused = UiPalette.rounded(context, fill, CONTROL_RADIUS_DP);
-        focused.setStroke(dp(context, 1f), UiPalette.accent(context));
-        GradientDrawable normal = UiPalette.rounded(context, fill, CONTROL_RADIUS_DP);
+        GradientDrawable focused = glassControlDrawable(context, true, false);
+        focused.setStroke(dp(context, 1f), UiPalette.controlAccent(context));
+        GradientDrawable normal = glassControlDrawable(context, false, false);
         content.addState(new int[]{android.R.attr.state_focused}, focused);
         content.addState(new int[]{}, normal);
         return content;
     }
 
     static Drawable primaryButtonBackground(Context context) {
-        int fill = UiPalette.accent(context);
         StateListDrawable content = new StateListDrawable();
-        GradientDrawable focused = UiPalette.rounded(context, fill, CONTROL_RADIUS_DP);
-        focused.setStroke(dp(context, 1f), UiPalette.background(context));
-        GradientDrawable normal = UiPalette.rounded(context, fill, CONTROL_RADIUS_DP);
+        GradientDrawable focused = glassControlDrawable(context, true, true);
+        focused.setStroke(dp(context, 1f), UiPalette.controlAccent(context));
+        GradientDrawable normal = glassControlDrawable(context, false, true);
         content.addState(new int[]{android.R.attr.state_focused}, focused);
         content.addState(new int[]{}, normal);
         return content;
+    }
+
+    private static GradientDrawable glassControlDrawable(Context context, boolean raised, boolean primary) {
+        int fill;
+        if (primary) {
+            fill = raised ? Color.argb(238, 10, 132, 255) : Color.argb(218, 10, 132, 255);
+        } else {
+            fill = raised ? UiPalette.glassControlRaised(context) : UiPalette.glassControl(context);
+        }
+        GradientDrawable drawable = UiPalette.rounded(context, fill, CONTROL_RADIUS_DP);
+        drawable.setStroke(dp(context, 1f), UiPalette.glassBorder(context));
+        return drawable;
     }
 
 
@@ -136,145 +159,81 @@ final class UiChrome {
             view.setThumbTintList(new ColorStateList(states, new int[]{
                     onThumb, offThumb, withAlpha(onThumb, 0.72f), withAlpha(offThumb, 0.72f)}));
         }
-        int primary = UiPalette.textPrimary(context);
+        int labelColor = UiPalette.textSecondary(context);
         view.setTextColor(new ColorStateList(
                 new int[][]{new int[]{android.R.attr.state_enabled}, new int[]{-android.R.attr.state_enabled}},
-                new int[]{primary, withAlpha(primary, DISABLED_ALPHA)}));
+                new int[]{labelColor, withAlpha(labelColor, DISABLED_ALPHA)}));
         view.setMinHeight(dp(context, 48f));
         view.setMinimumHeight(dp(context, 48f));
+        AppTypeface.applyIfSelected(view);
     }
 
     static void styleSeekBar(Context context, SeekBar seekBar) {
         if (seekBar == null) return;
-        seekBar.setProgressTintList(ColorStateList.valueOf(UiPalette.accent(context)));
-        seekBar.setProgressBackgroundTintList(ColorStateList.valueOf(UiPalette.divider(context)));
-        seekBar.setMinimumHeight(dp(context, 36f));
-        seekBar.setPadding(0, dp(context, 8f), 0, dp(context, 8f));
-        // All settings sliders now communicate value through the filled track only.
+        seekBar.setProgressTintList(ColorStateList.valueOf(UiPalette.controlAccent(context)));
+        seekBar.setProgressBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT));
+        // 不要把 LagSeekBar 构造时为锁/Thumb 预留的 42dp 又降回 36dp。
+        // 过去多个“锁被裁剪/缩小”问题就是统一样式层覆盖自绘控件几何造成的。
+        seekBar.setMinimumHeight(dp(context, seekBar instanceof LagSeekBar ? 46f : 36f));
+        // LagSeekBar 自己负责端点安全区；这里不再增加左右 padding，保证视觉轨道与文字对齐。
+        seekBar.setPadding(0, 0, 0, 0);
         seekBar.setThumb(null);
         seekBar.setSplitTrack(false);
+        seekBar.setBackground(null);
+        seekBar.setStateListAnimator(null);
+        seekBar.setElevation(0f);
     }
 
     static Drawable sectionIcon(Context context, int index, boolean selected) {
-        return new SectionIconDrawable(
-                selected ? UiPalette.textPrimary(context) : UiPalette.textTertiary(context),
-                dp(context, 20f), index);
-    }
-
-    /** Small purpose-drawn icons keep the navigation independent from icon-font assets. */
-    private static final class SectionIconDrawable extends Drawable {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final int size;
-        private final int type;
-
-        SectionIconDrawable(int color, int size, int type) {
-            this.size = size;
-            this.type = type;
-            paint.setColor(color);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setStrokeJoin(Paint.Join.ROUND);
-            paint.setStrokeWidth(Math.max(1.4f, size * 0.085f));
-            setBounds(0, 0, size, size);
-        }
-
-        @Override public void draw(Canvas canvas) {
-            Rect b = getBounds();
-            float cx = b.exactCenterX();
-            float cy = b.exactCenterY();
-            float u = Math.min(b.width(), b.height()) / 20f;
-            switch (type) {
-                case 0: // appearance: sun
-                    canvas.drawCircle(cx, cy, 3.2f * u, paint);
-                    for (int i = 0; i < 8; i++) {
-                        double a = i * Math.PI / 4.0;
-                        float x1 = cx + (float) Math.cos(a) * 6.1f * u;
-                        float y1 = cy + (float) Math.sin(a) * 6.1f * u;
-                        float x2 = cx + (float) Math.cos(a) * 8.0f * u;
-                        float y2 = cy + (float) Math.sin(a) * 8.0f * u;
-                        canvas.drawLine(x1, y1, x2, y2, paint);
-                    }
-                    break;
-                case 1: // keyboard / mouse
-                    canvas.drawRoundRect(new RectF(cx - 8f*u, cy - 5f*u, cx + 8f*u, cy + 5f*u),
-                            2f*u, 2f*u, paint);
-                    canvas.drawLine(cx - 5.2f*u, cy - 1.4f*u, cx + 5.2f*u, cy - 1.4f*u, paint);
-                    canvas.drawLine(cx - 4f*u, cy + 2.1f*u, cx + 4f*u, cy + 2.1f*u, paint);
-                    break;
-                case 2: // custom: four modules
-                    for (int yy = 0; yy < 2; yy++) for (int xx = 0; xx < 2; xx++) {
-                        float l = cx + (xx == 0 ? -7f : 1f) * u;
-                        float t = cy + (yy == 0 ? -7f : 1f) * u;
-                        canvas.drawRoundRect(new RectF(l, t, l + 6f*u, t + 6f*u), 1.4f*u, 1.4f*u, paint);
-                    }
-                    break;
-                case 3: // gamepad
-                    canvas.drawRoundRect(new RectF(cx - 8f*u, cy - 5f*u, cx + 8f*u, cy + 6f*u),
-                            4.5f*u, 4.5f*u, paint);
-                    canvas.drawLine(cx - 5f*u, cy, cx - 1.5f*u, cy, paint);
-                    canvas.drawLine(cx - 3.25f*u, cy - 1.75f*u, cx - 3.25f*u, cy + 1.75f*u, paint);
-                    canvas.drawCircle(cx + 3.5f*u, cy - 0.8f*u, 0.8f*u, paint);
-                    canvas.drawCircle(cx + 5.7f*u, cy + 1.2f*u, 0.8f*u, paint);
-                    break;
-                case 4: // sensitivity: gauge
-                    RectF gauge = new RectF(cx - 7f*u, cy - 6f*u, cx + 7f*u, cy + 8f*u);
-                    canvas.drawArc(gauge, 205f, 130f, false, paint);
-                    canvas.drawLine(cx, cy + 1.5f*u, cx + 4.8f*u, cy - 2.5f*u, paint);
-                    canvas.drawCircle(cx, cy + 1.5f*u, 1.1f*u, paint);
-                    break;
-                case 5: // behavior: directional gesture
-                    canvas.drawLine(cx - 7f*u, cy, cx + 6f*u, cy, paint);
-                    canvas.drawLine(cx + 6f*u, cy, cx + 2.5f*u, cy - 3.5f*u, paint);
-                    canvas.drawLine(cx + 6f*u, cy, cx + 2.5f*u, cy + 3.5f*u, paint);
-                    canvas.drawCircle(cx - 5.8f*u, cy, 2.1f*u, paint);
-                    break;
-                default: // configuration: compact gear
-                    canvas.drawCircle(cx, cy, 3.1f*u, paint);
-                    canvas.drawCircle(cx, cy, 7.0f*u, paint);
-                    for (int i = 0; i < 4; i++) {
-                        double a = i * Math.PI / 2.0;
-                        canvas.drawLine(
-                                cx + (float)Math.cos(a) * 7.0f*u,
-                                cy + (float)Math.sin(a) * 7.0f*u,
-                                cx + (float)Math.cos(a) * 8.5f*u,
-                                cy + (float)Math.sin(a) * 8.5f*u, paint);
-                    }
-                    break;
-            }
-        }
-
-        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
-        @Override public void setColorFilter(android.graphics.ColorFilter filter) { paint.setColorFilter(filter); }
-        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-        @Override public int getIntrinsicWidth() { return size; }
-        @Override public int getIntrinsicHeight() { return size; }
+        // 底栏统一采用 Tabler 24x24 / 2px stroke 的线性图标语义。
+        // 这里只加载本地 VectorDrawable，不引入图标字体或运行时依赖；颜色继续由 Axon 主题控制。
+        final int resId = switch (index) {
+            case 0 -> R.drawable.ic_nav_home;
+            case 1 -> R.drawable.ic_nav_keyboard;
+            case 2 -> R.drawable.ic_nav_layout_grid;
+            case 3 -> R.drawable.ic_nav_gamepad;
+            case 4 -> R.drawable.ic_nav_activity;
+            case 5 -> R.drawable.ic_nav_eye;
+            default -> R.drawable.ic_nav_settings;
+        };
+        Drawable drawable = context.getDrawable(resId);
+        if (drawable == null) return null;
+        drawable = drawable.mutate();
+        drawable.setTint(selected ? UiPalette.textPrimary(context) : UiPalette.textTertiary(context));
+        int size = dp(context, 20f);
+        drawable.setBounds(0, 0, size, size);
+        return drawable;
     }
 
     static void stylePrimaryButton(Context context, Button button) {
         if (button == null) return;
         button.setAllCaps(false);
         button.setTextSize(13f);
-        button.setSingleLine(true);
+        button.setSingleLine(false);
+        button.setMaxLines(3);
         button.setEllipsize(TextUtils.TruncateAt.END);
-        button.setTextColor(OverlayState.getUiTheme(context) == OverlayState.UI_THEME_BLACK
-                ? Color.rgb(20, 20, 22) : Color.WHITE);
+        button.setTextColor(Color.WHITE);
         button.setMinHeight(dp(context, 44f));
         button.setMinimumHeight(dp(context, 44f));
-        button.setPadding(dp(context, 14f), 0, dp(context, 14f), 0);
+        button.setPadding(dp(context, 14f), dp(context, 9f), dp(context, 14f), dp(context, 9f));
         button.setBackground(primaryButtonBackground(context));
         button.setStateListAnimator(null);
+        button.setElevation(0f);
+        AppTypeface.applyIfSelected(button);
         UiMotion.bindPressFeedback(button);
     }
 
     static void styleSecondaryButton(Context context, TextView view) {
         if (view == null) return;
         view.setTextColor(UiPalette.textPrimary(context));
-        view.setSingleLine(true);
+        view.setSingleLine(false);
+        view.setMaxLines(3);
         view.setEllipsize(TextUtils.TruncateAt.END);
         view.setMinHeight(dp(context, 44f));
         view.setMinimumHeight(dp(context, 44f));
-        view.setPadding(dp(context, 12f), 0, dp(context, 12f), 0);
+        view.setPadding(dp(context, 12f), dp(context, 9f), dp(context, 12f), dp(context, 9f));
         view.setBackground(controlRipple(context));
+        AppTypeface.applyIfSelected(view);
         UiMotion.bindPressFeedback(view);
     }
 
@@ -296,8 +255,9 @@ final class UiChrome {
         input.setTextSize(14f);
         input.setSingleLine(true);
         input.setMinHeight(dp(context, 48f));
-        input.setPadding(dp(context, 14f), 0, dp(context, 14f), 0);
+        input.setPadding(dp(context, 14f), dp(context, 8f), dp(context, 14f), dp(context, 8f));
         input.setBackground(controlRipple(context));
+        AppTypeface.applyIfSelected(input);
     }
 
 
@@ -321,7 +281,12 @@ final class UiChrome {
     static void setEnabledVisual(View view, boolean enabled) {
         if (view == null) return;
         view.setEnabled(enabled);
-        view.setAlpha(enabled ? 1f : DISABLED_ALPHA);
+        // MotionSwitch / LagSeekBar 有自己的灰态和中央锁，整体降 alpha 会把锁也一起淡掉。
+        if (view instanceof MotionSwitch || view instanceof LagSeekBar) {
+            view.setAlpha(1f);
+        } else {
+            view.setAlpha(enabled ? 1f : DISABLED_ALPHA);
+        }
     }
 
     static int withAlpha(int color, float alpha) {

@@ -152,6 +152,10 @@ final class ChromaKeyVideoSurfaceView extends GLSurfaceView {
         }
 
         @Override public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+            // EGL context 可能在后台/驱动回收后重新创建。先释放上一代 Java Surface，
+            // 再重建 GL program/texture，避免旧 SurfaceTexture 被字段覆盖后泄漏。
+            releaseSurface();
+            releaseGlObjects();
             GLES20.glClearColor(0f, 0f, 0f, 0f);
             GLES20.glEnable(GLES20.GL_BLEND);
             GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA,
@@ -317,6 +321,19 @@ final class ChromaKeyVideoSurfaceView extends GLSurfaceView {
             SurfaceTexture currentTexture = surfaceTexture;
             surfaceTexture = null;
             if (currentTexture != null) try { currentTexture.release(); } catch (Throwable ignored) {}
+            pendingSample = null;
+        }
+
+        private void releaseGlObjects() {
+            if (textureId != 0) {
+                try { GLES20.glDeleteTextures(1, new int[]{textureId}, 0); } catch (Throwable ignored) {}
+                textureId = 0;
+            }
+            if (program != 0) {
+                try { GLES20.glDeleteProgram(program); } catch (Throwable ignored) {}
+                program = 0;
+            }
+            aPosition = aTexCoord = uTexMatrix = uScale = uKeyColor = uStrength = uEnabled = uOpacity = uTexture = -1;
         }
     }
 

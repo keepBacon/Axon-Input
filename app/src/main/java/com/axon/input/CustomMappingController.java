@@ -18,6 +18,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 /** Executes consuming trigger -> ordered tap sequences through one persistent privileged uinput helper. */
 public final class CustomMappingController {
     private static final long VISUAL_TAP_MS = 16L;
+    private static final int MAX_PENDING_TASKS = 48;
 
     public interface Listener {
         void onStartFailed();
@@ -45,7 +46,7 @@ public final class CustomMappingController {
     private final Context context;
     private final Listener listener;
     private final Object lock = new Object();
-    private final BlockingQueue<Task> queue = new LinkedBlockingQueue<>();
+    private final BlockingQueue<Task> queue = new LinkedBlockingQueue<>(MAX_PENDING_TASKS);
     private final Thread worker;
 
     private boolean destroyed;
@@ -100,7 +101,15 @@ public final class CustomMappingController {
             currentDelay = delayMs;
             currentGeneration = generation;
         }
-        if (pressed && firstPress) queue.offer(new Task(matched, currentDelay, currentGeneration));
+        if (pressed && firstPress) {
+            Task task = new Task(matched, currentDelay, currentGeneration);
+            if (!queue.offer(task)) {
+                // 输入速度超过 uinput 输出速度时宁可丢弃最陈旧的待执行 tap，也不能无限积压，
+                // 否则用户松手数秒后仍会继续“补按键”，并持续增长内存。
+                queue.poll();
+                queue.offer(task);
+            }
+        }
         return true;
     }
 

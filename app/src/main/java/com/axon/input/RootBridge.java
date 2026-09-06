@@ -1,14 +1,17 @@
 package com.axon.input;
 
+import android.app.Activity;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -24,15 +27,23 @@ public final class RootBridge {
         void onRootActivationResult(boolean active);
     }
 
+    /** Activity 专用回调：RootBridge 只弱持有 Activity，避免 su 授权等待期间保留旧页面。 */
+    public interface ActivityActivationListener {
+        void onRootActivationResult(Activity activity, boolean active);
+    }
+
     private static final int STATE_UNKNOWN = 0;
     private static final int STATE_CHECKING = 1;
     private static final int STATE_ACTIVE = 2;
     private static final int STATE_UNAVAILABLE = 3;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final long UNAVAILABLE_RETRY_MS = 15_000L;
     private static final Object STATE_LOCK = new Object();
     private static final List<ActivationListener> WAITERS = new ArrayList<>();
+    private static final List<ActivityWaiter> ACTIVITY_WAITERS = new ArrayList<>();
     private static volatile int activationState = STATE_UNKNOWN;
+    private static volatile long lastProbeFinishedAt;
 
     private RootBridge() {}
 
@@ -87,29 +98,74 @@ public final class RootBridge {
         boolean startProbe = false;
         synchronized (STATE_LOCK) {
             if (listener != null) WAITERS.add(listener);
-            if (activationState == STATE_ACTIVE || activationState == STATE_UNAVAILABLE) {
-                boolean active = activationState == STATE_ACTIVE;
-                dispatchWaitersLocked(active);
+            if (activationState == STATE_ACTIVE) {
+                dispatchWaitersLocked(true);
                 return;
             }
-            if (activationState == STATE_UNKNOWN) {
+            if (activationState == STATE_UNAVAILABLE) {
+                long age = SystemClock.elapsedRealtime() - lastProbeFinishedAt;
+                if (age >= 0L && age < UNAVAILABLE_RETRY_MS) {
+                    dispatchWaitersLocked(false);
+                    return;
+                }
+                // Root 管理器可能在应用运行期间刚刚完成授权。失败结果只做短期缓存，
+                // 到冷却时间后允许重新探测，避免“首次拒绝后直到杀进程都无法恢复”。
+                activationState = STATE_CHECKING;
+                startProbe = true;
+            } else if (activationState == STATE_UNKNOWN) {
                 activationState = STATE_CHECKING;
                 startProbe = true;
             }
         }
         if (!startProbe) return;
 
+        startProbeWorker(app);
+    }
+
+
+    public static void ensureActivated(Activity activity, ActivityActivationListener listener) {
+        if (activity == null) {
+            ensureActivated((Context) null, null);
+            return;
+        }
+        boolean startProbe = false;
+        synchronized (STATE_LOCK) {
+            if (listener != null) ACTIVITY_WAITERS.add(new ActivityWaiter(activity, listener));
+            if (activationState == STATE_ACTIVE) {
+                dispatchWaitersLocked(true);
+                return;
+            }
+            if (activationState == STATE_UNAVAILABLE) {
+                long age = SystemClock.elapsedRealtime() - lastProbeFinishedAt;
+                if (age >= 0L && age < UNAVAILABLE_RETRY_MS) {
+                    dispatchWaitersLocked(false);
+                    return;
+                }
+                activationState = STATE_CHECKING;
+                startProbe = true;
+            } else if (activationState == STATE_UNKNOWN) {
+                activationState = STATE_CHECKING;
+                startProbe = true;
+            }
+        }
+        if (!startProbe) return;
+        final Context app = activity.getApplicationContext();
+        startProbeWorker(app);
+    }
+
+
+
+    private static void startProbeWorker(Context app) {
         Thread worker = new Thread(() -> {
             boolean active = probeRoot();
             if (active && app != null) {
-                // Root 是全局优先级，不只用于灵敏度增强。
                 SensitivitySettingsStore.setMode(app, SensitivitySettingsStore.MODE_ROOT);
             } else if (!active && app != null) {
-                // Root 不存在/被拒绝时自动回退 Shizuku，避免旧 Root 偏好造成输入永久失效。
                 SensitivitySettingsStore.setMode(app, SensitivitySettingsStore.MODE_SHIZUKU);
             }
             synchronized (STATE_LOCK) {
                 activationState = active ? STATE_ACTIVE : STATE_UNAVAILABLE;
+                lastProbeFinishedAt = SystemClock.elapsedRealtime();
                 dispatchWaitersLocked(active);
             }
         }, "AxonRootActivation");
@@ -117,16 +173,48 @@ public final class RootBridge {
         worker.start();
     }
 
+    /**
+     * 已验证的 Root 通道在运行期失效时撤销缓存，并立即重新探测。
+     * 只在真实的 su/getevent 通道异常时调用，避免普通命令业务失败误判为 Root 被撤销。
+     */
+    public static void reportRootChannelFailure(Context context) {
+        synchronized (STATE_LOCK) {
+            if (activationState == STATE_CHECKING) return;
+            activationState = STATE_UNKNOWN;
+            lastProbeFinishedAt = 0L;
+        }
+        ensureActivated(context, null);
+    }
+
     private static void dispatchWaitersLocked(boolean active) {
-        if (WAITERS.isEmpty()) return;
         List<ActivationListener> callbacks = new ArrayList<>(WAITERS);
         WAITERS.clear();
+        List<ActivityWaiter> activityCallbacks = new ArrayList<>(ACTIVITY_WAITERS);
+        ACTIVITY_WAITERS.clear();
+        if (callbacks.isEmpty() && activityCallbacks.isEmpty()) return;
         MAIN.post(() -> {
             for (ActivationListener callback : callbacks) {
                 if (callback == null) continue;
                 try { callback.onRootActivationResult(active); } catch (Throwable ignored) {}
             }
+            for (ActivityWaiter waiter : activityCallbacks) {
+                if (waiter == null) continue;
+                Activity activity = waiter.activity.get();
+                if (activity == null || activity.isFinishing()
+                        || (android.os.Build.VERSION.SDK_INT >= 17 && activity.isDestroyed())) continue;
+                try { waiter.listener.onRootActivationResult(activity, active); } catch (Throwable ignored) {}
+            }
         });
+    }
+
+    private static final class ActivityWaiter {
+        final WeakReference<Activity> activity;
+        final ActivityActivationListener listener;
+
+        ActivityWaiter(Activity activity, ActivityActivationListener listener) {
+            this.activity = new WeakReference<>(activity);
+            this.listener = listener;
+        }
     }
 
     private static boolean probeRoot() {
@@ -142,8 +230,16 @@ public final class RootBridge {
             }
             return process.exitValue() == 0;
         } catch (Throwable ignored) {
-            if (process != null) process.destroyForcibly();
             return false;
+        } finally {
+            if (process != null) {
+                try { process.destroy(); } catch (Throwable ignored) {}
+                try {
+                    if (!process.waitFor(120, TimeUnit.MILLISECONDS)) process.destroyForcibly();
+                } catch (Throwable ignored) {
+                    try { process.destroyForcibly(); } catch (Throwable ignoredAgain) {}
+                }
+            }
         }
     }
 
@@ -158,11 +254,20 @@ public final class RootBridge {
         Process process = new ProcessBuilder("su", "-c", command)
                 .redirectErrorStream(true)
                 .start();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            while (reader.readLine() != null) {
-                // 持续读取输出，避免管道阻塞。
+        try {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                while (reader.readLine() != null) {
+                    // 持续读取输出，避免管道阻塞。
+                }
+            }
+            return process.waitFor();
+        } finally {
+            try { process.destroy(); } catch (Throwable ignored) {}
+            try {
+                if (!process.waitFor(120, TimeUnit.MILLISECONDS)) process.destroyForcibly();
+            } catch (Throwable ignored) {
+                try { process.destroyForcibly(); } catch (Throwable ignoredAgain) {}
             }
         }
-        return process.waitFor();
     }
 }

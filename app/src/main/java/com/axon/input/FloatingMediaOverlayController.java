@@ -131,10 +131,15 @@ final class FloatingMediaOverlayController implements FloatingVideoOverlayView.D
         view.setVideoFile(mediaFile, item.clipStartMs, item.clipEndMs, item.playbackMode);
 
         int[] size = FloatingMediaLayout.sizePx(appContext, item);
+        DisplayMetrics metrics = appContext.getResources().getDisplayMetrics();
+        boolean actualDragEnabled = OverlayDragSafety.allowDrag(
+                dragEnabled, metrics, size[0], size[1]);
+        view.setDragEnabled(actualDragEnabled);
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 size[0], size[1],
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                windowFlags(dragEnabled), PixelFormat.TRANSLUCENT);
+                OverlayDragSafety.windowFlags(dragEnabled, metrics, size[0], size[1]),
+                PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
         params.setTitle(WINDOW_TITLE_PREFIX + item.id);
 
@@ -143,7 +148,7 @@ final class FloatingMediaOverlayController implements FloatingVideoOverlayView.D
         mediaWindow.item = item.copy();
         mediaWindow.view = view;
         mediaWindow.params = params;
-        mediaWindow.dragEnabled = dragEnabled;
+        mediaWindow.dragEnabled = actualDragEnabled;
         applyPosition(mediaWindow, item);
 
         try {
@@ -167,17 +172,6 @@ final class FloatingMediaOverlayController implements FloatingVideoOverlayView.D
 
         FloatingMediaStore.Item previous = mediaWindow.item;
         boolean layoutChanged = false;
-        if (mediaWindow.dragEnabled != dragEnabled) {
-            mediaWindow.dragEnabled = dragEnabled;
-            mediaWindow.view.setDragEnabled(dragEnabled);
-            int nextFlags = windowFlags(dragEnabled);
-            if (mediaWindow.params.flags != nextFlags) {
-                mediaWindow.params.flags = nextFlags;
-                layoutChanged = true;
-            }
-        }
-
-        applyViewState(mediaWindow.view, previous, item, dragEnabled);
 
         if (previous == null || previous.sizePercent != item.sizePercent
                 || previous.sourceWidth != item.sourceWidth || previous.sourceHeight != item.sourceHeight) {
@@ -188,6 +182,22 @@ final class FloatingMediaOverlayController implements FloatingVideoOverlayView.D
                 layoutChanged = true;
             }
         }
+
+        DisplayMetrics metrics = appContext.getResources().getDisplayMetrics();
+        boolean actualDragEnabled = OverlayDragSafety.allowDrag(
+                dragEnabled, metrics, mediaWindow.params.width, mediaWindow.params.height);
+        if (mediaWindow.dragEnabled != actualDragEnabled) {
+            mediaWindow.dragEnabled = actualDragEnabled;
+            mediaWindow.view.setDragEnabled(actualDragEnabled);
+        }
+        int nextFlags = OverlayDragSafety.windowFlags(
+                dragEnabled, metrics, mediaWindow.params.width, mediaWindow.params.height);
+        if (mediaWindow.params.flags != nextFlags) {
+            mediaWindow.params.flags = nextFlags;
+            layoutChanged = true;
+        }
+
+        applyViewState(mediaWindow.view, previous, item, actualDragEnabled);
 
         if (previous == null || Float.compare(previous.xPercent, item.xPercent) != 0
                 || Float.compare(previous.yPercent, item.yPercent) != 0) {
@@ -265,15 +275,6 @@ final class FloatingMediaOverlayController implements FloatingVideoOverlayView.D
             } catch (Throwable ignored) {
             }
         }
-    }
-
-    private static int windowFlags(boolean dragEnabled) {
-        int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-        if (!dragEnabled) flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-        return flags;
     }
 
     private static final class MediaWindow {

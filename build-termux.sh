@@ -117,24 +117,8 @@ if [ "${AXON_SKIP_CUBISM_CORE_REFRESH:-0}" != "1" ]; then
 fi
 
 
-# 1）构建 Native C++
-bash "$ROOT/build-native.sh"
-NATIVE_LIB="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyengine.so"
-PROXY_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libsensitivityproxy.so"
-GAMEPAD_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libgamepadmonitor.so"
-KEYHOLD_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyhold.so"
-KEYMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeymapper.so"
-SYNCMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libsyncmapper.so"
-CUSTOMMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libcustommapper.so"
-TOUCH_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libtouchmonitor.so"
-[ -f "$NATIVE_LIB" ] || fail "C++ JNI 输出不存在"
-[ -f "$PROXY_BIN" ] || fail "灵敏度代理输出不存在"
-[ -f "$GAMEPAD_MONITOR_BIN" ] || fail "手柄监听输出不存在"
-[ -f "$TOUCH_MONITOR_BIN" ] || fail "触屏监听输出不存在"
-[ -f "$KEYHOLD_BIN" ] || fail "强制长按代理输出不存在"
-[ -f "$KEYMAPPER_BIN" ] || fail "手柄映射代理输出不存在"
-[ -f "$SYNCMAPPER_BIN" ] || fail "同时点击映射代理输出不存在"
-[ -f "$CUSTOMMAPPER_BIN" ] || fail "自定义映射代理输出不存在"
+# 1）先编译资源 / Java。过去的回归多数发生在 Java 与资源层；
+# 先让 javac/aapt2 fail-fast，避免每次 Java 出错都先完整编译一遍 Native。
 
 # 2）编译资源
 # 编译完整 Android 资源，包括 PNG 图标。
@@ -186,7 +170,29 @@ d8 \
     "$CLASSES_JAR"
 [ -f "$DEX/classes.dex" ] || fail "D8 没有生成 classes.dex"
 
-# 6）打包 DEX 和 JNI。extractNativeLibs=true，不需要 zipalign。
+# 6）Java / DEX 通过后再构建 Native C++
+bash "$ROOT/build-native.sh"
+NATIVE_LIB="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyengine.so"
+PROXY_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libsensitivityproxy.so"
+GAMEPAD_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libgamepadmonitor.so"
+KEYHOLD_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeyhold.so"
+KEYMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libkeymapper.so"
+SYNCMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libsyncmapper.so"
+CUSTOMMAPPER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libcustommapper.so"
+CLICKMULTIPLIER_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libclickmultiplier.so"
+TOUCH_MONITOR_BIN="$ROOT/app/src/main/jniLibs/arm64-v8a/libtouchmonitor.so"
+[ -f "$NATIVE_LIB" ] || fail "C++ JNI 输出不存在"
+[ -f "$PROXY_BIN" ] || fail "灵敏度代理输出不存在"
+[ -f "$GAMEPAD_MONITOR_BIN" ] || fail "手柄监听输出不存在"
+[ -f "$TOUCH_MONITOR_BIN" ] || fail "触屏监听输出不存在"
+[ -f "$KEYHOLD_BIN" ] || fail "强制长按代理输出不存在"
+[ -f "$KEYMAPPER_BIN" ] || fail "手柄映射代理输出不存在"
+[ -f "$SYNCMAPPER_BIN" ] || fail "同时点击映射代理输出不存在"
+[ -f "$CUSTOMMAPPER_BIN" ] || fail "自定义映射代理输出不存在"
+[ -f "$CLICKMULTIPLIER_BIN" ] || fail "点击倍率代理输出不存在"
+
+
+# 7）打包 DEX 和 JNI。extractNativeLibs=true，不需要 zipalign。
 cp "$DEX/classes.dex" "$APK_STAGE/classes.dex"
 cp "$NATIVE_LIB" "$APK_STAGE/lib/arm64-v8a/libkeyengine.so"
 cp "$PROXY_BIN" "$APK_STAGE/lib/arm64-v8a/libsensitivityproxy.so"
@@ -196,13 +202,22 @@ cp "$KEYHOLD_BIN" "$APK_STAGE/lib/arm64-v8a/libkeyhold.so"
 cp "$KEYMAPPER_BIN" "$APK_STAGE/lib/arm64-v8a/libkeymapper.so"
 cp "$SYNCMAPPER_BIN" "$APK_STAGE/lib/arm64-v8a/libsyncmapper.so"
 cp "$CUSTOMMAPPER_BIN" "$APK_STAGE/lib/arm64-v8a/libcustommapper.so"
+cp "$CLICKMULTIPLIER_BIN" "$APK_STAGE/lib/arm64-v8a/libclickmultiplier.so"
+
+# 关键输入代理必须全部进入 APK。避免出现 Native 阶段显示构建成功，
+# 但运行时 nativeLibraryDir 中缺少 helper 而被误判成 Root/Shizuku 权限失败。
+for required_native in \
+    libkeyengine.so libsensitivityproxy.so libgamepadmonitor.so libtouchmonitor.so \
+    libkeyhold.so libkeymapper.so libsyncmapper.so libcustommapper.so libclickmultiplier.so; do
+    [ -f "$APK_STAGE/lib/arm64-v8a/$required_native" ] || fail "APK Native 组件漏打包: $required_native"
+done
 (
     cd "$APK_STAGE"
     zip -q -u "$UNSIGNED" classes.dex
     zip -q -u -r "$UNSIGNED" lib
 )
 
-# 7）使用同一证书签名 APK。
+# 8）使用同一证书签名 APK。
 apksigner sign \
     --ks "$KEYSTORE" \
     --ks-key-alias "$KEY_ALIAS" \
@@ -214,7 +229,7 @@ apksigner sign \
 apksigner verify "$FINAL_APK"
 [ -f "$FINAL_APK" ] || fail "没有生成 APK"
 
-# 8）复制签名 APK 到 Download 目录。
+# 9）复制签名 APK 到 Download 目录。
 # 优先使用 Termux 共享存储路径，失败时使用 Android Download 路径。
 DOWNLOAD_DIR=""
 for candidate in "$HOME/storage/downloads" "/storage/emulated/0/Download"; do

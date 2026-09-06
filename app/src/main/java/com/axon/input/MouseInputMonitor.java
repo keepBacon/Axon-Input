@@ -74,11 +74,18 @@ public final class MouseInputMonitor {
     }
 
     private void runLoop() {
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY); }
+        catch (Throwable ignored) {}
         while (running) {
             int mode = SensitivitySettingsStore.getMode(context);
+            if (mode == SensitivitySettingsStore.MODE_ROOT && !RootBridge.isRootActive()) {
+                RootBridge.ensureActivated(context, null);
+                sleep(400L);
+                continue;
+            }
             if (mode != SensitivitySettingsStore.MODE_ROOT
                     && (!ShizukuBridge.isReady() || !ShizukuBridge.hasPermission())) {
-                sleep(500L);
+                sleep(300L);
                 continue;
             }
 
@@ -101,8 +108,11 @@ public final class MouseInputMonitor {
                     while (running && (line = reader.readLine()) != null) parseLine(line);
                 }
             } catch (Throwable ignored) {
-                // Root 被拒绝时避免反复触发 su 授权弹窗；Shizuku 可等待服务恢复后重连。
-                if (mode == SensitivitySettingsStore.MODE_ROOT) running = false;
+                // getevent/特权进程可能因 Root 被撤销、Shizuku 重启或 OEM 临时 EOF 退出。
+                // 监听器自身保持存活并重连，避免 Service 仍认为 monitor active 但硬件流已永久停止。
+                if (mode == SensitivitySettingsStore.MODE_ROOT) {
+                    RootBridge.reportRootChannelFailure(context);
+                }
             } finally {
                 if (process == current) process = null;
                 if (current != null) {
@@ -111,7 +121,7 @@ public final class MouseInputMonitor {
                 resetPressedButtons();
             }
 
-            if (running) sleep(500L);
+            if (running) sleep(mode == SensitivitySettingsStore.MODE_ROOT ? 350L : 300L);
         }
     }
 
@@ -163,14 +173,16 @@ public final class MouseInputMonitor {
         if (value < 0 || value == 2) return; // EV_KEY repeat 不是新的按下沿。
 
         boolean pressed = value != 0;
-        updateButton(device, button, pressed);
+        // getevent -lt 的时间戳来自内核输入事件本身，比“Java 线程读到这一行的时刻”更接近
+        // 真实按键边沿。CPS/双击间隔优先使用该时间，避免调度抖动污染统计精度。
+        updateButton(device, button, pressed, parseEventTimeMillis(line));
     }
 
     /**
      * All five mouse buttons are aggregated per physical event node.  This is important for
      * devices exposing multiple event nodes and for hot-unplug while a button is held.
      */
-    private synchronized void updateButton(String device, int button, boolean pressed) {
+    private synchronized void updateButton(String device, int button, boolean pressed, long eventTimeMs) {
         if (button < NativeKeyEngine.MOUSE_LEFT || button > BUTTON_FORWARD) return;
         String key = device == null ? "<unknown>" : device;
         int bit = 1 << button;
@@ -180,7 +192,7 @@ public final class MouseInputMonitor {
 
         if (nextMask == 0) deviceButtonMasks.remove(key);
         else deviceButtonMasks.put(key, nextMask);
-        dispatchAggregateTransitionLocked(computeAggregateButtonsLocked());
+        dispatchAggregateTransitionLocked(computeAggregateButtonsLocked(), eventTimeMs);
     }
 
     private int computeAggregateButtonsLocked() {
@@ -189,13 +201,13 @@ public final class MouseInputMonitor {
         return nextAggregate & 0x1f;
     }
 
-    private void dispatchAggregateTransitionLocked(int nextAggregate) {
+    private void dispatchAggregateTransitionLocked(int nextAggregate, long eventTimeMs) {
         int previous = aggregateButtons;
         int changed = previous ^ nextAggregate;
         if (changed == 0) return;
         aggregateButtons = nextAggregate;
 
-        long now = SystemClock.uptimeMillis();
+        long now = eventTimeMs > 0L ? eventTimeMs : SystemClock.uptimeMillis();
         long stats = NativeKeyEngine.nativeGetMouseStats(now);
         boolean primaryChanged = false;
         if ((changed & 1) != 0) {
@@ -246,7 +258,7 @@ public final class MouseInputMonitor {
             if (removed != null && deviceButtonMasks.remove(removed) != null) {
                 // A physical mouse can disappear without sending EV_KEY UP. Recompute immediately
                 // so CPS, prompts, Bongo Cat and bindings never remain stuck in a pressed state.
-                dispatchAggregateTransitionLocked(computeAggregateButtonsLocked());
+                dispatchAggregateTransitionLocked(computeAggregateButtonsLocked(), SystemClock.uptimeMillis());
             }
             return true;
         }
@@ -265,6 +277,25 @@ public final class MouseInputMonitor {
             return true;
         }
         return false;
+    }
+
+    /**
+     * getevent -lt 示例："[  1234.567890] /dev/input/event5: ..."。
+     * 该时钟与输入子系统的 monotonic 时间基一致，直接换算毫秒用于按键边沿统计；
+     * 无法解析时返回 0，由调用方回退到 uptimeMillis()。
+     */
+    private long parseEventTimeMillis(String line) {
+        if (line == null) return 0L;
+        int open = line.indexOf('[');
+        int close = open >= 0 ? line.indexOf(']', open + 1) : -1;
+        if (open < 0 || close <= open + 1) return 0L;
+        try {
+            double seconds = Double.parseDouble(line.substring(open + 1, close).trim());
+            if (!Double.isFinite(seconds) || seconds <= 0d) return 0L;
+            return Math.max(1L, Math.round(seconds * 1000d));
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
     }
 
     private String extractEventPath(String text) {

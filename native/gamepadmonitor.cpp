@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/hidraw.h>
+#include <math.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -23,7 +24,7 @@ namespace {
 constexpr int kMaxEvents = 256;
 constexpr int kMaxHidraw = 64;
 constexpr int kMaxVaderRaw = 8;
-constexpr int kScanIntervalMs = 900;
+constexpr int kScanIntervalMs = 450;
 constexpr uint16_t kFlydigiVendor = 0x37d7;
 constexpr uint16_t kVader5ProProduct = 0x2401;
 constexpr uint32_t kBackButtonMask = (1u << 15) | (1u << 16) | (1u << 17) | (1u << 18);
@@ -187,8 +188,19 @@ bool triggerRestAtMax(const input_absinfo& info) {
     return toMax < toMin;
 }
 
-int mapAxis1000(const input_absinfo& info, int value) {
-    double center = (static_cast<double>(info.minimum) + info.maximum) * 0.5;
+double calibratedCenter(const input_absinfo& info) {
+    const double midpoint = (static_cast<double>(info.minimum) + info.maximum) * 0.5;
+    const double half = (static_cast<double>(info.maximum) - info.minimum) * 0.5;
+    if (half <= 0.0) return midpoint;
+    const double offset = static_cast<double>(info.value) - midpoint;
+    double tolerance = half * 0.08;
+    if (info.flat > 0 && static_cast<double>(info.flat) * 2.0 > tolerance) {
+        tolerance = static_cast<double>(info.flat) * 2.0;
+    }
+    return fabs(offset) <= tolerance ? static_cast<double>(info.value) : midpoint;
+}
+
+int mapAxis1000(const input_absinfo& info, int value, double center) {
     double positiveRange = static_cast<double>(info.maximum) - center;
     double negativeRange = center - static_cast<double>(info.minimum);
     double raw = static_cast<double>(value) - center;
@@ -281,6 +293,10 @@ struct Device {
     char name[128]{};
     char phys[128]{};
     input_absinfo leftX{}, leftY{}, rightX{}, rightY{}, triggerL{}, triggerR{};
+    double leftCenterX = 0.0;
+    double leftCenterY = 0.0;
+    double rightCenterX = 0.0;
+    double rightCenterY = 0.0;
     int rightXCode = -1;
     int rightYCode = -1;
     int triggerLCode = -1;
@@ -586,6 +602,14 @@ bool selectAxes(int fd, Device* d) {
         d->triggerRRestAtMax = triggerRestAtMax(d->triggerR);
         d->analogRt = mapTrigger1000(d->triggerR, d->triggerR.value, d->triggerRRestAtMax);
     }
+    d->leftCenterX = calibratedCenter(d->leftX);
+    d->leftCenterY = calibratedCenter(d->leftY);
+    d->rightCenterX = calibratedCenter(d->rightX);
+    d->rightCenterY = calibratedCenter(d->rightY);
+    d->state.lx = mapAxis1000(d->leftX, d->leftX.value, d->leftCenterX);
+    d->state.ly = mapAxis1000(d->leftY, d->leftY.value, d->leftCenterY);
+    if (d->rightXCode >= 0) d->state.rx = mapAxis1000(d->rightX, d->rightX.value, d->rightCenterX);
+    if (d->rightYCode >= 0) d->state.ry = mapAxis1000(d->rightY, d->rightY.value, d->rightCenterY);
     d->state.lt = d->analogLt;
     d->state.rt = d->analogRt;
     return true;
@@ -622,8 +646,11 @@ bool attachDevice(const char* path, Device* d) {
         // exposed through legacy BTN_THUMB2. Some firmware still advertises BTN_TL
         // in the capability bitmap even though the physical L1 edge arrives on
         // BTN_THUMB2, so do NOT require BTN_TL to be absent.
-        candidate.legacyThumb2AsL1 = candidate.hasStandardWest
-                && bitTest(keyBits, BTN_THUMB2);
+        // BTN_THUMB2 is the normal legacy X position. Reinterpreting it as L1 globally makes
+        // real X disappear on mixed HID devices. Keep the Dune-Fox workaround constrained to
+        // Flydigi's vendor family, where this non-standard duplicate has actually been observed.
+        candidate.legacyThumb2AsL1 = candidate.vendor == kFlydigiVendor
+                && candidate.hasStandardWest && bitTest(keyBits, BTN_THUMB2);
     }
     snprintf(candidate.path, sizeof(candidate.path), "%s", path);
     snprintf(candidate.name, sizeof(candidate.name), "%s", name[0] ? name : "gamepad");
@@ -744,7 +771,8 @@ void scanButtonCompanion(const Device& primary, ButtonCompanion* out) {
     if (getBits(fd, EV_KEY, keyBits)) {
         candidate.hasStandardEast = bitTest(keyBits, BTN_EAST);
         candidate.hasStandardWest = bitTest(keyBits, BTN_WEST);
-        candidate.legacyThumb2AsL1 = candidate.hasStandardWest && bitTest(keyBits, BTN_THUMB2);
+        candidate.legacyThumb2AsL1 = candidate.vendor == kFlydigiVendor
+                && candidate.hasStandardWest && bitTest(keyBits, BTN_THUMB2);
     }
     snprintf(candidate.path, sizeof(candidate.path), "%s", bestPath);
     snprintf(candidate.name, sizeof(candidate.name), "%s", name[0] ? name : "gamepad-buttons");
@@ -759,9 +787,17 @@ bool processButtonCompanion(ButtonCompanion* c, Device* d, const input_event& ev
     if (ev.type == EV_KEY) {
         int index = buttonIndex(ev.code, c->hasStandardEast, c->hasStandardWest, c->legacyThumb2AsL1);
         if (index >= 0 && index < 32) {
+            uint32_t before = c->buttons;
             uint32_t bit = static_cast<uint32_t>(1u << index);
             if (ev.value != 0) c->buttons |= bit;
             else c->buttons &= ~bit;
+            // Digital edges do not need to wait for SYN_REPORT. Publishing immediately removes
+            // one kernel/report batching step from Keyboard Cat while the SYN path remains as
+            // the consistency checkpoint for hats and grouped reports.
+            if (before != c->buttons) {
+                d->companionButtons = c->buttons;
+                emit(d, true);
+            }
         }
         return true;
     }
@@ -824,6 +860,8 @@ bool process(Device* d, const input_event& ev) {
     if (ev.type == EV_KEY) {
         int index = buttonIndex(ev.code, d->hasStandardEast, d->hasStandardWest, d->legacyThumb2AsL1);
         if (index >= 0 && index < 32) {
+            GamepadState before = d->state;
+            uint32_t beforeBack = d->evdevBackMask;
             uint32_t bit = static_cast<uint32_t>(1u << index);
             bool pressed = ev.value != 0;
             if (index >= 15 && index <= 18) {
@@ -838,14 +876,15 @@ bool process(Device* d, const input_event& ev) {
             else if (ev.code == BTN_TR2) d->digitalRt = pressed;
             d->state.lt = d->digitalLt ? 1000 : d->analogLt;
             d->state.rt = d->digitalRt ? 1000 : d->analogRt;
+            if (!same(before, d->state) || beforeBack != d->evdevBackMask) emit(d, true);
         }
         return true;
     }
     if (ev.type == EV_ABS) {
-        if (ev.code == ABS_X) d->state.lx = mapAxis1000(d->leftX, ev.value);
-        else if (ev.code == ABS_Y) d->state.ly = mapAxis1000(d->leftY, ev.value);
-        else if (ev.code == d->rightXCode) d->state.rx = mapAxis1000(d->rightX, ev.value);
-        else if (ev.code == d->rightYCode) d->state.ry = mapAxis1000(d->rightY, ev.value);
+        if (ev.code == ABS_X) d->state.lx = mapAxis1000(d->leftX, ev.value, d->leftCenterX);
+        else if (ev.code == ABS_Y) d->state.ly = mapAxis1000(d->leftY, ev.value, d->leftCenterY);
+        else if (ev.code == d->rightXCode) d->state.rx = mapAxis1000(d->rightX, ev.value, d->rightCenterX);
+        else if (ev.code == d->rightYCode) d->state.ry = mapAxis1000(d->rightY, ev.value, d->rightCenterY);
         else if (ev.code == d->triggerLCode) {
             d->analogLt = mapTrigger1000(d->triggerL, ev.value, d->triggerLRestAtMax);
             d->state.lt = d->digitalLt ? 1000 : d->analogLt;

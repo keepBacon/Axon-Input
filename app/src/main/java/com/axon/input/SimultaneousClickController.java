@@ -58,7 +58,8 @@ public final class SimultaneousClickController {
         synchronized (lock) {
             if (destroyed) return;
             boolean valid = enabled && InputBinding.isValid(source) && InputBinding.isValid(target)
-                    && source != target && targetEvdev > 0;
+                    && targetEvdev > 0
+                    && (source != target || !InputBinding.isMouse(source));
             boolean changed = this.enabled != valid || sourceInputCode != source
                     || targetInputCode != target || targetEvdevCode != targetEvdev;
             if (!changed) {

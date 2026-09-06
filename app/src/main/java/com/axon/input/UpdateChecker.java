@@ -1,43 +1,58 @@
 package com.axon.input;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.Toast;
 
 import org.json.JSONObject;
 
+import java.lang.ref.WeakReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** 启动后检查一次新版本。检测失败不影响应用使用。 */
+/** 启动后检查新版本。只有成功拿到有效版本信息后才标记本进程已完成。 */
 final class UpdateChecker {
     private static final String VERSION_INFO_URL =
             "https://raw.githubusercontent.com/keepBacon/Axon-Input/main/version.json";
     private static final String REPOSITORY_URL =
             "https://github.com/keepBacon/Axon-Input";
-    private static final AtomicBoolean STARTED = new AtomicBoolean(false);
+    private static final AtomicBoolean CHECKING = new AtomicBoolean(false);
+    private static final AtomicBoolean COMPLETED = new AtomicBoolean(false);
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static volatile WeakReference<Activity> latestActivity = new WeakReference<>(null);
 
     private UpdateChecker() {}
 
     static void check(Activity activity) {
-        if (!canUse(activity) || !STARTED.compareAndSet(false, true)) return;
+        if (!canUse(activity)) return;
+        latestActivity = new WeakReference<>(activity);
+        if (COMPLETED.get() || !CHECKING.compareAndSet(false, true)) return;
 
+        final Context app = activity.getApplicationContext();
         Thread worker = new Thread(() -> {
-            UpdateInfo info = fetchUpdate(activity);
-            if (info == null || info.versionCode <= AppVersion.code(activity)) return;
-            activity.runOnUiThread(() -> {
-                if (canUse(activity)) showUpdateDialog(activity, info);
-            });
+            UpdateInfo info = fetchUpdate(app);
+            MAIN.post(() -> finishCheck(app, info));
         }, "AxonUpdateCheck");
         worker.setDaemon(true);
         worker.start();
     }
 
-    private static UpdateInfo fetchUpdate(Activity activity) {
-        JSONObject json = RemoteJson.get(activity, VERSION_INFO_URL, true);
+    private static void finishCheck(Context app, UpdateInfo info) {
+        CHECKING.set(false);
+        if (info == null) return; // 网络失败允许本进程后续再次检查。
+        COMPLETED.set(true);
+        Activity activity = latestActivity.get();
+        if (!canUse(activity) || info.versionCode <= AppVersion.code(app)) return;
+        showUpdateDialog(activity, info);
+    }
+
+    private static UpdateInfo fetchUpdate(Context context) {
+        JSONObject json = RemoteJson.get(context, VERSION_INFO_URL, true);
         if (json == null) return null;
 
         int versionCode = json.optInt("versionCode", -1);
@@ -58,12 +73,20 @@ final class UpdateChecker {
                 latest));
         if (!info.changelog.isEmpty()) message.append("\n\n").append(info.changelog);
 
-        new AlertDialog.Builder(activity)
-                .setTitle(R.string.update_available_title)
-                .setMessage(message.toString())
-                .setPositiveButton(R.string.update_now, (dialog, which) -> openDownload(activity))
-                .setNegativeButton(R.string.update_later, null)
-                .show();
+        DocumentModalDialog.show(
+                activity,
+                activity.getString(R.string.update_available_title),
+                message.toString(),
+                activity.getString(R.string.update_later),
+                activity.getString(R.string.update_now),
+                DocumentModalDialog.Handle::dismiss,
+                handle -> {
+                    handle.dismiss();
+                    openDownload(activity);
+                },
+                true,
+                true,
+                null);
     }
 
     private static void openDownload(Activity activity) {

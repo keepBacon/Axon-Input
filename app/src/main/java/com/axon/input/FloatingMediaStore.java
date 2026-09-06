@@ -363,8 +363,10 @@ final class FloatingMediaStore {
         if (item.playHotkey >= 0 && !InputBinding.isValid(item.playHotkey)) item.playHotkey = -1;
         if (!Float.isFinite(item.xPercent)) item.xPercent = DEFAULT_X_PERCENT;
         if (!Float.isFinite(item.yPercent)) item.yPercent = DEFAULT_Y_PERCENT;
-        item.xPercent = Math.max(-300f, Math.min(400f, item.xPercent));
-        item.yPercent = Math.max(-300f, Math.min(400f, item.yPercent));
+        // 位置使用屏幕百分比而不是“剩余可移动范围”，因此 100% 会让左上角落到屏外。
+        // 保留 10% 屏幕恢复区，避免图片/视频被永久拖丢。
+        item.xPercent = Math.max(0f, Math.min(90f, item.xPercent));
+        item.yPercent = Math.max(0f, Math.min(90f, item.yPercent));
     }
 
     private static boolean sameItem(Item a, Item b) {

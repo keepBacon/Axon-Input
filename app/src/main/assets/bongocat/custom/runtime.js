@@ -4,8 +4,9 @@
   const CONFIG = window.__AXON_STYLE_CONFIG__ || {};
   const DESIGN_WIDTH = Math.max(1, Number(CONFIG.designWidth) || 612);
   const DESIGN_HEIGHT = Math.max(1, Number(CONFIG.designHeight) || 354);
-  const FRAME_RATE_LIMIT = Math.max(1, Math.min(240, Number(CONFIG.mverFrameRateLimit) || 60));
-  const FRAME_INTERVAL = 1000 / FRAME_RATE_LIMIT;
+  // Renderer cadence follows WebView requestAnimationFrame / display VSync directly.
+  // Keep only a 60 Hz fallback delta for the first frame; do not throttle high-refresh displays.
+  const FRAME_TIME_FALLBACK = 1000 / 60;
   const DAMPING_DECAY = 0.75;
   const MIN_MOUSE_PRESS_MS = 36;
   // Direct evaluateJavascript events are authoritative. Native polling is only a desync safety net,
@@ -27,6 +28,11 @@
   const RIGHT_KEY_ASSETS = CONFIG.rightKeyAssets && typeof CONFIG.rightKeyAssets === 'object' ? CONFIG.rightKeyAssets : {};
   const STYLE_MODE = String(CONFIG.mode || 'keyboard');
   const IS_MVER = CONFIG.mver === true || String(CONFIG.format || '') === 'mver016';
+  // Portable controller cats use authored full-canvas left/right hand sheets for digital buttons
+  // and Live2D parameters only for sticks. Mixing those two ownership paths is what created the
+  // intermittent three/four-hand and disconnected-arm artifacts on imported gamepad models.
+  const PORTABLE_GAMEPAD_HAND_COMPOSITOR = !IS_MVER && STYLE_MODE === 'gamepad'
+    && CONFIG.portableGamepadHandCompositor === true;
   const MVER_USE_LIVE2D = IS_MVER && CONFIG.useLive2d === true;
   // Mver is a layered compositor, not a single image. Keep every exported layer in the
   // package design coordinate system so imported animations retain their original geometry.
@@ -35,6 +41,15 @@
   // are authoritative they replace the model's built-in keyboard hand while active; the runtime
   // uses CatParam*HandDown only as a temporary hide gate so the PNG and model arm never coexist.
   const MVER_SPRITE_HANDS_AUTHORITATIVE = IS_MVER && CONFIG.mverSpriteHandsAuthoritative === true;
+  const MVER_HAND_COMPOSITOR_VERSION = Math.max(1, Number(CONFIG.mverHandCompositorVersion) || 1);
+  const MVER_HAND_MODEL_FALLBACK = IS_MVER && CONFIG.mverHandModelFallback !== false && MVER_USE_LIVE2D;
+  const MVER_STRICT_HAND_LAYOUT = IS_MVER && CONFIG.mverStrictHandLayout !== false;
+  const MVER_RASTER_IDLE_ENABLED = IS_MVER && CONFIG.mverRasterIdleEnabled !== false && !MVER_USE_LIVE2D;
+  const MVER_HAND_RENDER_POLICY = String(CONFIG.mverHandRenderPolicy || (MVER_USE_LIVE2D ? 'active-raster-model-idle' : 'raster-container'));
+  // Importer resolves this from the original Mver standard config. `single` is the canonical
+  // standard compositor; `split` exists for malformed/legacy exports that explicitly author it.
+  // Do not infer split from leftover directories when the importer already supplied semantics.
+  const MVER_HAND_LAYOUT = String(CONFIG.mverHandLayout || '').toLowerCase();
   const MVER_RENDER_MOUSE_OVERLAY = IS_MVER && CONFIG.mverRenderMouseOverlay === true;
   const MVER_BASE_BACKGROUND = IS_MVER ? String(CONFIG.mverMouseBg || '') : '';
   const MVER_KEY_SPRITES = CONFIG.mverKeySprites && typeof CONFIG.mverKeySprites === 'object' ? CONFIG.mverKeySprites : {};
@@ -186,7 +201,20 @@
     mverMotionStartedAt: 0,
     mverMotionLockHand: false,
     modernPressed: new Set(),
+    // 普通 PNG 键盘手也必须保留完整按键顺序。只记录 leftKey/rightKey 会在同侧和弦中
+    // 出现 A 按住 -> S 按下 -> S 松开后 A 仍按住但手消失的问题。
+    modernPressOrder: [],
+    // Gamepad input has three distinct concerns: bridge snapshot, raster visual ownership, and
+    // Cubism-parameter ownership. Keeping them separate prevents one physical button from being
+    // rendered by both a PNG hand and model parameters at the same time.
+    bridgeGamepadPressed: new Set(),
+    gamepadOverlayPressed: new Set(),
+    gamepadOverlayPressOrder: [],
     modernGamepadPressed: new Set(),
+    // Latest physical stick state is retained so a digital hand can temporarily own one side and
+    // release it back to the stick without waiting for another axis event.
+    gamepadLx: 0, gamepadLy: 0, gamepadRx: 0, gamepadRy: 0,
+    gamepadLeftDown: false, gamepadRightDown: false,
     modernParameterCounts: new Map(),
     parameterToggles: new Map(),
     parameterPulseUntil: new Map(),
@@ -224,7 +252,14 @@
 
   function mverLayer(id, zIndex = 4) {
     if (!IS_MVER) return null;
-    if (mverLayers.has(id)) return mverLayers.get(id);
+    if (mverLayers.has(id)) {
+      // 同一个 Mver 图层会在待机/按下/切换状态之间反复复用。
+      // 旧实现只在首次创建时写 z-index，后续即使调用方调整层级也不会生效，
+      // 容易把一次按下时的手层永久留在高层。这里每次同步期望层级。
+      const cached = mverLayers.get(id);
+      cached.style.zIndex = String(zIndex);
+      return cached;
+    }
     const image = document.createElement('img');
     image.className = 'layer hidden mver-layer';
     image.alt = '';
@@ -235,23 +270,93 @@
     return image;
   }
 
+  function isMverHandLayerId(id) {
+    return id === 'mver-hand' || id === 'mver-left-hand' || id === 'mver-right-hand';
+  }
+
+  function mverFullLayerOffset(id) {
+    // Mver 的 mousebg/tabletbg、keyboard、hand、face 都是在同一个 window_size 设计画布上
+    // 以 (0,0) 为原点绘制的 authored full-frame sprite。Android 端若为了适配 WebView 对整张
+    // Mver 画布做了兼容位移，这个位移必须作为“全局画布变换”同时作用到所有 full-frame
+    // 图层；只移动 base、却让 keyboard/hand/face 留在 0,0，会直接破坏按键与键盘、袖口与
+    // 身体的像素配准。hand_offset 是作者定义的手部局部偏移，必须叠加在全局画布位移之上。
+    let x = MVER_FULLFRAME_OFFSET_X;
+    let y = MVER_FULLFRAME_OFFSET_Y;
+    if (isMverHandLayerId(id)) {
+      x += MVER_HAND_OFFSET_X;
+      y += MVER_HAND_OFFSET_Y;
+    }
+    return { x, y };
+  }
+
+  function mverHandLayerZ() {
+    // 不再通过“把手放低/放高”补偿坐标错位。Bongo-Cat-Mver 的 standard/Live2D standard
+    // 原始绘制顺序都是 keyboard -> hand -> face；因此按键手保持 authored compositor 的
+    // hand 层级。HandDown 只负责视觉 ownership，不参与几何或层级补偿。
+    return 6;
+  }
+
   function setMverFullLayer(id, src, visible, zIndex = 4) {
     const image = mverLayer(id, zIndex);
     if (!image) return;
     if (!visible || !src) {
+      image.dataset.desiredSrc = '';
       image.classList.add('hidden');
       return;
     }
     // Mver/SFML draws standard sprites at design-space origin using their authored pixel size.
     // Do not center/stretch cropped community frames; preserve 0,0 compositing semantics.
-    image.dataset.designX = String(MVER_FULLFRAME_OFFSET_X);
-    image.dataset.designY = String(MVER_FULLFRAME_OFFSET_Y);
+    const layerOffset = mverFullLayerOffset(id);
+    image.dataset.designX = String(layerOffset.x);
+    image.dataset.designY = String(layerOffset.y);
     image.dataset.assetScale = '1';
     image.dataset.centered = '0';
     image.dataset.mverFullFrame = '1';
     const next = String(src);
+    image.dataset.desiredSrc = next;
+
+    // Hand layers are stateful visual owners. Never hide/replace the current valid hand before the
+    // target frame has decoded: doing so makes naturalWidth temporarily zero and produced the
+    // visible "hand disappears" / 1px flash on rapid chords. Broken frames are quarantined and
+    // the previous/idle/model owner remains visible instead.
+    if (isMverHandLayerId(id)) {
+      if (mverAssetFailed(next)) return;
+      if (!mverAssetReady(next)) {
+        preloadMverAsset(next);
+        // Live2D has a safe model-owned fallback. Never keep a stale raster pose from a key that
+        // has already been released while the next PNG is decoding; that transient produced
+        // duplicate/ghost hands. Sprite-only packs have no model fallback, so they retain the
+        // previous valid frame until the target is ready.
+        if (MVER_USE_LIVE2D) image.classList.add('hidden');
+        return;
+      }
+      const preloaded = mverPreloadedAssets.get(next);
+      if (preloaded && preloaded.naturalWidth > 0 && preloaded.naturalHeight > 0) {
+        image.dataset.naturalWidth = String(preloaded.naturalWidth);
+        image.dataset.naturalHeight = String(preloaded.naturalHeight);
+      }
+    }
+
     if (image.getAttribute('src') !== next) {
-      image.onload = () => applyMverPlacedLayout(image);
+      image.onload = () => {
+        if (image.dataset.desiredSrc !== next) return;
+        applyMverPlacedLayout(image);
+        if (isMverHandLayerId(id)) {
+          // 只有这个真正参与合成的 DOM hand layer 完成解码后，才允许 HandDown hide gate
+          // 收起模型原生手。preload Image 已完成并不等于当前可见 <img> 已经可绘制。
+          syncGamepadStickHandParameters();
+          syncHandOverrides();
+        }
+      };
+      image.onerror = () => {
+        if (isMverHandLayerId(id)) {
+          mverFailedAssets.add(next);
+          syncMverHands();
+          syncHandOverrides();
+        } else {
+          image.classList.add('hidden');
+        }
+      };
       image.src = next;
     }
     image.classList.remove('hidden');
@@ -567,6 +672,7 @@
       state.mverMotionLockHand = false;
       if (wasLocked) {
         syncMverHands();
+        syncGamepadStickHandParameters();
         syncHandOverrides();
       }
     }
@@ -586,42 +692,154 @@
     }
   }
 
+  function highestIndexedActiveHandBinding(bindings) {
+    let selected = null;
+    let selectedIndex = -Infinity;
+    for (let i = 0; i < bindings.length; i++) {
+      const binding = bindings[i];
+      if (!bindingPressed(binding)) continue;
+      const src = String(binding && binding.src || '');
+      if (!src || mverAssetFailed(src)) continue;
+      // Original Mver hand containers resolve simultaneous keys by authored image/config index:
+      // the higher-numbered hand action wins. Physical held-state remains intact, so releasing it
+      // immediately restores the next-highest action that is still held.
+      const authored = Number(binding && binding.index);
+      const rank = Number.isFinite(authored) ? authored : i;
+      if (rank >= selectedIndex) {
+        selected = binding;
+        selectedIndex = rank;
+      }
+    }
+    return selected;
+  }
+
   function handBindingSource(group, bindings, legacyMap) {
     if (bindings.length) {
-      const binding = latestActiveBinding(group, bindings);
+      const binding = highestIndexedActiveHandBinding(bindings);
       return binding ? String(binding.src || '') : '';
     }
-    const key = latestPressedFor(legacyMap);
-    return key ? String(legacyMap[key] || '') : '';
+    // Legacy maps do not retain authored numeric index. Preserve physical press order only as a
+    // compatibility fallback for old Axon imports; new imports always use indexed bindings above.
+    for (let i = state.mverPressOrder.length - 1; i >= 0; i--) {
+      const key = state.mverPressOrder[i];
+      const src = state.mverPressed.has(key) && objectHas(legacyMap, key)
+        ? String(legacyMap[key] || '') : '';
+      if (src && !mverAssetFailed(src)) return src;
+    }
+    return '';
+  }
+
+  function hasUsableHandBindings(bindings) {
+    return Array.isArray(bindings) && bindings.some((binding) => {
+      const src = String(binding && binding.src || '');
+      return Boolean(src) && !mverAssetFailed(src);
+    });
+  }
+
+  function hasUsableLegacyHandSprite(map) {
+    return Boolean(map && typeof map === 'object' && Object.values(map).some((src) => {
+      const value = String(src || '');
+      return Boolean(value) && !mverAssetFailed(value);
+    }));
+  }
+
+  function usableMverIdle(src) {
+    const value = String(src || '');
+    return value && !mverAssetFailed(value) ? value : '';
+  }
+
+  function hasSingleMverHandData() {
+    return hasUsableHandBindings(MVER_HAND_BINDINGS)
+      || hasUsableLegacyHandSprite(MVER_HAND_SPRITES)
+      || (MVER_RASTER_IDLE_ENABLED && Boolean(usableMverIdle(CONFIG.mverUp)));
+  }
+
+  function hasSplitMverHandData() {
+    return hasUsableHandBindings(MVER_LEFT_HAND_BINDINGS)
+      || hasUsableHandBindings(MVER_RIGHT_HAND_BINDINGS)
+      || hasUsableLegacyHandSprite(MVER_LEFT_HAND_SPRITES)
+      || hasUsableLegacyHandSprite(MVER_RIGHT_HAND_SPRITES)
+      || (MVER_RASTER_IDLE_ENABLED && (Boolean(usableMverIdle(CONFIG.mverLeftIdle))
+        || Boolean(usableMverIdle(CONFIG.mverRightIdle))));
+  }
+
+  function resolveMverHandLayout() {
+    const single = hasSingleMverHandData();
+    const split = hasSplitMverHandData();
+    // New imports persist the original config semantics. Once a layout is known, never jump to a
+    // different residual family because one PNG is missing/decoding/invalid. That cross-layout
+    // fallback was the source of imported “original hand” layers reappearing over custom models.
+    if (MVER_STRICT_HAND_LAYOUT) {
+      if (MVER_HAND_LAYOUT === 'single') return single ? 'single' : 'none';
+      if (MVER_HAND_LAYOUT === 'split') return split ? 'split' : 'none';
+      if (MVER_HAND_LAYOUT === 'none') return 'none';
+    }
+    // Old Axon imports had no stable hand-layout field. Generic `hand` is canonical Mver standard.
+    if (MVER_HAND_LAYOUT === 'single') return single ? 'single' : (split ? 'split' : 'none');
+    if (MVER_HAND_LAYOUT === 'split') return split ? 'split' : (single ? 'single' : 'none');
+    return single ? 'single' : (split ? 'split' : 'none');
+  }
+
+  function hasSplitMverHandLayout() {
+    return resolveMverHandLayout() === 'split';
   }
 
   function syncMverHands() {
     if (!IS_MVER) return;
     if (!MVER_RENDER_HAND_OVERLAYS) {
-      setMverFullLayer('mver-left-hand', '', false, 6);
-      setMverFullLayer('mver-right-hand', '', false, 6);
-      setMverFullLayer('mver-hand', '', false, 6);
+      setMverFullLayer('mver-left-hand', '', false, mverHandLayerZ());
+      setMverFullLayer('mver-right-hand', '', false, mverHandLayerZ());
+      setMverFullLayer('mver-hand', '', false, mverHandLayerZ());
       return;
     }
-    // motion_lockhand keeps the normal input-hand layer from overriding a Live2D motion.
+
+    const layout = resolveMverHandLayout();
+    if (layout === 'none') {
+      setMverFullLayer('mver-left-hand', '', false, mverHandLayerZ());
+      setMverFullLayer('mver-right-hand', '', false, mverHandLayerZ());
+      setMverFullLayer('mver-hand', '', false, mverHandLayerZ());
+      return;
+    }
+
+    // lockhand motion temporarily owns model hand pose. Live2D therefore hides all raster hands;
+    // sprite-only packs still require their authored idle frame.
     if (state.mverMotionLockHand && state.mverMotionIndex >= 0) {
-      const up = String(CONFIG.mverUp || '');
-      setMverFullLayer('mver-left-hand', String(CONFIG.mverLeftIdle || ''), Boolean(CONFIG.mverLeftIdle), 6);
-      setMverFullLayer('mver-right-hand', String(CONFIG.mverRightIdle || ''), Boolean(CONFIG.mverRightIdle), 6);
-      setMverFullLayer('mver-hand', up, Boolean(up), 6);
+      if (MVER_USE_LIVE2D || !MVER_RASTER_IDLE_ENABLED) {
+        setMverFullLayer('mver-left-hand', '', false, mverHandLayerZ());
+        setMverFullLayer('mver-right-hand', '', false, mverHandLayerZ());
+        setMverFullLayer('mver-hand', '', false, mverHandLayerZ());
+      } else if (layout === 'split') {
+        const leftIdle = usableMverIdle(CONFIG.mverLeftIdle);
+        const rightIdle = usableMverIdle(CONFIG.mverRightIdle);
+        setMverFullLayer('mver-left-hand', leftIdle, Boolean(leftIdle), mverHandLayerZ());
+        setMverFullLayer('mver-right-hand', rightIdle, Boolean(rightIdle), mverHandLayerZ());
+        setMverFullLayer('mver-hand', '', false, mverHandLayerZ());
+      } else {
+        const up = usableMverIdle(CONFIG.mverUp);
+        setMverFullLayer('mver-left-hand', '', false, mverHandLayerZ());
+        setMverFullLayer('mver-right-hand', '', false, mverHandLayerZ());
+        setMverFullLayer('mver-hand', up, Boolean(up), mverHandLayerZ());
+      }
       return;
     }
 
-    const left = handBindingSource('left-hand', MVER_LEFT_HAND_BINDINGS, MVER_LEFT_HAND_SPRITES);
-    const right = handBindingSource('right-hand', MVER_RIGHT_HAND_BINDINGS, MVER_RIGHT_HAND_SPRITES);
-    const hand = handBindingSource('hand', MVER_HAND_BINDINGS, MVER_HAND_SPRITES);
-
-    const leftSrc = left || String(CONFIG.mverLeftIdle || '');
-    const rightSrc = right || String(CONFIG.mverRightIdle || '');
-    const handSrc = hand || String(CONFIG.mverUp || '');
-    setMverFullLayer('mver-left-hand', leftSrc, Boolean(leftSrc), 6);
-    setMverFullLayer('mver-right-hand', rightSrc, Boolean(rightSrc), 6);
-    setMverFullLayer('mver-hand', handSrc, Boolean(handSrc), 6);
+    if (layout === 'split') {
+      const left = handBindingSource('left-hand', MVER_LEFT_HAND_BINDINGS, MVER_LEFT_HAND_SPRITES);
+      const right = handBindingSource('right-hand', MVER_RIGHT_HAND_BINDINGS, MVER_RIGHT_HAND_SPRITES);
+      // Live2D's idle owner is always the model. Legacy leftup/rightup are only valid for sprite
+      // packages; showing them over a custom Live2D is what produced the giant original paw.
+      const leftSrc = left || (MVER_RASTER_IDLE_ENABLED ? usableMverIdle(CONFIG.mverLeftIdle) : '');
+      const rightSrc = right || (MVER_RASTER_IDLE_ENABLED ? usableMverIdle(CONFIG.mverRightIdle) : '');
+      setMverFullLayer('mver-left-hand', leftSrc, Boolean(leftSrc), mverHandLayerZ());
+      setMverFullLayer('mver-right-hand', rightSrc, Boolean(rightSrc), mverHandLayerZ());
+      setMverFullLayer('mver-hand', '', false, mverHandLayerZ());
+    } else {
+      const hand = handBindingSource('hand', MVER_HAND_BINDINGS, MVER_HAND_SPRITES);
+      const handSrc = hand || (MVER_RASTER_IDLE_ENABLED ? usableMverIdle(CONFIG.mverUp) : '');
+      setMverFullLayer('mver-left-hand', '', false, mverHandLayerZ());
+      setMverFullLayer('mver-right-hand', '', false, mverHandLayerZ());
+      setMverFullLayer('mver-hand', handSrc, Boolean(handSrc), mverHandLayerZ());
+    }
   }
 
   function isComboPressed(keys) {
@@ -654,9 +872,13 @@
   }
 
   function syncMverBindingActions() {
-    updateBindingGroup('left-hand', MVER_LEFT_HAND_BINDINGS);
-    updateBindingGroup('right-hand', MVER_RIGHT_HAND_BINDINGS);
-    updateBindingGroup('hand', MVER_HAND_BINDINGS);
+    const handLayout = resolveMverHandLayout();
+    if (handLayout === 'split') {
+      updateBindingGroup('left-hand', MVER_LEFT_HAND_BINDINGS);
+      updateBindingGroup('right-hand', MVER_RIGHT_HAND_BINDINGS);
+    } else if (handLayout === 'single') {
+      updateBindingGroup('hand', MVER_HAND_BINDINGS);
+    }
     updateBindingGroup('face', MVER_FACE_BINDINGS, (binding) => {
       if (MVER_EMOTICON_KEEP) state.mverLatchedFaceIndex = Number(binding.index);
     });
@@ -684,7 +906,13 @@
 
   function setMverKey(raw, pressed, gamepad) {
     if (!IS_MVER) return false;
-    const key = normalizeMverSemantic(raw, !gamepad);
+    let key = normalizeMverSemantic(raw, !gamepad);
+    if (!key && gamepad) {
+      // 有些 Mver 只在 CDI/参数表里声明手柄数字键，没有 hand/keyboard raster binding。
+      // 仍要把这类物理边沿纳入统一 held-state，否则过滤第二写入者后会丢掉模型手 fallback。
+      const semantic = canonicalGamepadSemantic(raw);
+      if (gamepadParameterIds(semantic).some((id) => isHandOwnershipParameter(id))) key = semantic;
+    }
     if (!key) return false;
 
     if (pressed) {
@@ -700,6 +928,7 @@
     syncMverHands();
     syncMverFaceAndExpressions();
     syncMverMouseVisual();
+    syncGamepadStickHandParameters();
     syncHandOverrides();
     return true;
   }
@@ -877,30 +1106,67 @@
   }
 
   const mverPreloadedAssets = new Map();
+  const mverFailedAssets = new Set();
+
+  function mverAssetFailed(src) {
+    const url = String(src || '');
+    return Boolean(url) && mverFailedAssets.has(url);
+  }
+
+  function mverAssetReady(src) {
+    const url = String(src || '');
+    if (!url || mverFailedAssets.has(url)) return false;
+    const image = mverPreloadedAssets.get(url);
+    return Boolean(image && image.complete && image.naturalWidth > 0 && image.naturalHeight > 0);
+  }
 
   function preloadMverAsset(src) {
     const url = String(src || '');
-    if (!url || mverPreloadedAssets.has(url)) return;
+    if (!url || mverPreloadedAssets.has(url) || mverFailedAssets.has(url)) return;
     const image = new Image();
     image.decoding = 'async';
-    image.src = url;
+    image.onload = () => {
+      // A pending hand transition may have been waiting for this exact asset. Re-resolve from the
+      // physical held-state instead of blindly applying a stale onload callback.
+      if (IS_MVER) {
+        syncMverHands();
+        syncGamepadStickHandParameters();
+        syncHandOverrides();
+      }
+    };
+    image.onerror = () => {
+      mverFailedAssets.add(url);
+      if (IS_MVER) {
+        syncMverHands();
+        syncGamepadStickHandParameters();
+        syncHandOverrides();
+      }
+    };
     mverPreloadedAssets.set(url, image);
+    image.src = url;
   }
 
   function preloadMverLayers() {
     if (!IS_MVER) return;
-    const bindings = [
-      ...MVER_KEY_BINDINGS, ...MVER_LEFT_HAND_BINDINGS, ...MVER_RIGHT_HAND_BINDINGS,
-      ...MVER_HAND_BINDINGS, ...MVER_FACE_BINDINGS,
-    ];
+    const handLayout = resolveMverHandLayout();
+    const bindings = [...MVER_KEY_BINDINGS, ...MVER_FACE_BINDINGS];
+    const handMaps = [];
+    if (handLayout === 'split') {
+      bindings.push(...MVER_LEFT_HAND_BINDINGS, ...MVER_RIGHT_HAND_BINDINGS);
+      handMaps.push(MVER_LEFT_HAND_SPRITES, MVER_RIGHT_HAND_SPRITES);
+    } else if (handLayout === 'single') {
+      bindings.push(...MVER_HAND_BINDINGS);
+      handMaps.push(MVER_HAND_SPRITES);
+    }
     for (const binding of bindings) preloadMverAsset(binding && binding.src);
-    for (const map of [MVER_KEY_SPRITES, MVER_LEFT_HAND_SPRITES,
-      MVER_RIGHT_HAND_SPRITES, MVER_HAND_SPRITES]) {
+    for (const map of [MVER_KEY_SPRITES, ...handMaps]) {
       for (const src of Object.values(map || {})) preloadMverAsset(src);
     }
-    for (const src of [MVER_BASE_BACKGROUND, CONFIG.mverUp, CONFIG.mverLeftIdle, CONFIG.mverRightIdle,
-      CONFIG.mverMouse, CONFIG.mverMouseLeft, CONFIG.mverMouseRight, CONFIG.mverMouseSide,
-      CONFIG.mverArm]) preloadMverAsset(src);
+    const idleAssets = MVER_RASTER_IDLE_ENABLED
+      ? [CONFIG.mverUp, CONFIG.mverLeftIdle, CONFIG.mverRightIdle]
+      : [];
+    for (const src of [MVER_BASE_BACKGROUND, ...idleAssets, CONFIG.mverMouse, CONFIG.mverMouseLeft,
+      CONFIG.mverMouseRight, CONFIG.mverMouseSide, CONFIG.mverArm]) preloadMverAsset(src);
   }
 
   function initializeMverLayers() {
@@ -1049,9 +1315,44 @@
     return keySide(mirrored) ? mirrored : supported;
   }
 
+  const overlayPreloadedAssets = new Map();
+  const overlayFailedAssets = new Set();
+
+  function preloadOverlayAsset(src, onSettled) {
+    const url = String(src || '');
+    if (!url || overlayFailedAssets.has(url)) {
+      if (typeof onSettled === 'function') onSettled(false);
+      return;
+    }
+    const cached = overlayPreloadedAssets.get(url);
+    if (cached) {
+      if (cached.complete) {
+        if (typeof onSettled === 'function') onSettled(cached.naturalWidth > 0 && cached.naturalHeight > 0);
+      } else if (typeof onSettled === 'function') {
+        cached.addEventListener('load', () => onSettled(true), { once: true });
+        cached.addEventListener('error', () => onSettled(false), { once: true });
+      }
+      return;
+    }
+    const probe = new Image();
+    probe.decoding = 'async';
+    overlayPreloadedAssets.set(url, probe);
+    probe.onload = () => {
+      overlayPreloadedAssets.delete(url);
+      if (typeof onSettled === 'function') onSettled(true);
+    };
+    probe.onerror = () => {
+      overlayPreloadedAssets.delete(url);
+      overlayFailedAssets.add(url);
+      if (typeof onSettled === 'function') onSettled(false);
+    };
+    probe.src = url;
+  }
+
   function setOverlay(side, key) {
     const image = side === 'left' ? leftImage : rightImage;
     if (!key) {
+      image.dataset.desiredSrc = '';
       image.classList.add('hidden');
       image.removeAttribute('src');
       return;
@@ -1059,61 +1360,294 @@
     const assets = side === 'left' ? LEFT_KEY_ASSETS : RIGHT_KEY_ASSETS;
     // New imports provide exact file URIs so WEBP/JPEG overlays and non-lowercase resource
     // directories work. Keep the legacy PNG path as a compatibility fallback for old imports.
-    image.src = String(assets[key] || assetUrl(`resources/${side}-keys/${key}.png`));
-    image.classList.remove('hidden');
+    const next = String(assets[key] || assetUrl(`resources/${side}-keys/${key}.png`));
+    image.dataset.desiredSrc = next;
+    const cached = overlayPreloadedAssets.get(next);
+    if (cached && cached.complete && cached.naturalWidth > 0 && cached.naturalHeight > 0) {
+      if (image.getAttribute('src') !== next) image.src = next;
+      image.classList.remove('hidden');
+      return;
+    }
+
+    // 大 PNG 解码时先保留当前有效手，不要先清空 src。onload 只读取 desiredSrc，
+    // 因此快速按下/松开或连续换键不会被旧回调重新显示成“幽灵手”。
+    preloadOverlayAsset(next, (ok) => {
+      if (image.dataset.desiredSrc !== next) return;
+      if (!ok) {
+        image.classList.add('hidden');
+        image.removeAttribute('src');
+        return;
+      }
+      image.src = next;
+      image.classList.remove('hidden');
+    });
+  }
+
+  function latestModernVisualKey(side) {
+    for (let i = state.modernPressOrder.length - 1; i >= 0; i--) {
+      const raw = state.modernPressOrder[i];
+      if (!state.modernPressed.has(raw)) continue;
+      const resolved = resolveSupportedKey(raw);
+      if (!resolved) continue;
+      const value = inputKey(resolved);
+      if (value && keySide(value) === side) return value;
+    }
+    return null;
+  }
+
+  function syncModernVisualHands() {
+    if (IS_MVER) return;
+    const left = latestModernVisualKey('left');
+    const right = latestModernVisualKey('right');
+    if (left !== state.leftKey) {
+      state.leftKey = left;
+      setOverlay('left', left);
+    }
+    if (right !== state.rightKey) {
+      state.rightKey = right;
+      setOverlay('right', right);
+    }
   }
 
   function anyBindingPressed(bindings) {
     return Array.isArray(bindings) && bindings.some((binding) => bindingPressed(binding));
   }
 
+  function hasAnyLegacyHandSprite(map) {
+    return Boolean(map && typeof map === 'object' && Object.keys(map).some((key) => Boolean(map[key])));
+  }
+
+  function hasAuthoredMverHandLayers() {
+    if (!MVER_RENDER_HAND_OVERLAYS) return false;
+    if (hasSplitMverHandLayout()) {
+      return MVER_LEFT_HAND_BINDINGS.length > 0
+        || MVER_RIGHT_HAND_BINDINGS.length > 0
+        || hasAnyLegacyHandSprite(MVER_LEFT_HAND_SPRITES)
+        || hasAnyLegacyHandSprite(MVER_RIGHT_HAND_SPRITES);
+    }
+    return MVER_HAND_BINDINGS.length > 0 || hasAnyLegacyHandSprite(MVER_HAND_SPRITES);
+  }
+
+
+  function mverAuthoredHandOwnsSemantic(rawKey) {
+    if (!IS_MVER || !MVER_RENDER_HAND_OVERLAYS) return false;
+    const semantic = normalizeMverSemantic(rawKey, false);
+    if (!semantic) return false;
+    if (hasSplitMverHandLayout()) {
+      return objectHas(MVER_LEFT_HAND_SPRITES, semantic)
+        || objectHas(MVER_RIGHT_HAND_SPRITES, semantic)
+        || bindingsContainKey(MVER_LEFT_HAND_BINDINGS, semantic)
+        || bindingsContainKey(MVER_RIGHT_HAND_BINDINGS, semantic);
+    }
+    return objectHas(MVER_HAND_SPRITES, semantic)
+      || bindingsContainKey(MVER_HAND_BINDINGS, semantic);
+  }
+
+  const MVER_LEFT_HAND_FALLBACK_KEYS = new Set([
+    'BackQuote', 'Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Tab', 'CapsLock',
+    'Shift', 'ShiftLeft', 'Control', 'ControlLeft', 'Alt', 'KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT',
+    'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyZ', 'KeyX', 'KeyC', 'KeyV', 'KeyB',
+  ]);
+  const MVER_RIGHT_HAND_FALLBACK_KEYS = new Set([
+    'Num6', 'Num7', 'Num8', 'Num9', 'Num0', 'Minus', 'Equal', 'Backspace', 'Return',
+    'ShiftRight', 'ControlRight', 'AltGr', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP',
+    'KeyH', 'KeyJ', 'KeyK', 'KeyL', 'KeyN', 'KeyM', 'LeftBracket', 'RightBracket',
+    'BackSlash', 'SemiColon', 'Quote', 'Comma', 'Dot', 'Slash', 'LeftArrow', 'RightArrow',
+    'UpArrow', 'DownArrow', 'Insert', 'Delete', 'Home', 'End', 'PageUp', 'PageDown',
+  ]);
+
+  function mverSemanticSide(key) {
+    const semantic = String(key || '');
+    if (!semantic) return null;
+    if (semantic === 'Space') return 'both';
+    // Explicit authored split bindings are stronger than the keyboard fallback table.
+    if (bindingsContainKey(MVER_LEFT_HAND_BINDINGS, semantic) || objectHas(MVER_LEFT_HAND_SPRITES, semantic)) return 'left';
+    if (bindingsContainKey(MVER_RIGHT_HAND_BINDINGS, semantic) || objectHas(MVER_RIGHT_HAND_SPRITES, semantic)) return 'right';
+    if (MVER_LEFT_HAND_FALLBACK_KEYS.has(semantic)) return 'left';
+    if (MVER_RIGHT_HAND_FALLBACK_KEYS.has(semantic) || semantic.startsWith('Numpad')) return 'right';
+    return null;
+  }
+
+  function mverPressedHandState() {
+    let left = false;
+    let right = false;
+    for (const key of state.mverPressed) {
+      const controllerSide = gamepadHandSide(key);
+      if (controllerSide) {
+        const ids = gamepadParameterIds(key);
+        const ownsLeftParam = ids.some((id) => String(id) === 'CatParamLeftHandDown');
+        const ownsRightParam = ids.some((id) => String(id) === 'CatParamRightHandDown');
+        if (ownsLeftParam || ownsRightParam) {
+          if (ownsLeftParam) left = true;
+          if (ownsRightParam) right = true;
+        } else {
+          if (controllerSide === 'left') left = true;
+          if (controllerSide === 'right') right = true;
+        }
+      } else {
+        const side = mverSemanticSide(key);
+        if (side === 'left' || side === 'both') left = true;
+        if (side === 'right' || side === 'both') right = true;
+      }
+      if (left && right) break;
+    }
+    return { left, right };
+  }
+
+  function mverHandLayerPaintReady(id, expectedSrc) {
+    const src = String(expectedSrc || '');
+    if (!src) return false;
+    const image = mverLayers.get(id);
+    if (!image || image.classList.contains('hidden')) return false;
+    if (String(image.dataset.desiredSrc || '') !== src) return false;
+    if (String(image.getAttribute('src') || '') !== src) return false;
+    return image.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+  }
+
+  function mverRasterHandOwners() {
+    if (!MVER_RENDER_HAND_OVERLAYS) return { left: false, right: false };
+    const layout = resolveMverHandLayout();
+    if (layout === 'single') {
+      const active = handBindingSource('hand', MVER_HAND_BINDINGS, MVER_HAND_SPRITES);
+      const src = active || (MVER_RASTER_IDLE_ENABLED ? usableMverIdle(CONFIG.mverUp) : '');
+      // ownership 以“当前真正可绘制的 DOM layer”为准，而不是仅看 preload cache。
+      // 这样大 PNG 的第二次挂载/快速换键也不会出现模型手先隐藏、PNG 还没画出来的空帧。
+      const owns = mverHandLayerPaintReady('mver-hand', src);
+      return { left: owns, right: owns };
+    }
+    if (layout === 'split') {
+      const activeLeft = handBindingSource('left-hand', MVER_LEFT_HAND_BINDINGS, MVER_LEFT_HAND_SPRITES);
+      const activeRight = handBindingSource('right-hand', MVER_RIGHT_HAND_BINDINGS, MVER_RIGHT_HAND_SPRITES);
+      const left = activeLeft || (MVER_RASTER_IDLE_ENABLED ? usableMverIdle(CONFIG.mverLeftIdle) : '');
+      const right = activeRight || (MVER_RASTER_IDLE_ENABLED ? usableMverIdle(CONFIG.mverRightIdle) : '');
+      return {
+        left: mverHandLayerPaintReady('mver-left-hand', left),
+        right: mverHandLayerPaintReady('mver-right-hand', right),
+      };
+    }
+    return { left: false, right: false };
+  }
+
+  function mverRasterVisualSides() {
+    if (!IS_MVER || !MVER_RENDER_HAND_OVERLAYS) return { left: false, right: false };
+    const layout = resolveMverHandLayout();
+    if (layout === 'split') return mverRasterHandOwners();
+    if (layout !== 'single') return { left: false, right: false };
+
+    let src = '';
+    let keys = [];
+    if (MVER_HAND_BINDINGS.length) {
+      const binding = highestIndexedActiveHandBinding(MVER_HAND_BINDINGS);
+      if (binding) {
+        src = String(binding.src || '');
+        keys = bindingKeys(binding);
+      }
+    } else {
+      for (let i = state.mverPressOrder.length - 1; i >= 0; i--) {
+        const key = state.mverPressOrder[i];
+        const candidate = state.mverPressed.has(key) && objectHas(MVER_HAND_SPRITES, key)
+          ? String(MVER_HAND_SPRITES[key] || '') : '';
+        if (!candidate || mverAssetFailed(candidate)) continue;
+        src = candidate;
+        keys = [key];
+        break;
+      }
+    }
+    if (!src || !mverHandLayerPaintReady('mver-hand', src)) return { left: false, right: false };
+
+    let left = false;
+    let right = false;
+    for (const key of keys) {
+      const side = mverSemanticSide(key) || gamepadHandSide(key);
+      if (side === 'left' || side === 'both') left = true;
+      if (side === 'right' || side === 'both') right = true;
+    }
+    // 无法识别侧别的第三方组合仍是一个完整 raster hand container。保守占用两侧比
+    // 让摇杆手叠在它上面更安全；可识别的标准按键只屏蔽实际那一侧。
+    if (!left && !right) return { left: true, right: true };
+    return { left, right };
+  }
+
+  function isHandOwnershipParameter(id) {
+    const value = String(id || '');
+    return value === 'CatParamLeftHandDown' || value === 'CatParamRightHandDown';
+  }
+
   function syncHandOverrides() {
     if (!renderer) return;
     if (IS_MVER) {
-      // Full-frame authored Mver hand layers encode the exact keyboard-hand pose. Treat them as
-      // the visible authority and use CatParam*HandDown only to hide the model's idle hand while
-      // a replacement sprite is active, preventing two arm systems from being visible together.
-      if (MVER_SPRITE_HANDS_AUTHORITATIVE) {
-        // Full-canvas hand sprites are drawn on top of the Live2D model. In many Mver
-        // standard models CatParam*HandDown is not a second animation trigger: value 1
-        // hides the model's built-in idle hand so the authored PNG can replace it. Leaving
-        // the parameter at its default (usually 0) keeps the model hand visible underneath
-        // the PNG and produces the familiar "double arm / two hands" artifact.
-        //
-        // Only hide a model hand while its authored replacement sprite is actually active.
-        // Missing parameters are ignored by setFrameInput, so this remains safe for community
-        // models that only use raster hand layers.
-        const genericHandActive = anyBindingPressed(MVER_HAND_BINDINGS);
-        const leftHandActive = genericHandActive || anyBindingPressed(MVER_LEFT_HAND_BINDINGS);
-        const rightHandActive = anyBindingPressed(MVER_RIGHT_HAND_BINDINGS);
-        const lockHand = state.mverMotionLockHand && state.mverMotionIndex >= 0;
-        if (lockHand) {
-          // lockhand motions own the model arm and suppress the normal input-hand sprite.
-          renderer.clearFrameInput('CatParamLeftHandDown');
-          renderer.clearFrameInput('CatParamRightHandDown');
-          return;
-        }
-        if (leftHandActive) renderer.setFrameInput('CatParamLeftHandDown', 1);
-        else renderer.clearFrameInput('CatParamLeftHandDown');
-        if (rightHandActive) renderer.setFrameInput('CatParamRightHandDown', 1);
-        else renderer.clearFrameInput('CatParamRightHandDown');
+      const lockHand = state.mverMotionLockHand && state.mverMotionIndex >= 0;
+      if (lockHand) {
+        // lockhand motion owns model hand parameters until the motion ends.
+        renderer.clearFrameInput('CatParamLeftHandDown');
+        renderer.clearFrameInput('CatParamRightHandDown');
         return;
       }
-      // Fallback for community Live2D packages without authored full-frame hand layers.
-      const lockHand = state.mverMotionLockHand && state.mverMotionIndex >= 0;
-      const leftDown = !lockHand && (anyBindingPressed(MVER_HAND_BINDINGS)
-        || anyBindingPressed(MVER_LEFT_HAND_BINDINGS));
-      const rightDown = !lockHand && anyBindingPressed(MVER_RIGHT_HAND_BINDINGS);
-      renderer.setFrameInput('CatParamLeftHandDown', leftDown ? 1 : 0);
-      renderer.setFrameInput('CatParamRightHandDown', rightDown ? 1 : 0);
+
+      // Mver 的 CatParam*HandDown 不是“PNG 手出现时把模型手参数清零”的参数。
+      // 原始 Bongo Cat Mver/内置 keyboard runtime 的语义恰好相反：
+      // raster 手真正可见时 HandDown=1，用它收起/切走模型原生手；raster 不可见时=0，
+      // 让模型原生手承担 idle/fallback。上一版把这个极性写反，正好会同时制造两种现象：
+      // 1) PNG 已解码：HandDown=0，模型手 + PNG 手一起出现；
+      // 2) PNG 尚未解码：HandDown=1，但 PNG 仍隐藏，于是整只手瞬间消失。
+      // 这里保持唯一写入者，同时严格按“可见 raster owner”驱动 hide gate。
+      const held = mverPressedHandState();
+      // single-hand Mver sheets are one visual container but normally represent only the side
+      // implied by the active key. Use semantic ownership here instead of hiding both model hands.
+      // Unknown third-party combinations still conservatively own both sides.
+      const raster = mverRasterVisualSides();
+      const authoredRasterHands = hasAuthoredMverHandLayers();
+      const leftRange = renderer.range('CatParamLeftHandDown');
+      const rightRange = renderer.range('CatParamRightHandDown');
+
+      if (leftRange) {
+        let value;
+        if (authoredRasterHands) {
+          // 有 raster hand family 时，只有已经完成解码、即将实际显示的 raster 才能收起模型手。
+          // 解码失败/尚未完成时保持 0，让模型原生手无缝兜底，绝不产生“空手”帧。
+          value = raster.left ? 1 : 0;
+        } else {
+          // 纯 Live2D Mver 没有 PNG hand family，HandDown 才按模型自身的按下语义工作。
+          value = MVER_HAND_MODEL_FALLBACK && held.left ? 1 : 0;
+        }
+        renderer.setFrameInput('CatParamLeftHandDown', value);
+      } else {
+        renderer.clearFrameInput('CatParamLeftHandDown');
+      }
+
+      if (rightRange) {
+        let value;
+        if (authoredRasterHands) {
+          value = raster.right ? 1 : 0;
+        } else {
+          value = MVER_HAND_MODEL_FALLBACK && held.right ? 1 : 0;
+        }
+        renderer.setFrameInput('CatParamRightHandDown', value);
+      } else {
+        renderer.clearFrameInput('CatParamRightHandDown');
+      }
       return;
     }
-    // Hybrid controller-mode models often have no dedicated digital-button parameters at all.
-    // Their generic CatParam*HandDown parameters are the intended visual press fallback. Merge
-    // keyboard and controller sources here so a gamepad press remains visible even when there is
-    // no South/East/... overlay image or explicit Cubism parameter.
-    const gamepadLeft = HAS_CONTROLLER_STICK_PARAMETERS && isGamepadHandActive('left');
-    const gamepadRight = HAS_CONTROLLER_STICK_PARAMETERS && isGamepadHandActive('right');
+    if (PORTABLE_GAMEPAD_HAND_COMPOSITOR) {
+      // Portable gamepad packs such as 长夜月 use the raster lefthand/righthand sheets as the
+      // pressed pose, while CatParam*HandDown is an authored *hide gate* for the model's idle hand.
+      // Clearing the parameter here left the idle model hand visible underneath the PNG sheet,
+      // producing the apparent 3/4-hand bug. Keep manual/debug overrides out of this system-owned
+      // parameter, then drive it only for the side currently owned by a digital hand overlay.
+      const leftDigitalOwns = Boolean(latestGamepadOverlay('left'));
+      const rightDigitalOwns = Boolean(latestGamepadOverlay('right'));
+      renderer.clearOverride('CatParamLeftHandDown');
+      renderer.clearOverride('CatParamRightHandDown');
+      if (leftDigitalOwns) renderer.setFrameInput('CatParamLeftHandDown', 1);
+      else renderer.clearFrameInput('CatParamLeftHandDown');
+      if (rightDigitalOwns) renderer.setFrameInput('CatParamRightHandDown', 1);
+      else renderer.clearFrameInput('CatParamRightHandDown');
+      return;
+    }
+    // Hybrid controller-mode models without authored raster hands can still use generic HandDown
+    // as the last-resort visual owner.
+    const gamepadLeft = HAS_CONTROLLER_STICK_PARAMETERS && isGamepadHandFallbackActive('left');
+    const gamepadRight = HAS_CONTROLLER_STICK_PARAMETERS && isGamepadHandFallbackActive('right');
     renderer.setOverride('CatParamLeftHandDown', (state.leftKey || gamepadLeft) ? 1 : 0);
     renderer.setOverride('CatParamRightHandDown', (state.rightKey || gamepadRight) ? 1 : 0);
   }
@@ -1415,29 +1949,44 @@
     return result;
   }
 
-  function setFrameActiveIds(ids, active) {
+  function setFrameActiveIds(ids, active, skipHandOwnership = false) {
     if (!renderer || !Array.isArray(ids)) return;
-    for (const id of ids) renderer.setFrameActive(String(id), Boolean(active));
+    for (const rawId of ids) {
+      const id = String(rawId);
+      if (skipHandOwnership && isHandOwnershipParameter(id)) continue;
+      renderer.setFrameActive(id, Boolean(active));
+    }
   }
 
   function syncModernKeyParameters(rawKey, pressed) {
-    if (!renderer) return;
     const key = String(rawKey || '');
     const wasPressed = state.modernPressed.has(key);
     if (wasPressed === Boolean(pressed)) return;
-    if (pressed) state.modernPressed.add(key);
-    else state.modernPressed.delete(key);
+    if (pressed) {
+      state.modernPressed.add(key);
+      state.modernPressOrder = state.modernPressOrder.filter((item) => item !== key);
+      state.modernPressOrder.push(key);
+    } else {
+      state.modernPressed.delete(key);
+      state.modernPressOrder = state.modernPressOrder.filter((item) => item !== key);
+    }
+    // 物理 held-state 不能依赖 Live2D renderer 是否已经完成纹理初始化。否则启动阶段的
+    // DOWN 会被丢掉，renderer ready 后只收到 UP，就会出现随机缺手/状态反转。
+    if (!renderer) return;
 
     // Keep a reference count per authored parameter. ShiftLeft/ShiftRight (and similar aliases)
     // can target one Cubism parameter; releasing one source must not clear the other source.
     for (const id of keyParameterIds(key)) {
+      // Mver 的 CatParam*HandDown 由 syncHandOverrides 单写。generic key map 再写一次会
+      // 让同一帧的最终值依赖调用顺序，这是“多手/手消失”最核心的竞态来源。
+      if (IS_MVER && isHandOwnershipParameter(id)) continue;
       const before = state.modernParameterCounts.get(id) || 0;
       const after = Math.max(0, before + (pressed ? 1 : -1));
       if (after > 0) state.modernParameterCounts.set(id, after);
       else state.modernParameterCounts.delete(id);
       if ((before > 0) !== (after > 0)) renderer.setFrameActive(id, after > 0);
     }
-    setFrameActiveIds(KEYBOARD_DOWN_PARAMETER_IDS, state.modernPressed.size > 0);
+    setFrameActiveIds(KEYBOARD_DOWN_PARAMETER_IDS, state.modernPressed.size > 0, IS_MVER);
   }
 
   const gamepadParameterIdCache = new Map();
@@ -1474,8 +2023,11 @@
     if (['m2', 'back2', 'paddle2'].includes(token)) return 'M2';
     if (['m3', 'back3', 'paddle3'].includes(token)) return 'M3';
     if (['m4', 'back4', 'paddle4'].includes(token)) return 'M4';
-    if (token === 'c') return 'C';
-    if (token === 'z') return 'Z';
+    // Linux legacy BTN_C/BTN_Z are alternate physical encodings for X/B, not extra
+    // face buttons. Canonicalize them here as well as in Java so old bridge callers cannot
+    // create a second semantic press for one physical key.
+    if (token === 'c') return 'West';
+    if (token === 'z') return 'East';
     return String(raw || '');
   }
 
@@ -1501,7 +2053,6 @@
       DPadRight: ['DPadRight', 'Right', 'HatRight'],
       M1: ['M1', 'Back1', 'Paddle1'], M2: ['M2', 'Back2', 'Paddle2'],
       M3: ['M3', 'Back3', 'Paddle3'], M4: ['M4', 'Back4', 'Paddle4'],
-      C: ['C'], Z: ['Z'],
     };
     return aliases[canonical] || [canonical];
   }
@@ -1590,13 +2141,109 @@
   function gamepadHandSide(rawKey) {
     const key = canonicalGamepadSemantic(rawKey);
     if (['DPadUp','DPadDown','DPadLeft','DPadRight','LeftTrigger','LeftTrigger2','L3','Select','M1','M3'].includes(key)) return 'left';
-    if (['South','East','West','North','C','Z','RightTrigger','RightTrigger2','R3','Start','Mode','M2','M4'].includes(key)) return 'right';
+    if (['South','East','West','North','RightTrigger','RightTrigger2','R3','Start','Mode','M2','M4'].includes(key)) return 'right';
     return '';
   }
 
-  function isGamepadHandActive(side) {
+  function gamepadOverlayDescriptor(rawKey) {
+    if (IS_MVER) return null;
+    const canonical = canonicalGamepadSemantic(rawKey);
+    for (const alias of gamepadSemanticAliases(canonical)) {
+      const key = resolveSupportedKey(alias);
+      if (!key) continue;
+      const side = keySide(key);
+      if (!side) continue;
+      const assets = side === 'left' ? LEFT_KEY_ASSETS : RIGHT_KEY_ASSETS;
+      // keyNames()/appendCanonicalGamepadAliases() only register real files. Prefer that exact
+      // URI, but retain the legacy path fallback for styles imported by older builds.
+      const src = String(assets[key] || '');
+      return { semantic: canonical, key, side, src };
+    }
+    return null;
+  }
+
+  function setGamepadOverlayPressed(rawKey, pressed) {
+    const descriptor = gamepadOverlayDescriptor(rawKey);
+    if (!descriptor) return false;
+    const semantic = descriptor.semantic;
+    if (pressed) {
+      state.gamepadOverlayPressed.add(semantic);
+      state.gamepadOverlayPressOrder = state.gamepadOverlayPressOrder.filter((item) => item !== semantic);
+      state.gamepadOverlayPressOrder.push(semantic);
+    } else {
+      state.gamepadOverlayPressed.delete(semantic);
+      state.gamepadOverlayPressOrder = state.gamepadOverlayPressOrder.filter((item) => item !== semantic);
+    }
+    syncGamepadOverlaySlots();
+    syncGamepadStickHandParameters();
+    return true;
+  }
+
+  function latestGamepadOverlay(side) {
+    for (let i = state.gamepadOverlayPressOrder.length - 1; i >= 0; i--) {
+      const semantic = state.gamepadOverlayPressOrder[i];
+      if (!state.gamepadOverlayPressed.has(semantic)) continue;
+      const descriptor = gamepadOverlayDescriptor(semantic);
+      if (descriptor && descriptor.side === side) return descriptor;
+    }
+    return null;
+  }
+
+  function syncGamepadOverlaySlots() {
+    if (IS_MVER || STYLE_MODE !== 'gamepad') return;
+    const left = latestGamepadOverlay('left');
+    const right = latestGamepadOverlay('right');
+    setOverlay('left', left ? left.key : null);
+    setOverlay('right', right ? right.key : null);
+  }
+
+  // One visual owner per physical side. When a digital full-canvas hand is active, suppress that
+  // side's Live2D stick hand. On release, the stored physical axis/down state immediately restores
+  // the stick hand without waiting for a new MotionEvent/SYN_REPORT.
+  function syncGamepadStickHandParameters() {
+    if (!renderer) return;
+    const hasStickParameters = ['CatParamStickLX', 'CatParamStickLY', 'CatParamStickRX', 'CatParamStickRY']
+      .some((id) => Boolean(renderer.range(id)));
+    if (STYLE_MODE !== 'gamepad' && !hasStickParameters) return;
+
+    const values = [
+      ['CatParamStickLX', state.gamepadLx], ['CatParamStickLY', state.gamepadLy],
+      ['CatParamStickRX', state.gamepadRx], ['CatParamStickRY', state.gamepadRy],
+    ];
+    for (const [id, raw] of values) {
+      const range = renderer.range(id);
+      if (!range) continue;
+      const normalized = Math.max(-1, Math.min(1, Number(raw) || 0));
+      const value = normalized >= 0 ? normalized * range[1] : (-normalized) * range[0];
+      renderer.setOverride(id, value);
+    }
+
+    const lPhysical = Math.abs(state.gamepadLx) > 0.04 || Math.abs(state.gamepadLy) > 0.04
+      || state.gamepadLeftDown;
+    const rPhysical = Math.abs(state.gamepadRx) > 0.04 || Math.abs(state.gamepadRy) > 0.04
+      || state.gamepadRightDown;
+    const mverRaster = IS_MVER ? mverRasterVisualSides() : { left: false, right: false };
+    const lockHandOwns = IS_MVER && state.mverMotionLockHand && state.mverMotionIndex >= 0;
+    const lDigitalOwns = lockHandOwns || (PORTABLE_GAMEPAD_HAND_COMPOSITOR && Boolean(latestGamepadOverlay('left')))
+      || mverRaster.left;
+    const rDigitalOwns = lockHandOwns || (PORTABLE_GAMEPAD_HAND_COMPOSITOR && Boolean(latestGamepadOverlay('right')))
+      || mverRaster.right;
+
+    renderer.setOverride('CatParamStickShowLeftHand', lPhysical && !lDigitalOwns ? 1 : 0);
+    renderer.setOverride('CatParamStickShowRightHand', rPhysical && !rDigitalOwns ? 1 : 0);
+    renderer.setOverride('CatParamStickLeftDown', state.gamepadLeftDown && !lDigitalOwns ? 1 : 0);
+    renderer.setOverride('CatParamStickRightDown', state.gamepadRightDown && !rDigitalOwns ? 1 : 0);
+  }
+
+  function isGamepadHandFallbackActive(side) {
+    if (PORTABLE_GAMEPAD_HAND_COMPOSITOR) return false;
     for (const key of state.modernGamepadPressed) {
-      if (gamepadHandSide(key) === side) return true;
+      if (gamepadHandSide(key) !== side) continue;
+      // Dedicated Cubism button parameters already own the model's visual state. A generic
+      // CatParam*HandDown on top of them can expose another authored hand and create 3/4 hands.
+      if (gamepadParameterIds(key).length > 0) continue;
+      if (gamepadOverlayDescriptor(key)) continue;
+      return true;
     }
     return false;
   }
@@ -1612,12 +2259,82 @@
     // Share the parameter reference counter with keyboard semantics so two physical sources that
     // intentionally target the same authored Cubism parameter cannot release each other early.
     for (const id of gamepadParameterIds(key)) {
+      if (IS_MVER && isHandOwnershipParameter(id)) continue;
       const before = state.modernParameterCounts.get(id) || 0;
       const after = Math.max(0, before + (pressed ? 1 : -1));
       if (after > 0) state.modernParameterCounts.set(id, after);
       else state.modernParameterCounts.delete(id);
       if ((before > 0) !== (after > 0)) renderer.setFrameActive(id, after > 0);
     }
+  }
+
+  function applyGamepadButtonSemantic(rawKey, pressed) {
+    const semantic = canonicalGamepadSemantic(rawKey);
+    if (!semantic) return;
+
+    if (IS_MVER) {
+      // If this Mver semantic already owns an authored hand sprite, do not also drive a Cubism
+      // button/hand parameter for the same physical edge. That double compositor was able to show
+      // the model hand plus the sprite hand simultaneously. Dedicated model parameters remain the
+      // fallback for controller keys that have no authored hand layer.
+      if (!mverAuthoredHandOwnsSemantic(semantic)) {
+        syncModernGamepadParameters(semantic, Boolean(pressed));
+      }
+      setMverKey(semantic, Boolean(pressed), true);
+      syncHandOverrides();
+      return;
+    }
+
+    // One physical button gets exactly one visual owner:
+    // 1) authored raster hand/button overlay, otherwise
+    // 2) dedicated Cubism parameter(s), otherwise
+    // 3) generic left/right HandDown fallback.
+    const overlayOwned = gamepadOverlayDescriptor(semantic) !== null;
+    if (overlayOwned) {
+      setGamepadOverlayPressed(semantic, Boolean(pressed));
+    } else {
+      syncModernGamepadParameters(semantic, Boolean(pressed));
+    }
+    syncHandOverrides();
+  }
+
+  const GAMEPAD_DIGITAL_LAYOUT = [
+    ['South', 1 << 0],
+    ['East', (1 << 1) | (1 << 5)], // BTN_EAST | BTN_Z
+    ['North', 1 << 3],
+    ['West', (1 << 4) | (1 << 2)], // BTN_WEST | BTN_C
+    ['LeftTrigger', 1 << 6], ['RightTrigger', 1 << 7],
+    ['Select', 1 << 10], ['Start', 1 << 11], ['Mode', 1 << 12],
+    ['L3', 1 << 13], ['R3', 1 << 14],
+    ['M1', 1 << 15], ['M2', 1 << 16], ['M3', 1 << 17], ['M4', 1 << 18],
+    ['DPadUp', 1 << 20], ['DPadDown', 1 << 21],
+    ['DPadLeft', 1 << 22], ['DPadRight', 1 << 23],
+  ];
+
+  function gamepadSnapshotSet(buttons, leftTriggerPressed, rightTriggerPressed) {
+    const mask = Number(buttons) | 0;
+    const next = new Set();
+    for (const [semantic, bits] of GAMEPAD_DIGITAL_LAYOUT) {
+      if ((mask & bits) !== 0) next.add(semantic);
+    }
+    if ((mask & (1 << 8)) !== 0 || Boolean(leftTriggerPressed)) next.add('LeftTrigger2');
+    if ((mask & (1 << 9)) !== 0 || Boolean(rightTriggerPressed)) next.add('RightTrigger2');
+    return next;
+  }
+
+  function applyGamepadSnapshot(buttons, leftTriggerPressed, rightTriggerPressed) {
+    const next = gamepadSnapshotSet(buttons, leftTriggerPressed, rightTriggerPressed);
+    const previous = state.bridgeGamepadPressed;
+
+    // Release first and press second inside one JS turn. The browser cannot paint the transient
+    // intermediate state, which prevents alias corrections from briefly showing extra hands.
+    for (const semantic of previous) {
+      if (!next.has(semantic)) applyGamepadButtonSemantic(semantic, false);
+    }
+    for (const semantic of next) {
+      if (!previous.has(semantic)) applyGamepadButtonSemantic(semantic, true);
+    }
+    state.bridgeGamepadPressed = next;
   }
 
   function applySavedParameterValues() {
@@ -1878,59 +2595,26 @@
         setMverKey(String(key || ''), Boolean(pressed), false);
         return;
       }
-      const rawValue = resolveSupportedKey(String(key || ''));
-      if (!rawValue) return;
-      const rawSide = keySide(rawValue);
-      const value = inputKey(rawValue);
-      if (!value) return;
-      const side = keySide(value) || rawSide;
-
-      // Reverse the input target, not the cat/background canvas.
-      if (pressed) {
-        if (side === 'left') state.leftKey = value;
-        else state.rightKey = value;
-        setOverlay(side, value);
-      } else if (side === 'left' && state.leftKey === value) {
-        state.leftKey = null;
-        setOverlay(side, null);
-      } else if (side === 'right' && state.rightKey === value) {
-        state.rightKey = null;
-        setOverlay(side, null);
-      }
-
+      // 普通 PNG 手也从完整 held-set 重建，而不是用最后一个 leftKey/rightKey 做一次性状态。
+      // 这样同侧多键按住时，松开最新键会立即恢复仍按住的上一只手，不会空帧。
+      syncModernVisualHands();
       syncHandOverrides();
     },
 
     gamepadButton(name, pressed) {
       const semantic = canonicalGamepadSemantic(String(name || ''));
+      if (!semantic) return;
       state.inputCount += 1;
       state.lastInput = `gamepad:${semantic}:${Boolean(pressed)}`;
-      // Always feed Cubism parameters, including Mver-derived Live2D packages. Older builds
-      // returned early for IS_MVER, which made sticks appear functional while every digital
-      // controller button was silently discarded.
-      syncModernGamepadParameters(semantic, Boolean(pressed));
-      // Always update generic hand fallback before looking for optional raster button overlays.
-      // The previous early return meant controller-mode Live2D packages with no South.png etc.
-      // received the button edge internally but showed no visible hand movement.
-      syncHandOverrides();
-      if (IS_MVER) {
-        setMverKey(semantic, Boolean(pressed), true);
-        return;
-      }
-      const value = resolveSupportedKey(semantic);
-      if (!value) return;
-      const side = keySide(value);
-      if (!side) return;
-      if (pressed) {
-        if (side === 'left') state.leftKey = value;
-        else state.rightKey = value;
-        setOverlay(side, value);
-      } else if (side === 'left' && state.leftKey === value) {
-        state.leftKey = null; setOverlay(side, null);
-      } else if (side === 'right' && state.rightKey === value) {
-        state.rightKey = null; setOverlay(side, null);
-      }
-      syncHandOverrides();
+      if (pressed) state.bridgeGamepadPressed.add(semantic);
+      else state.bridgeGamepadPressed.delete(semantic);
+      applyGamepadButtonSemantic(semantic, Boolean(pressed));
+    },
+
+    gamepadState(buttons, leftTriggerPressed, rightTriggerPressed) {
+      state.inputCount += 1;
+      state.lastInput = `gamepad-state:${Number(buttons) | 0}`;
+      applyGamepadSnapshot(buttons, leftTriggerPressed, rightTriggerPressed);
     },
 
     gamepadAxes(lx, ly, rx, ry, leftDown, rightDown) {
@@ -1941,23 +2625,13 @@
       const hasStickParameters = ['CatParamStickLX', 'CatParamStickLY', 'CatParamStickRX', 'CatParamStickRY']
         .some((id) => Boolean(renderer.range(id)));
       if (STYLE_MODE !== 'gamepad' && !hasStickParameters) return;
-      const values = [
-        ['CatParamStickLX', Number(lx) || 0], ['CatParamStickLY', Number(ly) || 0],
-        ['CatParamStickRX', Number(rx) || 0], ['CatParamStickRY', Number(ry) || 0],
-      ];
-      for (const [id, raw] of values) {
-        const range = renderer.range(id);
-        if (!range) continue;
-        const normalized = Math.max(-1, Math.min(1, raw));
-        const value = normalized >= 0 ? normalized * range[1] : (-normalized) * range[0];
-        renderer.setOverride(id, value);
-      }
-      const lActive = Math.abs(Number(lx)||0) > 0.04 || Math.abs(Number(ly)||0) > 0.04 || Boolean(leftDown);
-      const rActive = Math.abs(Number(rx)||0) > 0.04 || Math.abs(Number(ry)||0) > 0.04 || Boolean(rightDown);
-      renderer.setOverride('CatParamStickShowLeftHand', lActive ? 1 : 0);
-      renderer.setOverride('CatParamStickShowRightHand', rActive ? 1 : 0);
-      renderer.setOverride('CatParamStickLeftDown', leftDown ? 1 : 0);
-      renderer.setOverride('CatParamStickRightDown', rightDown ? 1 : 0);
+      state.gamepadLx = Math.max(-1, Math.min(1, Number(lx) || 0));
+      state.gamepadLy = Math.max(-1, Math.min(1, Number(ly) || 0));
+      state.gamepadRx = Math.max(-1, Math.min(1, Number(rx) || 0));
+      state.gamepadRy = Math.max(-1, Math.min(1, Number(ry) || 0));
+      state.gamepadLeftDown = Boolean(leftDown);
+      state.gamepadRightDown = Boolean(rightDown);
+      syncGamepadStickHandParameters();
     },
 
     mouseButtons(mask) {
@@ -2136,7 +2810,13 @@
       state.rightKey = null;
       state.mverPressed.clear();
       state.modernPressed.clear();
+      state.modernPressOrder.length = 0;
+      state.bridgeGamepadPressed.clear();
+      state.gamepadOverlayPressed.clear();
+      state.gamepadOverlayPressOrder = [];
       state.modernGamepadPressed.clear();
+      state.gamepadLx = state.gamepadLy = state.gamepadRx = state.gamepadRy = 0;
+      state.gamepadLeftDown = state.gamepadRightDown = false;
       state.modernParameterCounts.clear();
       nativePolledKeys.clear();
       lastNativeKeySnapshot = '';
@@ -2207,7 +2887,19 @@
         pressed: Array.from(state.mverPressed),
         keyBindings: MVER_KEY_BINDINGS.length,
         handBindings: MVER_HAND_BINDINGS.length,
+        handLayout: MVER_HAND_LAYOUT || (hasSplitMverHandLayout() ? 'split-legacy' : 'single-legacy'),
+        resolvedHandLayout: resolveMverHandLayout(),
+        handCompositorVersion: MVER_HAND_COMPOSITOR_VERSION,
+        handRenderPolicy: MVER_HAND_RENDER_POLICY,
+        strictHandLayout: MVER_STRICT_HAND_LAYOUT,
+        rasterIdleEnabled: MVER_RASTER_IDLE_ENABLED,
+        handModelFallback: MVER_HAND_MODEL_FALLBACK,
+        failedHandAssets: mverFailedAssets.size,
         spriteHandsAuthoritative: MVER_SPRITE_HANDS_AUTHORITATIVE,
+        handCompositor: IS_MVER
+          ? (hasAuthoredMverHandLayers() ? 'authored-sprite' : 'model-fallback')
+          : (PORTABLE_GAMEPAD_HAND_COMPOSITOR ? 'portable-gamepad-one-owner'
+            : (STYLE_MODE === 'gamepad' ? 'exclusive-gamepad-slot' : 'model-fallback')),
         faceBindings: MVER_FACE_BINDINGS.length,
         expressionBindings: MVER_EXPRESSION_BINDINGS.length,
         debugExpression: [state.debugExpressionKind, state.debugExpressionIndex],
@@ -2330,9 +3022,7 @@
     if (state.staticFallback && !IS_MVER && !renderer) return;
     scheduleAnimation();
     if (!renderer && !IS_MVER) return;
-    if (lastFrameTime && now - lastFrameTime < FRAME_INTERVAL - 0.5) return;
-
-    const deltaMs = Math.min(100, Math.max(0.1, lastFrameTime ? now - lastFrameTime : FRAME_INTERVAL));
+    const deltaMs = Math.min(100, Math.max(0.1, lastFrameTime ? now - lastFrameTime : FRAME_TIME_FALLBACK));
     lastFrameTime = now;
     reconcileNativeHeldKeys(now);
     const mouseVisualChanged = updateMouseButtonVisual(now);
@@ -2607,10 +3297,35 @@
       console.info('[AxonBongoCat] WebGL ready:', this.glInfo);
       this.program = this.createProgram(false);
       this.maskProgram = this.createProgram(true);
+      // Shader locations and drawable order are stable for almost every frame. Cache them once;
+      // querying WebGL locations and allocating/sorting an order array per ArtMesh per frame was a
+      // significant CPU/driver cost on large community models.
+      this.programLocations = new Map([
+        [this.program, this.resolveProgramLocations(this.program)],
+        [this.maskProgram, this.resolveProgramLocations(this.maskProgram)],
+      ]);
+      this.renderOrder = new Array(this.drawables.count);
+      this.renderOrderValues = new Int32Array(this.drawables.count);
+      this.renderOrderInitialized = false;
       this.textures = images.map((image) => this.createTexture(image));
-      this.positionBuffer = gl.createBuffer();
-      this.uvBuffer = gl.createBuffer();
-      this.indexBuffer = gl.createBuffer();
+      this.positionBuffers = new Array(this.drawables.count);
+      this.uvBuffers = new Array(this.drawables.count);
+      this.indexBuffers = new Array(this.drawables.count);
+      this.geometryInitialized = new Uint8Array(this.drawables.count);
+      for (let i = 0; i < this.drawables.count; i++) {
+        const positionBuffer = gl.createBuffer();
+        const uvBuffer = gl.createBuffer();
+        const indexBuffer = gl.createBuffer();
+        this.positionBuffers[i] = positionBuffer;
+        this.uvBuffers[i] = uvBuffer;
+        this.indexBuffers[i] = indexBuffer;
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, this.drawables.vertexPositions[i], gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, this.drawables.vertexUvs[i], gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.drawables.indices[i], gl.STATIC_DRAW);
+      }
       this.boundResize = () => this.resize();
       this.resize();
       addEventListener('resize', this.boundResize, { passive: true });
@@ -2788,6 +3503,43 @@
         throw new Error(gl.getProgramInfoLog(program) || 'program link failed');
       }
       return program;
+    }
+
+    resolveProgramLocations(program) {
+      const gl = this.gl;
+      return {
+        positionAttribute: gl.getAttribLocation(program, 'aPosition'),
+        uvAttribute: gl.getAttribLocation(program, 'aUv'),
+        canvasUniform: gl.getUniformLocation(program, 'uCanvas'),
+        viewportUniform: gl.getUniformLocation(program, 'uViewport'),
+        opacityUniform: gl.getUniformLocation(program, 'uOpacity'),
+        multiplyUniform: gl.getUniformLocation(program, 'uMultiplyColor'),
+        screenUniform: gl.getUniformLocation(program, 'uScreenColor'),
+        useMaskUniform: gl.getUniformLocation(program, 'uUseMask'),
+        invertedUniform: gl.getUniformLocation(program, 'uMaskInverted'),
+        maskSampler: gl.getUniformLocation(program, 'uMaskTexture'),
+        sampler: gl.getUniformLocation(program, 'uTexture'),
+      };
+    }
+
+    getRenderOrder() {
+      const d = this.drawables;
+      let changed = !this.renderOrderInitialized || this.renderOrder.length !== d.count;
+      if (this.renderOrder.length !== d.count) {
+        this.renderOrder = new Array(d.count);
+        this.renderOrderValues = new Int32Array(d.count);
+      }
+      for (let i = 0; i < d.count; i++) {
+        const value = Number(d.renderOrders[i]) | 0;
+        if (!changed && this.renderOrderValues[i] !== value) changed = true;
+        this.renderOrderValues[i] = value;
+      }
+      if (changed) {
+        for (let i = 0; i < d.count; i++) this.renderOrder[i] = i;
+        this.renderOrder.sort((a, b) => d.renderOrders[a] - d.renderOrders[b]);
+        this.renderOrderInitialized = true;
+      }
+      return this.renderOrder;
     }
 
     createTexture(image) {
@@ -3928,9 +4680,9 @@
       if (gl) {
         for (const texture of this.textures) { try { if (texture) gl.deleteTexture(texture); } catch (_) {} }
         this.textures.length = 0;
-        try { if (this.positionBuffer) gl.deleteBuffer(this.positionBuffer); } catch (_) {}
-        try { if (this.uvBuffer) gl.deleteBuffer(this.uvBuffer); } catch (_) {}
-        try { if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer); } catch (_) {}
+        for (const buffer of this.positionBuffers || []) { try { if (buffer) gl.deleteBuffer(buffer); } catch (_) {} }
+        for (const buffer of this.uvBuffers || []) { try { if (buffer) gl.deleteBuffer(buffer); } catch (_) {} }
+        for (const buffer of this.indexBuffers || []) { try { if (buffer) gl.deleteBuffer(buffer); } catch (_) {} }
         this.releaseMaskTarget();
         try { if (this.program) gl.deleteProgram(this.program); } catch (_) {}
         try { if (this.maskProgram) gl.deleteProgram(this.maskProgram); } catch (_) {}
@@ -3949,27 +4701,35 @@
       const opts = options || {};
       gl.useProgram(program);
 
-      const positionAttribute = gl.getAttribLocation(program, 'aPosition');
-      const uvAttribute = gl.getAttribLocation(program, 'aUv');
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, d.vertexPositions[drawableIndex], gl.DYNAMIC_DRAW);
+      const locations = this.programLocations.get(program);
+      const positionAttribute = locations.positionAttribute;
+      const uvAttribute = locations.uvAttribute;
+      const positionBuffer = this.positionBuffers[drawableIndex];
+      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+      const utils = this.core && this.core.Utils ? this.core.Utils : null;
+      const flags = d.dynamicFlags ? d.dynamicFlags[drawableIndex] : 0;
+      const vertexChanged = !this.geometryInitialized[drawableIndex]
+        || !utils || typeof utils.hasVertexPositionsDidChangeBit !== 'function'
+        || utils.hasVertexPositionsDidChangeBit(flags);
+      if (vertexChanged) {
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, d.vertexPositions[drawableIndex]);
+        this.geometryInitialized[drawableIndex] = 1;
+      }
       if (positionAttribute >= 0) {
         gl.enableVertexAttribArray(positionAttribute);
         gl.vertexAttribPointer(positionAttribute, 2, gl.FLOAT, false, 0, 0);
       }
 
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, d.vertexUvs[drawableIndex], gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuffers[drawableIndex]);
       if (uvAttribute >= 0) {
         gl.enableVertexAttribArray(uvAttribute);
         gl.vertexAttribPointer(uvAttribute, 2, gl.FLOAT, false, 0, 0);
       }
 
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
-      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, d.indices[drawableIndex], gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffers[drawableIndex]);
 
-      const canvasUniform = gl.getUniformLocation(program, 'uCanvas');
-      const viewportUniform = gl.getUniformLocation(program, 'uViewport');
+      const canvasUniform = locations.canvasUniform;
+      const viewportUniform = locations.viewportUniform;
       if (canvasUniform !== null) gl.uniform4f(
         canvasUniform,
         this.canvasInfo.CanvasOriginX * this.scale + this.offsetX,
@@ -3979,25 +4739,25 @@
       );
       if (viewportUniform !== null) gl.uniform2f(viewportUniform, this.pixelWidth, this.pixelHeight);
 
-      const opacityUniform = gl.getUniformLocation(program, 'uOpacity');
+      const opacityUniform = locations.opacityUniform;
       if (opacityUniform !== null) gl.uniform1f(opacityUniform, this.drawableOpacity(drawableIndex) * Math.max(0, Math.min(1, Number(this.modelOpacity) || 0)));
 
-      const multiplyUniform = gl.getUniformLocation(program, 'uMultiplyColor');
+      const multiplyUniform = locations.multiplyUniform;
       if (multiplyUniform !== null) {
         const color = this.readDrawableColor(d.multiplyColors, drawableIndex, [1, 1, 1, 1]);
         gl.uniform4f(multiplyUniform, color[0], color[1], color[2], color[3]);
       }
-      const screenUniform = gl.getUniformLocation(program, 'uScreenColor');
+      const screenUniform = locations.screenUniform;
       if (screenUniform !== null) {
         const color = this.readDrawableColor(d.screenColors, drawableIndex, [0, 0, 0, 1]);
         gl.uniform4f(screenUniform, color[0], color[1], color[2], color[3]);
       }
 
-      const useMaskUniform = gl.getUniformLocation(program, 'uUseMask');
+      const useMaskUniform = locations.useMaskUniform;
       if (useMaskUniform !== null) gl.uniform1f(useMaskUniform, opts.useMask && this.maskTexture ? 1 : 0);
-      const invertedUniform = gl.getUniformLocation(program, 'uMaskInverted');
+      const invertedUniform = locations.invertedUniform;
       if (invertedUniform !== null) gl.uniform1f(invertedUniform, opts.inverted ? 1 : 0);
-      const maskSampler = gl.getUniformLocation(program, 'uMaskTexture');
+      const maskSampler = locations.maskSampler;
       if (maskSampler !== null && opts.useMask && this.maskTexture) {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, this.maskTexture);
@@ -4006,7 +4766,7 @@
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, opts.texture || this.drawableTexture(drawableIndex));
-      const sampler = gl.getUniformLocation(program, 'uTexture');
+      const sampler = locations.sampler;
       if (sampler !== null) gl.uniform1i(sampler, 0);
     }
 
@@ -4056,8 +4816,7 @@
       gl.blendEquation(gl.FUNC_ADD);
       gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
-      const order = Array.from({ length: d.count }, (_, index) => index)
-        .sort((a, b) => d.renderOrders[a] - d.renderOrders[b]);
+      const order = this.getRenderOrder();
 
       for (const index of order) {
         if (!this.core.Utils.hasIsVisibleBit(d.dynamicFlags[index])) continue;
@@ -4204,6 +4963,13 @@
         applyPointerOverrides(state.cursorX, state.cursorY);
       }
       syncHandOverrides();
+      // Controller hand visibility must be initialized before the first physical axis event.
+      // Otherwise a saved/debug value or authored first-frame state can leave StickShow/HandDown
+      // active until the user moves the gamepad, which makes an idle cat start with extra hands.
+      if (PORTABLE_GAMEPAD_HAND_COMPOSITOR || STYLE_MODE === 'gamepad') {
+        syncGamepadStickHandParameters();
+        syncHandOverrides();
+      }
       state.mouseVisualButtons = state.mouseButtons;
       fallback.classList.add('hidden');
       state.staticFallback = false;

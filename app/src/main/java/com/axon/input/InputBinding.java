@@ -160,22 +160,39 @@ public final class InputBinding {
      * This intentionally excludes stick directions; only physical button semantics are bindable.
      */
     public static int gamepadButtonsFromMotionEvent(MotionEvent event) {
+        return gamepadButtonsFromMotionEvent(event, -1);
+    }
+
+    /**
+     * 读取当前或 historical joystick sample。Android 会把高频 MotionEvent 合并成一批历史样本；
+     * 如果只看最后一个 sample，L2/R2 或 Hat 的快速按下+松开可能整段消失。
+     * historyPos < 0 表示当前值，否则读取对应 historical sample。
+     */
+    public static int gamepadButtonsFromMotionEvent(MotionEvent event, int historyPos) {
         if (!isPhysicalGamepadMotionEvent(event)) return 0;
         int buttons = 0;
-        float lt = Math.max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER),
-                event.getAxisValue(MotionEvent.AXIS_BRAKE));
-        float rt = Math.max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER),
-                event.getAxisValue(MotionEvent.AXIS_GAS));
+        float lt = Math.max(axis(event, MotionEvent.AXIS_LTRIGGER, historyPos),
+                axis(event, MotionEvent.AXIS_BRAKE, historyPos));
+        float rt = Math.max(axis(event, MotionEvent.AXIS_RTRIGGER, historyPos),
+                axis(event, MotionEvent.AXIS_GAS, historyPos));
         if (lt >= 0.5f) buttons |= GamepadOverlayView.BTN_L2;
         if (rt >= 0.5f) buttons |= GamepadOverlayView.BTN_R2;
 
-        float hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X);
-        float hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y);
+        float hatX = axis(event, MotionEvent.AXIS_HAT_X, historyPos);
+        float hatY = axis(event, MotionEvent.AXIS_HAT_Y, historyPos);
         if (hatX <= -0.5f) buttons |= GamepadOverlayView.BTN_DPAD_LEFT;
         else if (hatX >= 0.5f) buttons |= GamepadOverlayView.BTN_DPAD_RIGHT;
         if (hatY <= -0.5f) buttons |= GamepadOverlayView.BTN_DPAD_UP;
         else if (hatY >= 0.5f) buttons |= GamepadOverlayView.BTN_DPAD_DOWN;
         return buttons;
+    }
+
+    public static float axis(MotionEvent event, int axis, int historyPos) {
+        if (event == null) return 0f;
+        if (historyPos >= 0 && historyPos < event.getHistorySize()) {
+            return event.getHistoricalAxisValue(axis, historyPos);
+        }
+        return event.getAxisValue(axis);
     }
 
     /**

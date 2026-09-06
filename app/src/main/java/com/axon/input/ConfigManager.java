@@ -14,6 +14,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -95,6 +97,8 @@ public final class ConfigManager {
 
         SharedPreferences prefs = AppPreferences.get(context);
         boolean entryAuthorized = prefs.getBoolean(KEY_ENTRY_AUTHORIZED, false);
+        Map<String, Object> previousPreferences = snapshotPreferences(prefs);
+        GlobalHtmlStore.ConfigSnapshot htmlSnapshot = GlobalHtmlStore.snapshotForConfig(context);
         SharedPreferences.Editor editor = prefs.edit().clear();
 
         JSONArray entries = root.optJSONArray("preferences");
@@ -115,13 +119,64 @@ public final class ConfigManager {
         editor.putString(KEY_SENSITIVITY_STATUS, context.getString(R.string.status_disabled));
         if (!editor.commit()) throw new IOException("Cannot save imported config");
 
-        if (html != null) {
-            GlobalHtmlStore.restoreFromConfig(context, html.optString("name", "display.html"), htmlContent);
-        } else {
-            GlobalHtmlStore.clearFromConfig(context);
+        try {
+            if (html != null) {
+                GlobalHtmlStore.restoreFromConfig(context, html.optString("name", "display.html"), htmlContent);
+            } else {
+                GlobalHtmlStore.clearFromConfig(context);
+            }
+        } catch (Throwable error) {
+            IOException failure = error instanceof IOException
+                    ? (IOException) error : new IOException("Cannot restore imported HTML", error);
+            try {
+                restorePreferences(prefs, previousPreferences);
+            } catch (Throwable rollbackError) {
+                failure.addSuppressed(rollbackError);
+            }
+            try {
+                GlobalHtmlStore.rollbackConfigMutation(context, htmlSnapshot);
+            } catch (Throwable rollbackError) {
+                failure.addSuppressed(rollbackError);
+            }
+            throw failure;
         }
 
         OverlayState.refreshAfterConfigChange(context);
+    }
+
+
+    private static Map<String, Object> snapshotPreferences(SharedPreferences prefs) {
+        HashMap<String, Object> snapshot = new HashMap<>();
+        for (Map.Entry<String, ?> entry : prefs.getAll().entrySet()) {
+            Object value = entry.getValue();
+            if (value instanceof Set<?>) {
+                LinkedHashSet<String> copy = new LinkedHashSet<>();
+                for (Object item : (Set<?>) value) if (item instanceof String) copy.add((String) item);
+                snapshot.put(entry.getKey(), copy);
+            } else if (value != null) {
+                snapshot.put(entry.getKey(), value);
+            }
+        }
+        return snapshot;
+    }
+
+    private static void restorePreferences(SharedPreferences prefs, Map<String, Object> snapshot) throws IOException {
+        SharedPreferences.Editor editor = prefs.edit().clear();
+        for (Map.Entry<String, Object> entry : snapshot.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if (value instanceof Boolean) editor.putBoolean(key, (Boolean) value);
+            else if (value instanceof Integer) editor.putInt(key, (Integer) value);
+            else if (value instanceof Long) editor.putLong(key, (Long) value);
+            else if (value instanceof Float) editor.putFloat(key, (Float) value);
+            else if (value instanceof String) editor.putString(key, (String) value);
+            else if (value instanceof Set<?>) {
+                LinkedHashSet<String> copy = new LinkedHashSet<>();
+                for (Object item : (Set<?>) value) if (item instanceof String) copy.add((String) item);
+                editor.putStringSet(key, copy);
+            }
+        }
+        if (!editor.commit()) throw new IOException("Cannot rollback imported config");
     }
 
     private static JSONObject encodeEntry(String key, Object value) throws JSONException {

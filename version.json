@@ -1,5 +1,5 @@
 {
-  "versionCode": 14,
-  "versionName": "2.0",
-  "changelog": "qq群1080086855,增加大量按显相关调试项,Live2D/键盘猫兼容性增强,Live2D/键盘猫新增模型功能参数相关调试,键盘猫现在可以检测手柄按键了,新增同时点击,修复bug"
+  "versionCode": 15,
+  "versionName": "2.1",
+  "changelog": "qq群1080086855,优化ui,完善调试,修复bug等等"
 }

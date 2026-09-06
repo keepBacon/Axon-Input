@@ -73,6 +73,7 @@ public final class GlobalHtmlWebView extends WebView {
     private boolean keyboardShowSpace = true;
     private boolean keyboardShowSpaceDps;
     private boolean keyboardShowSpaceDash;
+    private boolean keyboardSwapMouseButtonsAndSpace;
     private int keyboardSpaceDps;
     private long mouseStats;
     private int[] customKeyCodes = new int[0];
@@ -268,6 +269,12 @@ public final class GlobalHtmlWebView extends WebView {
     public void setKeyboardSpaceDashEnabled(boolean enabled) {
         if (keyboardShowSpaceDash == enabled) return;
         keyboardShowSpaceDash = enabled;
+        scheduleFullState();
+    }
+
+    public void setKeyboardMouseSpaceSwapEnabled(boolean enabled) {
+        if (keyboardSwapMouseButtonsAndSpace == enabled) return;
+        keyboardSwapMouseButtonsAndSpace = enabled;
         scheduleFullState();
     }
 
@@ -594,6 +601,7 @@ public final class GlobalHtmlWebView extends WebView {
         config.put("showSpaceCps", keyboardShowSpaceDps);
         config.put("showSpaceDps", keyboardShowSpaceDps); // v9 兼容
         config.put("spaceDash", keyboardShowSpaceDash);
+        config.put("swapMouseButtonsAndSpace", keyboardSwapMouseButtonsAndSpace);
         config.put("showFaceYCps", faceYDpsEnabled);
         config.put("showFaceXCps", faceXDpsEnabled);
         config.put("showFaceBCps", faceBDpsEnabled);
@@ -874,6 +882,7 @@ public final class GlobalHtmlWebView extends WebView {
         keyboard.put("sizePercent", OverlayState.getKeyboardSize(c));
         keyboard.put("showSpace", OverlayState.isKeyboardSpaceEnabled(c));
         keyboard.put("showSpaceDps", OverlayState.isKeyboardSpaceDpsEnabled(c));
+        keyboard.put("swapMouseButtonsAndSpace", OverlayState.isKeyboardMouseSpaceSwapEnabled(c));
         keyboard.put("motionMode", motionModeName(OverlayState.getMotionMode(c, KeyOverlayView.DISPLAY_KEYBOARD)));
         keyboard.put("spacingDp", OverlayState.getKeyboardSpacing(c));
         appendAppearance(keyboard, c, KeyOverlayView.DISPLAY_KEYBOARD);

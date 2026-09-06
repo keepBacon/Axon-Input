@@ -19,15 +19,15 @@ import android.view.animation.PathInterpolator;
  *    where state moved, just like the bottom navigation's moving selection surface.
  */
 public final class UiMotion {
-    private static final long PRESS_MS = 125L;
-    private static final long RELEASE_MS = 150L;
-    private static final long STATE_MS = 320L;
-    private static final long ENTER_MS = 360L;
-    private static final long EXIT_MS = 300L;
-    private static final long DETAILS_MS = 420L;
-    private static final long PAGE_MS = 420L;
-    private static final long SPATIAL_MIN_MS = 260L;
-    private static final long SPATIAL_MAX_MS = 460L;
+    private static final long PRESS_MS = 115L;
+    private static final long RELEASE_MS = 130L;
+    private static final long STATE_MS = 180L;
+    private static final long ENTER_MS = 180L;
+    private static final long EXIT_MS = 140L;
+    private static final long DETAILS_MS = 200L;
+    private static final long PAGE_MS = 220L;
+    private static final long SPATIAL_MIN_MS = 150L;
+    private static final long SPATIAL_MAX_MS = 240L;
 
     // First-frame response remains immediate; most of the time is spent decelerating into place.
     private static final Interpolator EASE_OUT = new PathInterpolator(0.16f, 1f, 0.30f, 1f);
@@ -45,7 +45,7 @@ public final class UiMotion {
     static long exitMs() { return EXIT_MS; }
     static long pageMs() { return PAGE_MS; }
 
-    /** Adds a small, slow compression that always releases from the currently rendered scale. */
+    /** Adds a small, fast compression that always releases from the currently rendered scale. */
     public static void bindPressFeedback(View view) {
         if (view == null) return;
         view.setOnTouchListener((target, event) -> {
@@ -53,8 +53,8 @@ public final class UiMotion {
                 case MotionEvent.ACTION_DOWN:
                     target.animate().cancel();
                     target.animate()
-                            .scaleX(0.978f)
-                            .scaleY(0.978f)
+                            .scaleX(0.975f)
+                            .scaleY(0.975f)
                             .setDuration(PRESS_MS)
                             .setInterpolator(EASE_OUT)
                             .start();
@@ -77,7 +77,7 @@ public final class UiMotion {
     }
 
     /**
-     * Slow bounds movement for low-frequency expansion. Parent-hierarchy animation is disabled
+     * Short bounds movement for low-frequency expansion. Parent-hierarchy animation is disabled
      * so opening one row does not cause unrelated ancestors to drift at the same time.
      */
     public static void enableLayoutMotion(ViewGroup group) {

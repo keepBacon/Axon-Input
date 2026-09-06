@@ -29,6 +29,7 @@ public final class KeyOverlayView extends FrameLayout {
     private boolean keyboardShowSpaceDash;
     private boolean keyboardShowMouseButtons;
     private boolean keyboardShowMouseCps;
+    private boolean keyboardSwapMouseButtonsAndSpace;
     private int keyboardMouseButtons;
     private long keyboardMouseStats;
     private int keyboardSpaceDps;
@@ -186,6 +187,13 @@ public final class KeyOverlayView extends FrameLayout {
         if (enabled) nativeView.setKeyboardMouseStats(keyboardMouseStats);
     }
 
+    public void setKeyboardMouseSpaceSwapEnabled(boolean enabled) {
+        if (displayType != DISPLAY_KEYBOARD) return;
+        keyboardSwapMouseButtonsAndSpace = enabled;
+        nativeView.setKeyboardMouseSpaceSwapEnabled(enabled);
+        if (htmlView != null) htmlView.setKeyboardMouseSpaceSwapEnabled(enabled);
+    }
+
     public void setKeyboardMouseStats(long stats) {
         if (displayType != DISPLAY_KEYBOARD) return;
         keyboardMouseStats = stats;
@@ -267,6 +275,7 @@ public final class KeyOverlayView extends FrameLayout {
         if (displayType == DISPLAY_KEYBOARD) {
             web.setKeyboardOptions(keyboardShowSpace, keyboardShowSpaceDps);
             web.setKeyboardSpaceDashEnabled(keyboardShowSpaceDash);
+            web.setKeyboardMouseSpaceSwapEnabled(keyboardSwapMouseButtonsAndSpace);
             web.setKeyboardDps(keyboardSpaceDps);
             web.setKeyboardMask(pressedMask);
         } else if (displayType == DISPLAY_MOUSE) {

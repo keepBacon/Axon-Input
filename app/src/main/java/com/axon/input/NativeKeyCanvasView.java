@@ -108,6 +108,7 @@ public final class NativeKeyCanvasView extends View {
     private boolean showSpaceDash;
     private boolean showMouseButtons;
     private boolean showKeyboardMouseCps;
+    private boolean swapMouseButtonsAndSpace;
     private int keyboardMouseButtons;
     private long keyboardMouseStats;
     private int spaceDps;
@@ -389,6 +390,12 @@ public final class NativeKeyCanvasView extends View {
         postInvalidateOnAnimation();
     }
 
+    public void setKeyboardMouseSpaceSwapEnabled(boolean enabled) {
+        if (displayType != DISPLAY_KEYBOARD || swapMouseButtonsAndSpace == enabled) return;
+        swapMouseButtonsAndSpace = enabled;
+        postInvalidateOnAnimation();
+    }
+
     public void setKeyboardMouseStats(long stats) {
         if (displayType != DISPLAY_KEYBOARD || !showKeyboardMouseCps || keyboardMouseStats == stats) return;
         keyboardMouseStats = stats;
@@ -587,14 +594,23 @@ public final class NativeKeyCanvasView extends View {
         drawKey(canvas, SLOT_D, "D", centerX + rowStep, secondY, keySize, keySize, false);
 
         float nextTop = top + rowStep * 2f;
-        if (showMouseButtons) {
-            drawMouseButtonRow(canvas, centerX, nextTop);
-            nextTop += spaceHeight + dp(keyboardSpacingDp);
-        }
-        if (showSpace) {
+        boolean swapRows = swapMouseButtonsAndSpace && showMouseButtons && showSpace;
+        if (swapRows) {
             final float spaceY = nextTop + spaceHeight * 0.5f;
             drawKey(canvas, SLOT_SPACE, showSpaceDash ? "" : "Space", centerX, spaceY,
                     spaceWidth, spaceHeight, true);
+            nextTop += spaceHeight + dp(keyboardSpacingDp);
+            drawMouseButtonRow(canvas, centerX, nextTop);
+        } else {
+            if (showMouseButtons) {
+                drawMouseButtonRow(canvas, centerX, nextTop);
+                nextTop += spaceHeight + dp(keyboardSpacingDp);
+            }
+            if (showSpace) {
+                final float spaceY = nextTop + spaceHeight * 0.5f;
+                drawKey(canvas, SLOT_SPACE, showSpaceDash ? "" : "Space", centerX, spaceY,
+                        spaceWidth, spaceHeight, true);
+            }
         }
     }
 

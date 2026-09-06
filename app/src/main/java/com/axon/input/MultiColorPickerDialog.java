@@ -10,6 +10,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
@@ -50,10 +51,10 @@ final class MultiColorPickerDialog {
         actions.setOrientation(LinearLayout.HORIZONTAL);
         Button add = new Button(activity);
         add.setText("添加颜色");
-        add.setAllCaps(false);
+        UiChrome.styleSecondaryButton(activity, add);
         Button remove = new Button(activity);
         remove.setText("删除当前");
-        remove.setAllCaps(false);
+        UiChrome.styleSecondaryButton(activity, remove);
         actions.addView(add, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         LinearLayout.LayoutParams removeLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         removeLp.leftMargin = dp(activity, 8);
@@ -67,8 +68,8 @@ final class MultiColorPickerDialog {
 
         Runnable updatePreview = () -> {
             int color = colors.get(selected[0]);
-            preview.setText(String.format(java.util.Locale.US, "颜色 %d / %d   #%06X",
-                    selected[0] + 1, colors.size(), color & 0x00ffffff));
+            preview.setText("颜色 " + (selected[0] + 1) + " / " + colors.size()
+                    + "   #" + hex6(color));
             GradientDrawable bg = new GradientDrawable();
             bg.setCornerRadius(dp(activity, 9));
             bg.setColor(color);
@@ -99,7 +100,7 @@ final class MultiColorPickerDialog {
                     channels[0] = Color.red(c); channels[1] = Color.green(c); channels[2] = Color.blue(c);
                     for (int k = 0; k < 3; k++) {
                         bars[k].setProgress(channels[k]);
-                        labels[k].setText(names[k] + "  " + channels[k]);
+                        labels[k].setText(names[k]);
                     }
                     syncing[0] = false;
                     updatePreview.run();
@@ -119,13 +120,16 @@ final class MultiColorPickerDialog {
             SeekBar bar = new LagSeekBar(activity);
             UiChrome.styleSeekBar(activity, bar);
             bar.setMax(255);
+            ((LagSeekBar) bar).setValueDisplaySpec(0, 1, "");
             bars[i] = bar;
-            root.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 36)));
+            // LagSeekBar 自己定义安全最小高度；父布局不再用 36dp EXACTLY 覆盖它。
+            root.addView(bar, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                     if (syncing[0]) return;
                     channels[channel] = progress;
-                    labels[channel].setText(names[channel] + "  " + progress);
+                    labels[channel].setText(names[channel]);
                     int color = Color.rgb(channels[0], channels[1], channels[2]);
                     colors.set(selected[0], color);
                     updatePreview.run();
@@ -142,7 +146,7 @@ final class MultiColorPickerDialog {
             channels[0] = Color.red(c); channels[1] = Color.green(c); channels[2] = Color.blue(c);
             for (int i = 0; i < 3; i++) {
                 bars[i].setProgress(channels[i]);
-                labels[i].setText(names[i] + "  " + channels[i]);
+                labels[i].setText(names[i]);
             }
             syncing[0] = false;
             updatePreview.run();
@@ -164,9 +168,15 @@ final class MultiColorPickerDialog {
         });
         syncSelected.run();
 
+        ScrollView scroll = new ScrollView(activity);
+        scroll.setFillViewport(false);
+        scroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        scroll.addView(root, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         AlertDialog dialog = new AlertDialog.Builder(activity)
                 .setTitle(title)
-                .setView(root)
+                .setView(scroll)
                 .setNegativeButton(android.R.string.cancel, null)
                 .setPositiveButton(android.R.string.ok, null)
                 .create();
@@ -177,13 +187,28 @@ final class MultiColorPickerDialog {
             dialog.dismiss();
         }));
         dialog.show();
+        // 横屏/小窗时不让 Dialog 自身越界；内容超过可用高度时由上面的 ScrollView 接管。
+        if (dialog.getWindow() != null) {
+            int screenHeight = activity.getResources().getDisplayMetrics().heightPixels;
+            int maxHeight = Math.max(1, screenHeight - dp(activity, 24));
+            dialog.getWindow().setLayout(ViewGroup.LayoutParams.WRAP_CONTENT, maxHeight);
+        }
     }
 
     private static TextView text(Activity a, String value, float size) {
         TextView out = new TextView(a);
         out.setText(value);
         out.setTextSize(size);
+        AppTypeface.applyIfSelected(out);
         return out;
+    }
+
+    private static String hex6(int color) {
+        String hex = Integer.toHexString(color & 0x00ffffff).toUpperCase(java.util.Locale.US);
+        StringBuilder out = new StringBuilder(6);
+        for (int i = hex.length(); i < 6; i++) out.append('0');
+        out.append(hex);
+        return out.toString();
     }
 
     private static LinearLayout.LayoutParams wrap(int bottomMargin) {
