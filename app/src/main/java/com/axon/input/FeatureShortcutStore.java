@@ -70,13 +70,14 @@ final class FeatureShortcutStore {
     private FeatureShortcutStore() {}
 
     static int getBinding(Context context, String featureId) {
-        if (!isKnownFeature(featureId)) return -1;
+        if (!isKnownFeatureId(featureId) || GitHubFeatureControl.isShortcutBlocked(featureId)) return -1;
         int value = AppPreferences.get(context).getInt(key(featureId), -1);
         return InputBinding.isValid(value) ? value : -1;
     }
 
     static boolean setBinding(Context context, String featureId, int inputCode) {
-        if (!isKnownFeature(featureId) || !InputBinding.isValid(inputCode)) return false;
+        if (!isKnownFeatureId(featureId) || GitHubFeatureControl.isShortcutBlocked(featureId)
+                || !InputBinding.isValid(inputCode)) return false;
         if (conflicts(context, featureId, inputCode)) return false;
         AppPreferences.get(context).edit().putInt(key(featureId), inputCode).apply();
         AxonInputAccessibilityService.refreshActiveService();
@@ -84,9 +85,14 @@ final class FeatureShortcutStore {
     }
 
     static void clearBinding(Context context, String featureId) {
-        if (!isKnownFeature(featureId)) return;
+        if (!isKnownFeatureId(featureId)) return;
         AppPreferences.get(context).edit().remove(key(featureId)).apply();
         AxonInputAccessibilityService.refreshActiveService();
+    }
+
+    static void clearBindingSilently(Context context, String featureId) {
+        if (!isKnownFeatureId(featureId)) return;
+        AppPreferences.get(context).edit().remove(key(featureId)).apply();
     }
 
     static boolean conflicts(Context context, String excludeFeatureId, int inputCode) {
@@ -108,6 +114,7 @@ final class FeatureShortcutStore {
         SharedPreferences prefs = AppPreferences.get(context);
         int mask = 0;
         for (String id : IDS) {
+            if (GitHubFeatureControl.isShortcutBlocked(id)) continue;
             int inputCode = prefs.getInt(key(id), -1);
             if (!InputBinding.isValid(inputCode)) continue;
             if (InputBinding.isMouse(inputCode)) mask |= INPUT_MOUSE;
@@ -122,6 +129,7 @@ final class FeatureShortcutStore {
         SharedPreferences prefs = AppPreferences.get(context);
         HashMap<Integer, String> result = new HashMap<>();
         for (String id : IDS) {
+            if (GitHubFeatureControl.isShortcutBlocked(id)) continue;
             int inputCode = prefs.getInt(key(id), -1);
             if (!InputBinding.isValid(inputCode) || result.containsKey(inputCode)) continue;
             result.put(inputCode, id);
@@ -163,7 +171,10 @@ final class FeatureShortcutStore {
     }
 
     static ToggleResult toggle(Context context, String featureId) {
-        if (!isKnownFeature(featureId)) return new ToggleResult(featureId, false, false);
+        if (!isKnownFeatureId(featureId) || GitHubFeatureControl.isFeatureBlocked(featureId)
+                || GitHubFeatureControl.isFeatureHidden(featureId)) {
+            return new ToggleResult(featureId, false, isFeatureEnabled(context, featureId));
+        }
         boolean current = isFeatureEnabled(context, featureId);
         boolean target = !current;
         if (target && !canEnable(context, featureId)) {
@@ -174,7 +185,7 @@ final class FeatureShortcutStore {
         return new ToggleResult(featureId, actual != current, actual);
     }
 
-    private static boolean canEnable(Context context, String featureId) {
+    static boolean canEnable(Context context, String featureId) {
         return switch (featureId) {
             case CUSTOM_MAPPING -> CustomMappingStore.hasRules(context);
             case CLICK_MULTIPLIER -> ClickMultiplierStore.hasBinding(context);
@@ -224,7 +235,48 @@ final class FeatureShortcutStore {
         AxonInputAccessibilityService.refreshActiveService();
     }
 
-    private static boolean isKnownFeature(String featureId) {
+    static void forceSetFeatureEnabled(Context context, String featureId, boolean enabled) {
+        if (!isKnownFeatureId(featureId)) return;
+        if (enabled && !canEnable(context, featureId)) return;
+        setFeatureEnabled(context, featureId, enabled);
+    }
+
+    static String[] allFeatureIds() {
+        return IDS.clone();
+    }
+
+    static String featureIdForLabelRes(int labelRes) {
+        if (labelRes == R.string.switch_label) return REGULAR_DISPLAY;
+        if (labelRes == R.string.input_full_keyboard_switch_label) return FULL_KEYBOARD;
+        if (labelRes == R.string.mouse_switch_label) return MOUSE_DISPLAY;
+        if (labelRes == R.string.keyboard_cat_switch_label) return KEYBOARD_CAT;
+        if (labelRes == R.string.key_prompt_switch_label) return KEY_PROMPT;
+        if (labelRes == R.string.mouse_trajectory_switch_label) return MOUSE_TRAJECTORY;
+        if (labelRes == R.string.custom_switch_label) return CUSTOM_DISPLAY;
+        if (labelRes == R.string.super_custom_display_switch) return SUPER_CUSTOM;
+        if (labelRes == R.string.gamepad_left_stick_switch) return GAMEPAD_LEFT_STICK;
+        if (labelRes == R.string.gamepad_right_stick_switch) return GAMEPAD_RIGHT_STICK;
+        if (labelRes == R.string.gamepad_face_switch) return GAMEPAD_FACE;
+        if (labelRes == R.string.gamepad_dpad_switch) return GAMEPAD_DPAD;
+        if (labelRes == R.string.gamepad_left_shoulder_switch) return GAMEPAD_LEFT_SHOULDER;
+        if (labelRes == R.string.gamepad_right_shoulder_switch) return GAMEPAD_RIGHT_SHOULDER;
+        if (labelRes == R.string.gamepad_back_switch) return GAMEPAD_BACK;
+        if (labelRes == R.string.sensitivity_switch_label) return SENSITIVITY;
+        if (labelRes == R.string.custom_mapping_switch_label) return CUSTOM_MAPPING;
+        if (labelRes == R.string.click_multiplier_switch_label) return CLICK_MULTIPLIER;
+        if (labelRes == R.string.simultaneous_click_switch_label) return SIMULTANEOUS_CLICK;
+        if (labelRes == R.string.force_hold_switch_label) return FORCE_HOLD;
+        if (labelRes == R.string.hide_display_hotkey_switch_label) return HIDE_DISPLAY_HOTKEY;
+        if (labelRes == R.string.dps_switch_label) return DPS;
+        if (labelRes == R.string.font_switch_label) return FONT;
+        if (labelRes == R.string.global_html_switch_label) return GLOBAL_HTML;
+        if (labelRes == R.string.live2d_switch_label) return LIVE2D;
+        if (labelRes == R.string.drag_switch_label) return DRAG;
+        if (labelRes == R.string.auto_hide_label) return AUTO_HIDE;
+        return null;
+    }
+
+    static boolean isKnownFeatureId(String featureId) {
         if (featureId == null || featureId.isEmpty()) return false;
         for (String id : IDS) if (id.equals(featureId)) return true;
         return false;
