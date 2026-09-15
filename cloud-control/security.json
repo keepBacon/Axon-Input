@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "enabled": true,
+  "disabledMessage": "Axon Input 已被云端停用",
+  "deniedVersionMessage": "当前版本已被云端禁止使用，请更新到允许的版本",
+  "deniedVersionCodes": [],
+  "deniedVersionNames": [],
+  "password": {
+    "algorithm": "sha256",
+    "hash": "bfcddcb062a30e8480f5547aab7cc1303ef1aff914af72bd80f6b1f127e2a2a1"
+  }
+}
