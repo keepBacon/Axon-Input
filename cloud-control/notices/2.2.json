@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 16,
+  "versionName": "2.2",
+  "id": "2.2-release-1",
+  "enabled": true,
+  "showOnce": true,
+  "title": "2.2 公告",
+  "message": "Axon Input 2.2 已进入正式版本。当前版本保留云端策略控制、BongoCat 兼容修复、云端预览修复及功能精简后的稳定基线。",
+  "joinUrl": "https://github.com/keepBacon/Axon-Input",
+  "joinText": "查看仓库",
+  "confirmText": "确定",
+  "waitSeconds": 2
+}
