@@ -25,6 +25,9 @@ public final class AxonApplication extends Application implements Application.Ac
         if (!SignatureVerifier.isValid(this)) {
             throw new SecurityException("Axon Input signature verification failed");
         }
+        // 新控制面必须在线拿到当前版本的 security/version/notice 三份策略。
+        // 任一缺失、格式错误、版本不匹配或当前版本被远端禁用，均 fail-closed 终止启动。
+        GitHubCloudPolicy.bootstrapRequired(this);
         // 字体选择属于应用 UI 的启动依赖。已缓存的云端字体在 Activity 创建任何 TextView 前
         // 就恢复，避免先用系统字体绘制启动动画/主页，再在动画结束后整体换字体。
         // 这里只读取私有文件，不联网；缓存缺失时仍由验证后的字体流程负责自动补下载。
@@ -74,7 +77,7 @@ public final class AxonApplication extends Application implements Application.Ac
     @Override public void onActivityCreated(Activity activity, Bundle state) {}
     @Override public void onActivityResumed(Activity activity) {
         // 云端应用字体只作用于 Activity UI；按显/悬浮层仍使用各自 FontManager。
-        if (activity != null && AppTypeface.isAppFontSelected() && activity.getWindow() != null) {
+        if (activity != null && activity.getWindow() != null) {
             AppTypeface.applyToViewTree(activity.getWindow().getDecorView());
         }
     }
