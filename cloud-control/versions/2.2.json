@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 16,
+  "versionName": "2.2",
+  "enabled": true,
+  "maintenanceMode": false,
+  "disabledMessage": "当前 2.2 版本暂时不可用，请稍后重试",
+  "forceUpdate": false,
+  "minSupportedVersionCode": 16,
+  "latestVersionCode": 16,
+  "latestVersionName": "2.2",
+  "downloadUrl": "https://github.com/keepBacon/Axon-Input",
+  "updateTitle": "发现可用更新",
+  "updateMessage": "",
+  "changelog": "2.2：保留 GitHub 多层云端控制、BongoCat 兼容与层级修复、云端预览链路及功能精简后的稳定基线。",
+  "updateLaterText": "稍后",
+  "updateNowText": "立即更新",
+  "forceUpdateExitText": "退出"
+}
