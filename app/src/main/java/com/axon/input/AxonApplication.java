@@ -74,8 +74,14 @@ public final class AxonApplication extends Application implements Application.Ac
         }
     }
 
-    @Override public void onActivityCreated(Activity activity, Bundle state) {}
+    @Override public void onActivityCreated(Activity activity, Bundle state) {
+        GitHubFeatureControl.applyToActivity(activity);
+    }
     @Override public void onActivityResumed(Activity activity) {
+        if (GitHubFeatureControl.applyPolicyOnResume()) {
+            GitHubFeatureControl.enforce(this);
+        }
+        GitHubFeatureControl.applyToActivity(activity);
         // 云端应用字体只作用于 Activity UI；按显/悬浮层仍使用各自 FontManager。
         if (activity != null && activity.getWindow() != null) {
             AppTypeface.applyToViewTree(activity.getWindow().getDecorView());
