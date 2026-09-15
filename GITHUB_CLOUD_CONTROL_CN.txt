@@ -1,0 +1,68 @@
+Axon Input GitHub 云端控制说明 — 2.2Test
+
+兼容原则
+========
+根目录旧 version.json / notice.json 继续只服务旧客户端，本轮不修改、不删除。
+2.2Test 只读取 cloud-control/。
+
+启动 Fail-Closed
+===============
+2.2Test 每次进程启动必须成功读取 7 份 JSON：
+  security.json
+  versions/2.2Test.json
+  notices/2.2Test.json
+  disable/2.2Test.json
+  runtime/2.2Test.json
+  ui/2.2Test.json
+  local/2.2Test.json
+任一文件缺失、无法联网取得、JSON 无效或版本不匹配都会直接退出。
+
+功能禁用 / 隐藏
+================
+编辑 cloud-control/disable/2.2Test.json。
+所有顶层功能使用 FeatureShortcutStore 的稳定 Feature ID，可放入：
+  hiddenFeatureIds
+  disabledFeatureIds
+  forcedOffFeatureIds
+  forcedOnFeatureIds
+  readOnlyFeatureIds
+  shortcutBlockedFeatureIds
+当前 2.2Test 已把 auto_hide 同时隐藏、禁用并强制关闭。
+
+运行能力
+========
+编辑 cloud-control/runtime/2.2Test.json，可控制：
+  entryPasswordEnabled
+  featureShortcutsEnabled
+  cloudWorkshopEnabled
+  configImportEnabled
+  configExportEnabled
+  externalLinksEnabled
+  applyPolicyOnResume
+  clearBlockedShortcutBindings
+
+UI 控制
+=======
+编辑 cloud-control/ui/2.2Test.json。
+hiddenUiIds 当前可隐藏 configuration_section / local_config / cloud_config_center / html_guide / kook_join。
+
+本地覆盖
+========
+编辑 cloud-control/local/2.2Test.json。
+preferenceOverrides 会在启动时写入本地 AppPreferences，并可在 resume 时重新执行。
+只允许 PortableConfigPreferenceSchema 白名单字段，不接受任意 preference key。
+removePreferenceKeys 可删除白名单字段。
+
+入口密码
+========
+编辑 cloud-control/security.json。推荐 PBKDF2-SHA256；不要上传明文密码。
+  python3 tools/generate_entry_password.py '你的新密码'
+修改 password 对象后旧本地授权自动失效。
+
+版本 / 强制更新
+================
+编辑 cloud-control/versions/2.2Test.json：enabled / maintenanceMode / forceUpdate / minSupportedVersionCode / latestVersionCode / latestVersionName / downloadUrl / 更新文案。
+
+独立公告
+========
+2.2Test 只读取 cloud-control/notices/2.2Test.json。未来版本建立各自 notices/<version>.json，互不影响。
