@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 15,
+  "versionName": "2.1",
+  "enabled": true,
+  "maintenanceMode": false,
+  "disabledMessage": "当前版本暂时不可用，请稍后重试",
+  "forceUpdate": false,
+  "minSupportedVersionCode": 15,
+  "latestVersionCode": 15,
+  "latestVersionName": "2.1",
+  "downloadUrl": "https://github.com/keepBacon/Axon-Input",
+  "updateTitle": "发现可用更新",
+  "updateMessage": "",
+  "changelog": "V2.1：延续 V2.0 稳定输入与键盘猫修复基线；缩短超级自定义选中控件信息栏，降低编辑遮挡；常规按显新增左右键与空格位置交换；继续保留跨设备配置、云端、Live2D、Cursor 与性能修复。",
+  "updateLaterText": "稍后",
+  "updateNowText": "立即更新",
+  "forceUpdateExitText": "退出"
+}
