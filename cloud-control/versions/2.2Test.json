@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 16,
+  "versionName": "2.2Test",
+  "enabled": true,
+  "maintenanceMode": false,
+  "disabledMessage": "当前 2.2Test 版本暂时不可用，请稍后重试",
+  "forceUpdate": false,
+  "minSupportedVersionCode": 16,
+  "latestVersionCode": 16,
+  "latestVersionName": "2.2Test",
+  "downloadUrl": "https://github.com/keepBacon/Axon-Input",
+  "updateTitle": "发现可用更新",
+  "updateMessage": "",
+  "changelog": "2.2Test：新增 GitHub 多层云端控制，支持版本级功能隐藏/禁用/强制状态、运行能力、UI 可见性和本地配置白名单覆盖。",
+  "updateLaterText": "稍后",
+  "updateNowText": "立即更新",
+  "forceUpdateExitText": "退出"
+}
