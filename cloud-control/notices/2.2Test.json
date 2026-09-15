@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 16,
+  "versionName": "2.2Test",
+  "id": "2.2Test-cloud-control-1",
+  "enabled": true,
+  "showOnce": true,
+  "title": "2.2Test 公告",
+  "message": "当前为 2.2Test 测试版本。云端策略现可独立控制功能、运行能力、界面和本地配置。",
+  "joinUrl": "https://github.com/keepBacon/Axon-Input",
+  "joinText": "查看仓库",
+  "confirmText": "确定",
+  "waitSeconds": 2
+}
