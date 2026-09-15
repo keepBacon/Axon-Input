@@ -1,10 +1,10 @@
 {
-  "id": "2026-08-22-feedback-1",
+  "id": "2026-09-15-security-revoke-1",
   "enabled": true,
-  "title": "公告",
-  "message": "求你了，加下QQ群吧1080086855出现问题、Bug 请加入QQ群反馈，并附上问题视频，以及你的键盘、鼠标、手柄型号。",
-  "joinUrl": "https://qun.qq.com/universal-share/share?ac=1&authKey=kv57cRR8lComJLkMMDCf4AjAWGN5xjm6aPT7Or%2Bfbh5Uiz9%2FFRD%2FaWCU0iOFOTO3&busi_data=eyJncm91cENvZGUiOiIxMDgwMDg2ODU1IiwidG9rZW4iOiJtTUNQZVpFaVdYT2tCQ04rT3VrdUVoVlNZRTdPZWhCVE1xdDBRZEFvbVliL2lkVnFhYWM4cU4wZTAwdERzbEtsIiwidWluIjoiMzIzNzY4MTAzOSJ9&data=3mxr_TqpOHHbe12oU-VLjv_2QwAMxV5VWouODBCLZ8cl6nW6lCBhuvyZFtcW8TfujSGItUBpL3XWLX7K05DpmQ&svctype=4&tempid=h5_group_info",
-  "joinText": "立即加入",
-  "confirmText": "确定",
-  "waitSeconds": 3
+  "title": "安全撤销通知",
+  "message": "当前 Axon Input 旧版/泄露构建已被安全撤销，请立即停止使用并卸载。该构建将不再获得云端服务支持。请仅使用后续重新发布的正式版本。",
+  "joinUrl": "https://github.com/keepBacon/Axon-Input",
+  "joinText": "查看正式发布",
+  "confirmText": "我知道了",
+  "waitSeconds": 30
 }
