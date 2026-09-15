@@ -22,7 +22,8 @@ import javax.crypto.spec.PBEKeySpec;
  *
  * 旧版根目录 version.json / notice.json 保持兼容，不参与本类逻辑。
  * 新版本只读取 cloud-control/ 下的版本化策略。当前版本必须同时拿到：
- * security.json、versions/<version>.json、notices/<version>.json，否则启动 fail-closed。
+ * security.json、versions/<version>.json、notices/<version>.json，外加版本化的
+ * disable/runtime/ui/local 控制文件；任一缺失都启动 fail-closed。
  */
 final class GitHubCloudPolicy {
     private static final String RAW_ROOT =
@@ -48,15 +49,27 @@ final class GitHubCloudPolicy {
         String securityUrl = RAW_ROOT + "security.json";
         String versionUrl = RAW_ROOT + "versions/" + safeVersion + ".json";
         String noticeUrl = RAW_ROOT + "notices/" + safeVersion + ".json";
+        String disableUrl = RAW_ROOT + "disable/" + safeVersion + ".json";
+        String runtimeUrl = RAW_ROOT + "runtime/" + safeVersion + ".json";
+        String uiUrl = RAW_ROOT + "ui/" + safeVersion + ".json";
+        String localUrl = RAW_ROOT + "local/" + safeVersion + ".json";
 
         AtomicReference<JSONObject> securityJson = new AtomicReference<>();
         AtomicReference<JSONObject> versionJson = new AtomicReference<>();
         AtomicReference<JSONObject> noticeJson = new AtomicReference<>();
-        CountDownLatch latch = new CountDownLatch(3);
+        AtomicReference<JSONObject> disableJson = new AtomicReference<>();
+        AtomicReference<JSONObject> runtimeJson = new AtomicReference<>();
+        AtomicReference<JSONObject> uiJson = new AtomicReference<>();
+        AtomicReference<JSONObject> localJson = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(7);
 
         fetchRequired(app, securityUrl, securityJson, latch, "AxonPolicySecurity");
         fetchRequired(app, versionUrl, versionJson, latch, "AxonPolicyVersion");
         fetchRequired(app, noticeUrl, noticeJson, latch, "AxonPolicyNotice");
+        fetchRequired(app, disableUrl, disableJson, latch, "AxonPolicyDisable");
+        fetchRequired(app, runtimeUrl, runtimeJson, latch, "AxonPolicyRuntime");
+        fetchRequired(app, uiUrl, uiJson, latch, "AxonPolicyUi");
+        fetchRequired(app, localUrl, localJson, latch, "AxonPolicyLocal");
 
         boolean completed;
         try {
@@ -65,7 +78,9 @@ final class GitHubCloudPolicy {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("cloud policy bootstrap interrupted", error);
         }
-        if (!completed || securityJson.get() == null || versionJson.get() == null || noticeJson.get() == null) {
+        if (!completed || securityJson.get() == null || versionJson.get() == null || noticeJson.get() == null
+                || disableJson.get() == null || runtimeJson.get() == null
+                || uiJson.get() == null || localJson.get() == null) {
             throw new IllegalStateException("required GitHub cloud policy unavailable");
         }
 
@@ -93,8 +108,10 @@ final class GitHubCloudPolicy {
         securityPolicy = parsedSecurity;
         versionPolicy = parsedVersion;
         noticePolicy = parsedNotice;
+        GitHubFeatureControl.installRequired(
+                app, versionName, currentCode,
+                disableJson.get(), runtimeJson.get(), uiJson.get(), localJson.get());
 
-        // 云端密码一旦变化，旧的本地授权立即失效。无需手工维护“密码版本号”。
         SharedPreferences state = app.getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE);
         String savedFingerprint = state.getString(KEY_AUTH_FINGERPRINT, "");
         if (OverlayState.isEntryAuthorized(app)
