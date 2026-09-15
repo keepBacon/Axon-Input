@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 16,
+  "versionName": "2.2Test",
+  "hiddenFeatureIds": ["auto_hide"],
+  "disabledFeatureIds": ["auto_hide"],
+  "forcedOffFeatureIds": ["auto_hide"],
+  "forcedOnFeatureIds": [],
+  "readOnlyFeatureIds": [],
+  "shortcutBlockedFeatureIds": ["auto_hide"]
+}
