@@ -2,97 +2,88 @@ package com.axon.input;
 
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
-import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
 import android.widget.Toast;
 
-import org.json.JSONObject;
-
-import java.lang.ref.WeakReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** 启动后检查新版本。只有成功拿到有效版本信息后才标记本进程已完成。 */
+/** 使用启动阶段已验证的版本专属 GitHub 策略显示普通/强制更新。 */
 final class UpdateChecker {
-    private static final String VERSION_INFO_URL =
-            "https://raw.githubusercontent.com/keepBacon/Axon-Input/main/version.json";
-    private static final String REPOSITORY_URL =
-            "https://github.com/keepBacon/Axon-Input";
-    private static final AtomicBoolean CHECKING = new AtomicBoolean(false);
     private static final AtomicBoolean COMPLETED = new AtomicBoolean(false);
-    private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static volatile WeakReference<Activity> latestActivity = new WeakReference<>(null);
 
     private UpdateChecker() {}
 
     static void check(Activity activity) {
-        if (!canUse(activity)) return;
-        latestActivity = new WeakReference<>(activity);
-        if (COMPLETED.get() || !CHECKING.compareAndSet(false, true)) return;
-
-        final Context app = activity.getApplicationContext();
-        Thread worker = new Thread(() -> {
-            UpdateInfo info = fetchUpdate(app);
-            MAIN.post(() -> finishCheck(app, info));
-        }, "AxonUpdateCheck");
-        worker.setDaemon(true);
-        worker.start();
+        if (!canUse(activity) || !COMPLETED.compareAndSet(false, true)) return;
+        GitHubCloudPolicy.VersionPolicy info = GitHubCloudPolicy.version();
+        long currentCode = AppVersion.code(activity);
+        if (!info.updateAvailable(currentCode)) return;
+        showUpdateDialog(activity, info, currentCode);
     }
 
-    private static void finishCheck(Context app, UpdateInfo info) {
-        CHECKING.set(false);
-        if (info == null) return; // 网络失败允许本进程后续再次检查。
-        COMPLETED.set(true);
-        Activity activity = latestActivity.get();
-        if (!canUse(activity) || info.versionCode <= AppVersion.code(app)) return;
-        showUpdateDialog(activity, info);
-    }
+    private static void showUpdateDialog(
+            Activity activity,
+            GitHubCloudPolicy.VersionPolicy info,
+            long currentCode) {
+        boolean forced = info.updateIsForced(currentCode);
+        String latest = info.latestVersionName.isEmpty()
+                ? String.valueOf(info.latestVersionCode)
+                : info.latestVersionName;
+        String title = nonEmpty(info.updateTitle, activity.getString(R.string.update_available_title));
 
-    private static UpdateInfo fetchUpdate(Context context) {
-        JSONObject json = RemoteJson.get(context, VERSION_INFO_URL, true);
-        if (json == null) return null;
+        StringBuilder message = new StringBuilder();
+        if (!info.updateMessage.isEmpty()) {
+            message.append(info.updateMessage);
+        } else {
+            message.append(activity.getString(
+                    R.string.update_version_message,
+                    AppVersion.name(activity),
+                    latest));
+        }
+        if (!info.changelog.isEmpty()) {
+            if (message.length() > 0) message.append("\n\n");
+            message.append(info.changelog);
+        }
 
-        int versionCode = json.optInt("versionCode", -1);
-        if (versionCode < 0) return null;
-        return new UpdateInfo(
-                versionCode,
-                json.optString("versionName", "").trim(),
-                json.optString("changelog", "").trim());
-    }
-
-    private static void showUpdateDialog(Activity activity, UpdateInfo info) {
-        String latest = info.versionName.isEmpty()
-                ? String.valueOf(info.versionCode)
-                : info.versionName;
-        StringBuilder message = new StringBuilder(activity.getString(
-                R.string.update_version_message,
-                AppVersion.name(activity),
-                latest));
-        if (!info.changelog.isEmpty()) message.append("\n\n").append(info.changelog);
+        String ghostText = forced
+                ? nonEmpty(info.forceUpdateExitText, "退出")
+                : nonEmpty(info.updateLaterText, activity.getString(R.string.update_later));
+        String primaryText = nonEmpty(info.updateNowText, activity.getString(R.string.update_now));
 
         DocumentModalDialog.show(
                 activity,
-                activity.getString(R.string.update_available_title),
+                title,
                 message.toString(),
-                activity.getString(R.string.update_later),
-                activity.getString(R.string.update_now),
-                DocumentModalDialog.Handle::dismiss,
+                ghostText,
+                primaryText,
                 handle -> {
-                    handle.dismiss();
-                    openDownload(activity);
+                    if (forced) {
+                        activity.finishAffinity();
+                    } else {
+                        handle.dismiss();
+                    }
                 },
-                true,
-                true,
+                handle -> {
+                    if (!forced) handle.dismiss();
+                    openDownload(activity, info.downloadUrl);
+                },
+                !forced,
+                !forced,
                 null);
     }
 
-    private static void openDownload(Activity activity) {
+    private static void openDownload(Activity activity, String url) {
+        String target = nonEmpty(url, "https://github.com/keepBacon/Axon-Input");
         try {
-            activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(REPOSITORY_URL)));
-        } catch (ActivityNotFoundException | SecurityException error) {
+            Uri uri = Uri.parse(target);
+            String scheme = uri.getScheme();
+            if (!("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme))) {
+                throw new IllegalArgumentException("unsupported update URL");
+            }
+            activity.startActivity(new Intent(Intent.ACTION_VIEW, uri));
+        } catch (ActivityNotFoundException | SecurityException | IllegalArgumentException error) {
             Toast.makeText(activity, R.string.update_open_failed, Toast.LENGTH_SHORT).show();
         }
     }
@@ -103,15 +94,8 @@ final class UpdateChecker {
                 && (Build.VERSION.SDK_INT < 17 || !activity.isDestroyed());
     }
 
-    private static final class UpdateInfo {
-        final int versionCode;
-        final String versionName;
-        final String changelog;
-
-        UpdateInfo(int versionCode, String versionName, String changelog) {
-            this.versionCode = versionCode;
-            this.versionName = versionName;
-            this.changelog = changelog;
-        }
+    private static String nonEmpty(String value, String fallback) {
+        String text = value == null ? "" : value.trim();
+        return text.isEmpty() ? fallback : text;
     }
 }
