@@ -1,0 +1,54 @@
+Axon Input GitHub 云端控制说明
+
+兼容原则
+========
+根目录旧 version.json / notice.json 继续只服务旧版客户端，本轮不修改、不删除。
+新架构仅使用 cloud-control/：
+  cloud-control/security.json
+  cloud-control/versions/<versionName>.json
+  cloud-control/notices/<versionName>.json
+
+启动 Fail-Closed
+===============
+当前 APK 每次进程启动必须成功读取当前版本对应的三份 JSON。
+任一文件缺失、网络取不到、JSON 无效、versionCode/versionName 不匹配时，Application.onCreate 会抛异常，应用直接退出。
+
+云端修改入口密码
+================
+安全策略文件：cloud-control/security.json
+推荐使用 PBKDF2-SHA256，不要把明文密码写进仓库。
+生成新密码策略：
+  python3 tools/generate_entry_password.py '你的新密码'
+把输出的 password 对象替换 security.json 中的 password，提交到 main。
+下次启动时旧本地授权会因为密码指纹变化自动失效，并重新要求输入新密码。
+
+快速禁止某版本
+==============
+在 security.json：
+  "deniedVersionCodes": [15]
+或：
+  "deniedVersionNames": ["2.1"]
+对应版本下次启动会 fail-closed。
+
+单版本开关 / 维护
+================
+在 cloud-control/versions/2.1.json：
+  enabled=false         -> 禁用该版本
+  maintenanceMode=true  -> 维护停用该版本
+
+强制更新
+========
+在 cloud-control/versions/2.1.json：
+  latestVersionCode / latestVersionName -> 最新版本
+  downloadUrl                        -> 更新地址
+  forceUpdate=true                   -> 有新版本时不可“稍后”
+  minSupportedVersionCode            -> 当前版本码低于该值时强制更新
+还可单独修改 updateTitle / updateMessage / changelog / updateLaterText / updateNowText / forceUpdateExitText。
+
+每版本独立公告
+==============
+2.1 读取 cloud-control/notices/2.1.json
+2.2 读取 cloud-control/notices/2.2.json
+不同版本互不影响。
+修改 id 可以让 showOnce=true 的公告再次显示。
+可修改 title/message/joinUrl/joinText/confirmText/waitSeconds。
