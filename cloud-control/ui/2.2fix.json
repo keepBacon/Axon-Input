@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 17,
+  "versionName": "2.2fix",
+  "hiddenUiIds": [],
+  "textOverrides": {
+    "configuration_title": "配置",
+    "cloud_config_center": "云端配置中心"
+  }
+}
