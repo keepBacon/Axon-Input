@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 17,
+  "versionName": "2.2fix",
+  "entryPasswordEnabled": true,
+  "featureShortcutsEnabled": true,
+  "cloudWorkshopEnabled": true,
+  "configImportEnabled": true,
+  "configExportEnabled": true,
+  "externalLinksEnabled": true,
+  "applyPolicyOnResume": true,
+  "clearBlockedShortcutBindings": true
+}
