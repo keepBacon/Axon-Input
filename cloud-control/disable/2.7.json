@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 17,
+  "versionName": "2.7",
+  "hiddenFeatureIds": [
+    "auto_hide"
+  ],
+  "disabledFeatureIds": [
+    "auto_hide"
+  ],
+  "forcedOffFeatureIds": [
+    "auto_hide"
+  ],
+  "forcedOnFeatureIds": [],
+  "readOnlyFeatureIds": [],
+  "shortcutBlockedFeatureIds": [
+    "auto_hide"
+  ]
+}
