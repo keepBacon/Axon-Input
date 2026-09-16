@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 17,
+  "versionName": "2.2fix",
+  "id": "2.2fix-release-1",
+  "enabled": true,
+  "showOnce": true,
+  "title": "2.2fix 更新说明",
+  "message": "Axon Input 2.2fix 已更新：配置页新增应用内使用教程，并继续改进配置迁移、BongoCat/Mver 模型兼容、手部残影、模型左右翻转和手柄 CPS。",
+  "joinUrl": "https://github.com/keepBacon/Axon-Input/blob/main/UPDATE_REPORT_2.2fix.md",
+  "joinText": "查看完整更新说明",
+  "confirmText": "确定",
+  "waitSeconds": 2
+}
