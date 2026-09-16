@@ -22,15 +22,6 @@ public final class AxonApplication extends Application implements Application.Ac
     @Override
     public void onCreate() {
         super.onCreate();
-        if (!SignatureVerifier.isValid(this)) {
-            throw new SecurityException("Axon Input signature verification failed");
-        }
-        // 新控制面必须在线拿到当前版本的 security/version/notice 三份策略。
-        // 任一缺失、格式错误、版本不匹配或当前版本被远端禁用，均 fail-closed 终止启动。
-        GitHubCloudPolicy.bootstrapRequired(this);
-        // 字体选择属于应用 UI 的启动依赖。已缓存的云端字体在 Activity 创建任何 TextView 前
-        // 就恢复，避免先用系统字体绘制启动动画/主页，再在动画结束后整体换字体。
-        // 这里只读取私有文件，不联网；缓存缺失时仍由验证后的字体流程负责自动补下载。
         AppFontChoiceController.preloadSavedChoice(this);
         registerActivityLifecycleCallbacks(this);
     }
@@ -39,9 +30,6 @@ public final class AxonApplication extends Application implements Application.Ac
     public void onActivityStarted(Activity activity) {
         startedActivities++;
         mainHandler.removeCallbacks(reportBackground);
-        // 应用在前台时保持任务正常显示。
-        // 开启“隐藏后台”后，离开应用时只隐藏最近任务卡片。
-        // 无障碍悬浮层不受影响。
         syncTaskVisibility(activity, false);
     }
 
@@ -74,15 +62,8 @@ public final class AxonApplication extends Application implements Application.Ac
         }
     }
 
-    @Override public void onActivityCreated(Activity activity, Bundle state) {
-        GitHubFeatureControl.applyToActivity(activity);
-    }
+    @Override public void onActivityCreated(Activity activity, Bundle state) {}
     @Override public void onActivityResumed(Activity activity) {
-        if (GitHubFeatureControl.applyPolicyOnResume()) {
-            GitHubFeatureControl.enforce(this);
-        }
-        GitHubFeatureControl.applyToActivity(activity);
-        // 云端应用字体只作用于 Activity UI；按显/悬浮层仍使用各自 FontManager。
         if (activity != null && activity.getWindow() != null) {
             AppTypeface.applyToViewTree(activity.getWindow().getDecorView());
         }

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.axon.input"
-    android:versionCode="16"
-    android:versionName="2.2Test">
+    android:versionCode="17"
+    android:versionName="2.2fix">
 
     <uses-sdk
         android:minSdkVersion="26"
@@ -82,7 +82,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
 
         <service
             android:name=".Live2DMotionTrackingService"
