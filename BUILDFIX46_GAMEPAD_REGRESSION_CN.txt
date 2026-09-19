@@ -1,0 +1,21 @@
+Axon Input v2.3 BuildFix46 — 手柄/键盘猫回归修复
+
+本次修复针对 BuildFix42 之后出现的输入回归，并同时处理同类“修一个问题又伤到另一输入路径”的问题。
+
+修复内容：
+1. 键盘猫不再在 Native evdev 已连接时强制使用 raw-only 按键状态。
+   现在与其他 HUD 一样使用经过 Android + evdev 语义合并、别名抑制和兼容变换后的 effectiveButtons，
+   因而不会因为某些手柄的 evdev 路径缺少部分数字键而读不到真实按键。
+
+2. InputDevice 新增时不再强制 stop/start gamepad monitor。
+   Native gamepadmonitor 自身已有周期扫描；旧逻辑会在键盘/鼠标等无关 HID 接入时制造一次中性状态，
+   导致正在按住的手柄按键和键盘猫动画瞬间松开。
+
+3. Android 手柄 KeyEvent 镜像改为按 deviceId 跟踪。
+   多手柄同时按同一个逻辑键时，一台设备松开不会再清掉另一台仍按住的状态。
+   设备 Removed/Changed 时只释放该 deviceId 的镜像，不再使用 resetPressedState() 全局清空其他输入源。
+
+4. BuildFix42 的 APEX 5 幽灵别名抑制同步作用于每设备镜像。
+   防止聚合重建后把已确认的 X/B/LT/RT 假别名重新“复活”。
+
+新增回归测试：tests/buildfix46_gamepad_regression_test.py
