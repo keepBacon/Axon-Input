@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 18,
+  "versionName": "2.3",
+  "enabled": true,
+  "maintenanceMode": false,
+  "disabledMessage": "当前 2.3 版本暂时不可用，请稍后重试",
+  "forceUpdate": false,
+  "minSupportedVersionCode": 16,
+  "latestVersionCode": 18,
+  "latestVersionName": "2.3",
+  "downloadUrl": "https://github.com/keepBacon/Axon-Input",
+  "updateTitle": "发现可用更新",
+  "updateMessage": "",
+  "changelog": "2.3：强化输入稳定性、键盘猫与 Mver 模型兼容、命名配置管理、快捷配置切换、手柄兼容和创意工坊界面。",
+  "updateLaterText": "稍后",
+  "updateNowText": "立即更新",
+  "forceUpdateExitText": "退出"
+}
