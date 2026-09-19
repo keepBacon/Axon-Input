@@ -1,0 +1,175 @@
+--- a/app/src/main/java/com/axon/input/AxonInputAccessibilityService.java
++++ b/app/src/main/java/com/axon/input/AxonInputAccessibilityService.java
+@@ -206,6 +206,10 @@
+     private boolean flydigiApex5AliasProfile;
+     private int androidGamepadButtons;
+     private int androidGamepadKnownMask;
++    /** Android gamepad KeyEvent mirrors are device-local so hot-unplug and a second controller
++     * cannot release buttons still held by another physical controller. */
++    private final android.util.SparseArray<Integer> androidGamepadButtonsByDevice = new android.util.SparseArray<>();
++    private final android.util.SparseArray<Integer> androidGamepadKnownByDevice = new android.util.SparseArray<>();
+     private boolean globalHtmlActive;
+     private String globalHtmlContent = "";
+     private GlobalHtmlStandaloneController standaloneHtmlController;
+@@ -1203,9 +1207,7 @@
+                 // Use the corrected semantic bit as the override group. Using the original
+                 // Android BUTTON_X here would re-introduce the Dune Fox L1 -> X alias.
+                 int knownGroup = logicalBit;
+-                androidGamepadKnownMask |= knownGroup;
+-                if (pressed) androidGamepadButtons |= logicalBit;
+-                else androidGamepadButtons &= ~logicalBit;
++                updateAndroidGamepadDevice(event.getDeviceId(), logicalBit, knownGroup, pressed);
+                 applyGamepadState(gamepadLx, gamepadLy, gamepadRx, gamepadRy, gamepadLt, gamepadRt, rawGamepadButtons);
+             }
+         }
+@@ -1315,6 +1317,62 @@
+         }
+     }
+ 
++    private void updateAndroidGamepadDevice(int deviceId, int logicalBit, int knownGroup, boolean pressed) {
++        int deviceButtons = valueAt(androidGamepadButtonsByDevice, deviceId);
++        int deviceKnown = valueAt(androidGamepadKnownByDevice, deviceId) | knownGroup;
++        if (pressed) deviceButtons |= logicalBit;
++        else deviceButtons &= ~logicalBit;
++        if (deviceButtons == 0) androidGamepadButtonsByDevice.remove(deviceId);
++        else androidGamepadButtonsByDevice.put(deviceId, deviceButtons);
++        androidGamepadKnownByDevice.put(deviceId, deviceKnown);
++        rebuildAndroidGamepadAggregate();
++    }
++
++    private int valueAt(android.util.SparseArray<Integer> values, int key) {
++        Integer value = values.get(key);
++        return value == null ? 0 : value;
++    }
++
++    private void rebuildAndroidGamepadAggregate() {
++        int buttons = 0;
++        int known = 0;
++        for (int i = 0; i < androidGamepadButtonsByDevice.size(); i++) {
++            Integer value = androidGamepadButtonsByDevice.valueAt(i);
++            if (value != null) buttons |= value;
++        }
++        for (int i = 0; i < androidGamepadKnownByDevice.size(); i++) {
++            Integer value = androidGamepadKnownByDevice.valueAt(i);
++            if (value != null) known |= value;
++        }
++        androidGamepadButtons = buttons;
++        androidGamepadKnownMask = known;
++    }
++
++    private boolean releaseAndroidGamepadDevice(int deviceId) {
++        boolean changed = androidGamepadButtonsByDevice.get(deviceId) != null
++                || androidGamepadKnownByDevice.get(deviceId) != null;
++        if (!changed) return false;
++        androidGamepadButtonsByDevice.remove(deviceId);
++        androidGamepadKnownByDevice.remove(deviceId);
++        rebuildAndroidGamepadAggregate();
++        return true;
++    }
++
++    private void clearAndroidGamepadMirrorBits(int bits) {
++        if (bits == 0) return;
++        for (int i = androidGamepadButtonsByDevice.size() - 1; i >= 0; i--) {
++            int next = valueAt(androidGamepadButtonsByDevice, androidGamepadButtonsByDevice.keyAt(i)) & ~bits;
++            if (next == 0) androidGamepadButtonsByDevice.removeAt(i);
++            else androidGamepadButtonsByDevice.setValueAt(i, next);
++        }
++        for (int i = androidGamepadKnownByDevice.size() - 1; i >= 0; i--) {
++            int next = valueAt(androidGamepadKnownByDevice, androidGamepadKnownByDevice.keyAt(i)) & ~bits;
++            if (next == 0) androidGamepadKnownByDevice.removeAt(i);
++            else androidGamepadKnownByDevice.setValueAt(i, next);
++        }
++        rebuildAndroidGamepadAggregate();
++    }
++
+     private long normalizedKeyboardEventTime(long eventTimeMs) {
+         long now = SystemClock.uptimeMillis();
+         if (eventTimeMs <= 0L) return now;
+@@ -1686,10 +1744,8 @@
+         // other devices; that would make held mouse/keyboard states disappear until the next edge.
+         // MouseInputMonitor 使用全局 getevent 并在解析层过滤 Axon 虚拟设备，
+         // 因此鼠标热插拔无需重启监听；重启反而会制造 REL_X/REL_Y 输入空窗。
+-        if (gamepadMonitorActive) {
+-            stopGamepadMonitor();
+-            startGamepadMonitor();
+-        }
++        // Native gamepadmonitor already rescans evdev periodically. Restarting it here would emit
++        // a neutral snapshot and release a controller merely because an unrelated HID was added.
+     }
+ 
+     @Override
+@@ -1711,9 +1767,8 @@
+             clearForcedHoldVisual();
+         }
+         releaseAndroidKeyboardDevice(deviceId, SystemClock.uptimeMillis());
+-        if ((needsMouseMonitor() && !mouseMonitorActive)
+-                || (needsGamepadMonitor() && !gamepadMonitorActive)) {
+-            resetPressedState();
++        if (releaseAndroidGamepadDevice(deviceId)) {
++            applyGamepadState(gamepadLx, gamepadLy, gamepadRx, gamepadRy, gamepadLt, gamepadRt, rawGamepadButtons);
+         }
+     }
+ 
+@@ -1724,9 +1779,8 @@
+         InputDevice device = inputManager == null ? null : inputManager.getInputDevice(deviceId);
+         if (rememberAxonVirtualDevice(deviceId, device)) return;
+         releaseAndroidKeyboardDevice(deviceId, SystemClock.uptimeMillis());
+-        if ((needsMouseMonitor() && !mouseMonitorActive)
+-                || (needsGamepadMonitor() && !gamepadMonitorActive)) {
+-            resetPressedState();
++        if (releaseAndroidGamepadDevice(deviceId)) {
++            applyGamepadState(gamepadLx, gamepadLy, gamepadRx, gamepadRy, gamepadLt, gamepadRt, rawGamepadButtons);
+         }
+     }
+ 
+@@ -4300,23 +4354,19 @@
+             int xGroup = GamepadOverlayView.BTN_WEST | GamepadOverlayView.BTN_C;
+             int bGroup = GamepadOverlayView.BTN_EAST | GamepadOverlayView.BTN_Z;
+             if ((rawChanged & GamepadOverlayView.BTN_L1) != 0 && (buttons & xGroup) == 0) {
+-                androidGamepadButtons &= ~xGroup;
+-                androidGamepadKnownMask &= ~xGroup;
++                clearAndroidGamepadMirrorBits(xGroup);
+             }
+             if (flydigiApex5AliasProfile) {
+                 if ((rawChanged & GamepadOverlayView.BTN_R1) != 0 && (buttons & bGroup) == 0) {
+-                    androidGamepadButtons &= ~bGroup;
+-                    androidGamepadKnownMask &= ~bGroup;
++                    clearAndroidGamepadMirrorBits(bGroup);
+                 }
+                 if ((rawChanged & GamepadOverlayView.BTN_L3) != 0
+                         && (buttons & GamepadOverlayView.BTN_L2) == 0) {
+-                    androidGamepadButtons &= ~GamepadOverlayView.BTN_L2;
+-                    androidGamepadKnownMask &= ~GamepadOverlayView.BTN_L2;
++                    clearAndroidGamepadMirrorBits(GamepadOverlayView.BTN_L2);
+                 }
+                 if ((rawChanged & GamepadOverlayView.BTN_R3) != 0
+                         && (buttons & GamepadOverlayView.BTN_R2) == 0) {
+-                    androidGamepadButtons &= ~GamepadOverlayView.BTN_R2;
+-                    androidGamepadKnownMask &= ~GamepadOverlayView.BTN_R2;
++                    clearAndroidGamepadMirrorBits(GamepadOverlayView.BTN_R2);
+                 }
+             }
+         }
+@@ -4335,9 +4385,10 @@
+         // Keyboard Cat must have one semantic owner. When evdev is attached, never merge Android
+         // KeyEvent aliases into its visual state: doing so is what allowed L1 -> X ghost presses
+         // and stale shoulder states. Android remains the fallback only while native input is absent.
+-        int keyboardCatButtons = nativeGamepadConnected
+-                ? applyGamepadButtonTransforms(buttons | vader5UsbBackButtons)
+-                : effectiveButtons;
++        // Keyboard Cat consumes the same reconciled semantic state as every other HUD.  Native
++        // presence alone does not prove that evdev exposes every digital control, so raw-only here
++        // drops legitimate Android fallback buttons on mixed-report controllers.
++        int keyboardCatButtons = effectiveButtons;
+ 
+         // 超级自定义编辑器需要识别“物理左/右摇杆”，因此在兼容性交换前发送原始轴。
+         // 仅编辑器存活时进入该旁路，普通运行没有额外跨线程分发。
+@@ -5928,6 +5979,8 @@
+         rawGamepadButtons = 0;
+         androidGamepadButtons = 0;
+         androidGamepadKnownMask = 0;
++        androidGamepadButtonsByDevice.clear();
++        androidGamepadKnownByDevice.clear();
+         recentRawGamepadChangedMask = 0;
+         recentRawGamepadSnapshot = 0;
+         recentRawGamepadChangedAt = 0L;
