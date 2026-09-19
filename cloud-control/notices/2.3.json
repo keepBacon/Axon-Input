@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 18,
+  "versionName": "2.3",
+  "id": "2.3-release-1",
+  "enabled": true,
+  "showOnce": true,
+  "title": "2.3 更新说明",
+  "message": "Axon Input 2.3 已发布：继续强化键盘与手柄输入稳定性、键盘猫/Mver 兼容、命名配置管理、快捷配置切换与创意工坊体验。",
+  "joinUrl": "https://github.com/keepBacon/Axon-Input/blob/main/UPDATE_REPORT_2.3.md",
+  "joinText": "查看完整更新说明",
+  "confirmText": "确定",
+  "waitSeconds": 2
+}
