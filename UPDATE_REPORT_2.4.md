@@ -1,4 +1,4 @@
-# Axon Input 2.4 更新说明
+# V2.4
 
 - 版本：2.4
 - versionCode：19
