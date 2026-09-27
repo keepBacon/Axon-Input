@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "revision": 2,
+  "revision": 3,
   "versionCode": 18,
   "versionName": "2.3",
   "enabled": true,
@@ -11,9 +11,9 @@
   "latestVersionCode": 19,
   "latestVersionName": "2.4",
   "downloadUrl": "https://github.com/keepBacon/Axon-Input",
-  "updateTitle": "发现可用更新",
+  "updateTitle": "V2.4",
   "updateMessage": "新增一些调试项，完善创建自定义按显(撤回，框选，改变输入键等等)，修复bug，点击按钮或者加入QQ群1080086855更新",
-  "changelog": "新增一些调试项，完善创建自定义按显(撤回，框选，改变输入键等等)，修复bug，点击按钮或者加入QQ群1080086855更新",
+  "changelog": "",
   "updateLaterText": "稍后",
   "updateNowText": "立即更新",
   "forceUpdateExitText": "退出"
