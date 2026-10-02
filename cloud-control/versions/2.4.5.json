@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 20,
+  "versionName": "2.4.5",
+  "enabled": true,
+  "maintenanceMode": false,
+  "disabledMessage": "当前 2.4.5 版本暂时不可用，请稍后重试",
+  "forceUpdate": false,
+  "minSupportedVersionCode": 16,
+  "latestVersionCode": 20,
+  "latestVersionName": "2.4.5",
+  "downloadUrl": "https://github.com/keepBacon/Axon-Input",
+  "updateTitle": "V2.4.5",
+  "updateMessage": "",
+  "changelog": "v2.4.5已更新，前往QQ群1080086855",
+  "updateLaterText": "稍后",
+  "updateNowText": "立即更新",
+  "forceUpdateExitText": "退出"
+}
