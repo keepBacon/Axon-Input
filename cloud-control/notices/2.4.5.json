@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "revision": 1,
+  "revision": 2,
   "versionCode": 20,
   "versionName": "2.4.5",
   "id": "2.4.5-release-1",
-  "enabled": true,
+  "enabled": false,
   "showOnce": true,
   "title": "V2.4.5",
   "message": "v2.4.5已更新，前往QQ群1080086855",
