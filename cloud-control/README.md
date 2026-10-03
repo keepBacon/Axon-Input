@@ -48,3 +48,7 @@
 ## versions / notices
 
 每个版本独立维护更新策略与独立公告。
+
+## Open-source publication note
+
+`security.json` is intentionally excluded from the public source snapshot. Do not commit a production password verifier to a public repository. Use `security.example.json` only as a schema example. If entry-password security is required for production, verify it server-side rather than distributing the verifier to clients.

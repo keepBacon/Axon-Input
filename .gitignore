@@ -1,0 +1,46 @@
+# Build output
+out/
+build/
+.gradle/
+*.apk
+*.aab
+*.dex
+
+# Android/local machine state
+local.properties
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.mobileprovision
+*.der
+secrets/
+credentials/
+
+# Axon production-only material
+cloud-control/security.json
+cloud-control/private/
+private/
+production/
+
+# Supabase local/auth state
+supabase/.branches/
+supabase/.temp/
+supabase/.env
+supabase/.env.*
+
+# Generated signing material
+.axon-input/
+axon-input.keystore

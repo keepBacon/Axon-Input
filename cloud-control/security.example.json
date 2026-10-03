@@ -7,7 +7,9 @@
   "deniedVersionCodes": [],
   "deniedVersionNames": [],
   "password": {
-    "algorithm": "sha256",
-    "hash": "bfcddcb062a30e8480f5547aab7cc1303ef1aff914af72bd80f6b1f127e2a2a1"
+    "algorithm": "pbkdf2-sha256",
+    "salt": "<GENERATE_WITH_tools/generate_entry_password.py>",
+    "iterations": 210000,
+    "hash": "<GENERATE_WITH_tools/generate_entry_password.py>"
   }
 }
