@@ -2701,7 +2701,10 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 // Shizuku-only and must keep receiving Shizuku lifecycle callbacks.
                 if (!TouchDisplayStore.isTouchCaptureEnabled(owner)) ShizukuBridge.removeListener(owner);
             }
-            if (owner.needsAccessibility()) owner.ensureAccessibility();
+            if (owner.needsAccessibility()) {
+                if (rootActive) owner.ensureAccessibility();
+                else owner.fallbackRootFailureToShizuku();
+            }
         });
     }
 
@@ -3196,6 +3199,27 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
         internalChange = false;
     }
 
+    private void fallbackRootFailureToShizuku() {
+        ShizukuBridge.addListener(this);
+        waitingForShizuku = true;
+        shizukuPermissionRequestInFlight = false;
+        if (!ShizukuBridge.isReady()) {
+            Toast.makeText(this, R.string.shizuku_connecting, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (ShizukuBridge.hasPermission()) {
+            waitingForShizuku = false;
+            ensureAccessibility();
+            return;
+        }
+        shizukuPermissionRequestInFlight = true;
+        if (!ShizukuBridge.requestPermission(SHIZUKU_REQUEST_CODE)) {
+            shizukuPermissionRequestInFlight = false;
+            Toast.makeText(this, R.string.shizuku_unavailable, Toast.LENGTH_SHORT).show();
+            openAccessibilitySettings();
+        }
+    }
+
     private void ensureAccessibility() {
         // 权限尚未判定时先等待 Root 探测，避免 Root 设备先弹 Shizuku 授权。
         if (!RootBridge.isProbeComplete()) {
@@ -3643,8 +3667,7 @@ public final class MainActivity extends Activity implements ShizukuBridge.Listen
                 if (result) {
                     verifyAccessibilityConnection(true, !forceRebind, true);
                 } else {
-                    Toast.makeText(this, R.string.root_denied_open_accessibility, Toast.LENGTH_SHORT).show();
-                    openAccessibilitySettings();
+                    fallbackRootFailureToShizuku();
                 }
             });
         }, forceRebind ? "RootAccessibilityRebind" : "RootAccessibilityGrant").start();
