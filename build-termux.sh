@@ -57,8 +57,8 @@ FINAL_APK="$BUILD/AxonInput-debug.apk"
 # 签名密钥保存在项目目录外，后续构建继续复用。
 SIGNING_DIR="${AXON_SIGNING_DIR:-$HOME/.axon-input}"
 KEYSTORE="$SIGNING_DIR/axon-input.keystore"
-KEY_ALIAS="${AXON_KEY_ALIAS:-axoninput}"
-KEY_PASS="${AXON_KEYSTORE_PASS:-android}"
+KEY_ALIAS="axoninput"
+KEY_PASS="android"
 CERT_DER="$BUILD/axon-input-cert.der"
 
 rm -rf "$BUILD"
@@ -240,7 +240,7 @@ for candidate in "$HOME/storage/downloads" "/storage/emulated/0/Download"; do
 done
 [ -n "$DOWNLOAD_DIR" ] || fail "找不到可写的 Download 目录，请先执行 termux-setup-storage 并授予存储权限"
 
-DOWNLOAD_APK="$DOWNLOAD_DIR/AxonInput_yj-vmp.apk"
+DOWNLOAD_APK="$DOWNLOAD_DIR/AxonInput.apk"
 cp -f "$FINAL_APK" "$DOWNLOAD_APK"
 [ -f "$DOWNLOAD_APK" ] || fail "APK 复制到 Download 失败"
 
