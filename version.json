@@ -1,5 +1,5 @@
 {
-  "versionCode": 999999,
-  "versionName": "REVOKED",
-  "changelog": "当前旧版已停止支持，请立即停止使用并卸载。新版更新了超多内容，请使用后续最新发布的正式版本。可以前往QQ群1080086855进行更新"
+  "versionCode": 21,
+  "versionName": "2.4.5fix",
+  "changelog": "2.4.5Fix已更新，紧急修复了进入即闪退等问题，请前往QQ群1080086855或者github更新"
 }
