@@ -28,9 +28,15 @@ import javax.crypto.spec.PBEKeySpec;
 final class GitHubCloudPolicy {
     private static final String RAW_ROOT =
             "https://raw.githubusercontent.com/keepBacon/Axon-Input/main/cloud-control/";
+    private static final String JSDELIVR_ROOT =
+            "https://cdn.jsdelivr.net/gh/keepBacon/Axon-Input@main/cloud-control/";
+    private static final String JSDELIVR_FASTLY_ROOT =
+            "https://fastly.jsdelivr.net/gh/keepBacon/Axon-Input@main/cloud-control/";
     private static final String STATE_PREFS = "axon_github_cloud_policy_state";
     private static final String KEY_AUTH_FINGERPRINT = "entry_auth_fingerprint";
-    private static final long STARTUP_TIMEOUT_MS = 4200L;
+    private static final String POLICY_CACHE_PREFS = "axon_cloud_policy_lkg";
+    private static final String POLICY_CACHE_PREFIX = "policy:";
+    private static final long STARTUP_TIMEOUT_MS = 3200L;
 
     private static volatile Context appContext;
     private static volatile SecurityPolicy securityPolicy;
@@ -46,13 +52,13 @@ final class GitHubCloudPolicy {
 
         String versionName = AppVersion.name(app);
         String safeVersion = sanitizeVersionSegment(versionName);
-        String securityUrl = RAW_ROOT + "security.json";
-        String versionUrl = RAW_ROOT + "versions/" + safeVersion + ".json";
-        String noticeUrl = RAW_ROOT + "notices/" + safeVersion + ".json";
-        String disableUrl = RAW_ROOT + "disable/" + safeVersion + ".json";
-        String runtimeUrl = RAW_ROOT + "runtime/" + safeVersion + ".json";
-        String uiUrl = RAW_ROOT + "ui/" + safeVersion + ".json";
-        String localUrl = RAW_ROOT + "local/" + safeVersion + ".json";
+        String securityUrl = "security.json";
+        String versionUrl = "versions/" + safeVersion + ".json";
+        String noticeUrl = "notices/" + safeVersion + ".json";
+        String disableUrl = "disable/" + safeVersion + ".json";
+        String runtimeUrl = "runtime/" + safeVersion + ".json";
+        String uiUrl = "ui/" + safeVersion + ".json";
+        String localUrl = "local/" + safeVersion + ".json";
 
         AtomicReference<JSONObject> securityJson = new AtomicReference<>();
         AtomicReference<JSONObject> versionJson = new AtomicReference<>();
@@ -112,6 +118,14 @@ final class GitHubCloudPolicy {
                 app, versionName, currentCode,
                 disableJson.get(), runtimeJson.get(), uiJson.get(), localJson.get());
 
+        cachePolicy(app, securityUrl, securityJson.get());
+        cachePolicy(app, versionUrl, versionJson.get());
+        cachePolicy(app, noticeUrl, noticeJson.get());
+        cachePolicy(app, disableUrl, disableJson.get());
+        cachePolicy(app, runtimeUrl, runtimeJson.get());
+        cachePolicy(app, uiUrl, uiJson.get());
+        cachePolicy(app, localUrl, localJson.get());
+
         SharedPreferences state = app.getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE);
         String savedFingerprint = state.getString(KEY_AUTH_FINGERPRINT, "");
         if (OverlayState.isEntryAuthorized(app)
@@ -124,19 +138,61 @@ final class GitHubCloudPolicy {
 
     private static void fetchRequired(
             Context context,
-            String url,
+            String relativePath,
             AtomicReference<JSONObject> out,
             CountDownLatch latch,
             String threadName) {
         Thread worker = new Thread(() -> {
             try {
-                out.set(RemoteJson.get(context, url, true));
+                JSONObject cached = loadCachedPolicy(context, relativePath);
+                JSONObject best = null;
+                String[] roots = {JSDELIVR_ROOT, JSDELIVR_FASTLY_ROOT, RAW_ROOT};
+                for (String root : roots) {
+                    JSONObject candidate = RemoteJson.get(context, root + relativePath, true);
+                    if (!isPlausiblePolicy(candidate)) continue;
+                    if (best == null || candidate.optLong("revision", 0L) >= best.optLong("revision", 0L)) {
+                        best = candidate;
+                    }
+                    // Do not wait for blocked GitHub Raw once a valid mainland-friendly source won.
+                    if (!RAW_ROOT.equals(root)) break;
+                }
+                if (best != null && (cached == null
+                        || best.optLong("revision", 0L) >= cached.optLong("revision", 0L))) {
+                    out.set(best);
+                } else {
+                    out.set(cached);
+                }
             } finally {
                 latch.countDown();
             }
         }, threadName);
         worker.setDaemon(true);
         worker.start();
+    }
+
+    private static boolean isPlausiblePolicy(JSONObject json) {
+        return json != null && json.optInt("schema", 0) == 1 && json.optLong("revision", 0L) > 0L;
+    }
+
+    private static JSONObject loadCachedPolicy(Context context, String relativePath) {
+        if (context == null || relativePath == null) return null;
+        try {
+            String raw = context.getSharedPreferences(POLICY_CACHE_PREFS, Context.MODE_PRIVATE)
+                    .getString(POLICY_CACHE_PREFIX + relativePath, "");
+            if (raw == null || raw.trim().isEmpty()) return null;
+            JSONObject json = new JSONObject(raw);
+            return isPlausiblePolicy(json) ? json : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static void cachePolicy(Context context, String relativePath, JSONObject candidate) {
+        if (context == null || relativePath == null || !isPlausiblePolicy(candidate)) return;
+        SharedPreferences prefs = context.getSharedPreferences(POLICY_CACHE_PREFS, Context.MODE_PRIVATE);
+        JSONObject cached = loadCachedPolicy(context, relativePath);
+        if (cached != null && cached.optLong("revision", 0L) > candidate.optLong("revision", 0L)) return;
+        prefs.edit().putString(POLICY_CACHE_PREFIX + relativePath, candidate.toString()).apply();
     }
 
     static boolean matchesEntryPassword(String value) {
