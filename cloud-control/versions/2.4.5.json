@@ -1,1 +1,20 @@
-{"schema":1,"revision":7,"versionCode":20,"versionName":"2.4.5","enabled":true,"maintenanceMode":false,"disabledMessage":"当前 2.4.5 版本暂时不可用，请稍后重试","forceUpdate":false,"minSupportedVersionCode":16,"latestVersionCode":21,"latestVersionName":"2.4.5fix","downloadUrl":"https://github.com/keepBacon/Axon-Input","updateTitle":"V2.4.5Fix","updateMessage":"2.4.5Fix已更新，紧急修复了进入即闪退等问题，请前往QQ群1080086855或者github更新","changelog":"","updateLaterText":"稍后","updateNowText":"立即更新","forceUpdateExitText":"退出"}
+{
+  "schema": 1,
+  "revision": 8,
+  "versionCode": 20,
+  "versionName": "2.4.5",
+  "enabled": true,
+  "maintenanceMode": false,
+  "disabledMessage": "当前 2.4.5 版本暂时不可用，请稍后重试",
+  "forceUpdate": false,
+  "minSupportedVersionCode": 16,
+  "latestVersionCode": 22,
+  "latestVersionName": "2.5",
+  "downloadUrl": "https://github.com/keepBacon/Axon-Input",
+  "updateTitle": "V2.5",
+  "updateMessage": "V2.5已更新，插件系统V1上线，前往QQ群1080086855或github更新",
+  "changelog": "插件系统V1上线",
+  "updateLaterText": "稍后",
+  "updateNowText": "立即更新",
+  "forceUpdateExitText": "退出"
+}

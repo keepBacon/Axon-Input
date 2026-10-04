@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 22,
+  "versionName": "2.5",
+  "id": "2.5-release-1",
+  "enabled": true,
+  "showOnce": true,
+  "title": "V2.5",
+  "message": "V2.5已更新，插件系统V1上线，前往QQ群1080086855或github更新",
+  "joinUrl": "https://github.com/keepBacon/Axon-Input/blob/main/UPDATE_REPORT_2.5.md",
+  "joinText": "查看更新",
+  "confirmText": "确定",
+  "waitSeconds": 1
+}
