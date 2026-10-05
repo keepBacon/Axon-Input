@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 23,
+  "versionName": "2.5fix",
+  "commitSynchronously": true,
+  "preferenceOverrides": {
+    "auto_hide_background": false
+  },
+  "removePreferenceKeys": []
+}
