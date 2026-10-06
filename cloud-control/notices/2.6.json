@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "revision": 2,
+  "revision": 3,
   "versionCode": 24,
   "versionName": "2.6",
-  "id": "2.6-release-2",
+  "id": "2.6-general-1",
   "enabled": true,
   "showOnce": true,
-  "title": "V2.6",
-  "message": "2.6已更新，前往QQ群1080086855或者Github更新",
-  "joinUrl": "https://github.com/keepBacon/Axon-Input",
-  "joinText": "前往 GitHub 更新",
+  "title": "公告",
+  "message": "出现问题、Bug 请加入 KOOK 频道反馈，并附上问题视频，以及你的键盘、鼠标、手柄型号。",
+  "joinUrl": "https://kook.vip/GYYrsE",
+  "joinText": "立即加入",
   "confirmText": "确定",
-  "waitSeconds": 1
+  "waitSeconds": 3
 }
