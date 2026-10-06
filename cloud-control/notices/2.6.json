@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "versionCode": 24,
+  "versionName": "2.6",
+  "id": "2.6-release-1",
+  "enabled": false,
+  "showOnce": true,
+  "title": "V2.6",
+  "message": "2.6已更新，前往QQ群1080086855或者Github更新",
+  "joinUrl": "https://github.com/keepBacon/Axon-Input",
+  "joinText": "前往 GitHub 更新",
+  "confirmText": "确定",
+  "waitSeconds": 1
+}
